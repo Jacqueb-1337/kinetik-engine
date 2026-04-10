@@ -474,7 +474,7 @@ function levelToJSON() {
       entry.emissiveIntensity = obj.userData.emissiveIntensity;
       entry.emissiveColor     = obj.userData.emissiveColor ?? '#ffffff';
     }
-    const _opacity = obj.material?.opacity ?? 1;
+    const _opacity = getMeshOpacity(obj);
     if (_opacity < 1) entry.opacity = +_opacity.toFixed(3);
     if (obj.userData.primType === 'model') entry.modelPath = obj.userData.modelPath;
     if (obj.userData.faceTextures)  entry.faceTextures  = obj.userData.faceTextures;
@@ -960,6 +960,32 @@ function setFaceConfig(mesh, faceKey, config) {
   markDirty();
 }
 
+function getMeshOpacity(obj) {
+  if (obj.userData._opacity !== undefined) return obj.userData._opacity;
+  if (!obj.material) return 1;
+  const m = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+  return m?.opacity ?? 1;
+}
+function setMeshOpacity(obj, v) {
+  if (!obj.material) return;
+  obj.userData._opacity = v;
+  const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+  mats.forEach(m => { m.transparent = v < 1; m.opacity = v; m.needsUpdate = true; });
+}
+function syncOpacityWireframe(obj) {
+  const existing = obj.children?.find(c => c.userData.isOpacityWire);
+  if (existing) { obj.remove(existing); existing.geometry?.dispose(); existing.material?.dispose(); }
+  if (getMeshOpacity(obj) < 0.5 && obj.geometry) {
+    const wire = new THREE.LineSegments(
+      new THREE.WireframeGeometry(obj.geometry),
+      new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.6, transparent: true })
+    );
+    wire.userData.isOpacityWire = true;
+    wire.userData.isEditorHelper = true;
+    obj.add(wire);
+  }
+}
+
 // Apply userData.faceTextures to mesh.material (multi-material for boxes with per-face overrides)
 function applyFaceTextures(mesh) {
   const ft = mesh.userData.faceTextures;
@@ -985,6 +1011,11 @@ function applyFaceTextures(mesh) {
     mesh.material = makeFaceTexMat(baseColor, ft['all'] ?? null);
   }
   mesh.material.needsUpdate = true; // may be array; Three.js handles it
+  if (mesh.userData._opacity !== undefined && mesh.userData._opacity < 1) {
+    const v = mesh.userData._opacity;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    mats.forEach(m => { m.transparent = true; m.opacity = v; m.needsUpdate = true; });
+  }
 }
 
 // Compute repeat values for world-based tiling on a box face
@@ -1071,9 +1102,8 @@ function spawnPrimFromEntry(entry) {
   if (entry.links?.length)  mesh.userData.links  = entry.links;
   if (entry.pivotOffset)    mesh.userData.pivotOffset = entry.pivotOffset;
   if (entry.noSelfInteract) mesh.userData.noSelfInteract = true;
-  if (entry.opacity !== undefined && mesh.material) {
-    mesh.material.transparent = true;
-    mesh.material.opacity = entry.opacity;
+  if (entry.opacity !== undefined) {
+    mesh.userData._opacity = entry.opacity;
   }
   if (entry.emissiveIntensity > 0 && mesh.material) {
     mesh.userData.emissiveIntensity = entry.emissiveIntensity;
@@ -1096,6 +1126,10 @@ function spawnPrimFromEntry(entry) {
     const [rx, ry] = entry.textureRepeat || [1, 1];
     mesh.userData.faceTextures = { all: makeFaceTexConfig(entry.texture, rx, ry) };
     applyFaceTextures(mesh);
+  }
+  if (mesh.userData._opacity !== undefined) {
+    setMeshOpacity(mesh, mesh.userData._opacity);
+    syncOpacityWireframe(mesh);
   }
   if (isTriggerType(entry.type)) {
     if (entry.type === 'custom-trigger') {
@@ -1334,7 +1368,7 @@ function updateProps(obj) {
   }
   if (opacityEl && document.activeElement !== opacityEl) {
     opacityEl.disabled = isLight;
-    opacityEl.value = isLight ? '1' : +(obj.material?.opacity ?? 1).toFixed(2);
+    opacityEl.value = isLight ? '1' : +getMeshOpacity(obj).toFixed(2);
   }
   if (chkC) { chkC.disabled = isLight || isTrigger; chkC.checked = !isLight && !isTrigger && obj.userData.collidable !== false; }
   if (chkS) { chkS.disabled = isTrigger; chkS.checked = !isTrigger && (isLight ? obj.userData.castShadow !== false : obj.castShadow !== false); }
@@ -3354,10 +3388,11 @@ function setupUI() {
   document.getElementById('obj-opacity')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('obj-opacity')?.addEventListener('input', e => {
     if (!E.selected || !E.selected.material) return;
-    const v = Math.max(0, Math.min(1, parseFloat(e.target.value) || 1));
-    E.selected.material.transparent = v < 1;
-    E.selected.material.opacity = v;
-    E.selected.material.needsUpdate = true;
+    const parsed = parseFloat(e.target.value);
+    const v = Math.max(0, Math.min(1, isNaN(parsed) ? 1 : parsed));
+    E.selected.userData._opacity = v < 1 ? v : undefined;
+    setMeshOpacity(E.selected, v);
+    syncOpacityWireframe(E.selected);
     markDirty();
   });
 

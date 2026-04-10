@@ -164,9 +164,13 @@ function spawnLight(entry) {
   applyTransform(light, entry);
   light.castShadow = entry.castShadow !== false;
   if (light.castShadow) {
-    light.shadow.mapSize.set(1024, 1024);
-    light.shadow.camera.near = 0.5;
-    light.shadow.camera.far  = 50;
+    const isPoint = entry.type === 'point-light';
+    light.shadow.mapSize.set(isPoint ? 2048 : 1024, isPoint ? 2048 : 1024);
+    light.shadow.camera.near = 0.1;
+    light.shadow.camera.far  = isPoint
+      ? (entry.distance > 0 ? entry.distance : 500)
+      : 50;
+    if (isPoint) light.shadow.normalBias = 0.05;
   }
   light.userData.levelObj  = true;
   light.userData.editorId  = entry.id;
@@ -218,7 +222,7 @@ function spawnModel(entry) {
 async function spawnCsgResult(entry) {
   // Try to do the actual CSG subtraction at runtime
   try {
-    const { Evaluator, Brush, SUBTRACTION } = await import('./node_modules/three-bvh-csg/src/index.js');
+    const { Evaluator, Brush, SUBTRACTION } = await import('three-bvh-csg');
     const evaluator = new Evaluator();
     const recipe = entry.csgRecipe;
 
@@ -335,7 +339,7 @@ function _objToBrush(obj, Brush) {
  * @param {string} name  Level name (no .json extension) — defaults to 'main'
  */
 export async function loadLevel(name = 'main') {
-  if (!window.electron) {
+  if (!window.electron && !window.Capacitor) {
     console.log('[levelLoader] Not in Electron — skipping level load');
     return;
   }
@@ -346,7 +350,13 @@ export async function loadLevel(name = 'main') {
 
   let data = null;
   try {
-    data = await window.electron.readLevel(name);
+    if (window.electron) {
+      data = await window.electron.readLevel(name);
+    } else {
+      const res = await fetch(`./levels/${name}.json`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    }
   } catch (err) {
     console.log(`[levelLoader] Level "${name}" not found or unreadable:`, err.message);
     return;

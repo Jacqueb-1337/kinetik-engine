@@ -95,7 +95,7 @@ export function initScene() {
   gameState.scene.background = new THREE.Color(0x000000);
   
   // Much lighter fog on mobile to prevent blackout
-  const fogDensity = platformConfig.isMobile ? 0.02 : 0.1;
+  const fogDensity = 0.1;
   gameState.scene.fog = new THREE.FogExp2(0x000000, fogDensity);
   
   gameState.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -106,7 +106,7 @@ export function initScene() {
   gameState.renderer.sortObjects = true;
   gameState.renderer.setSize(window.innerWidth, window.innerHeight);
   gameState.renderer.shadowMap.enabled = true;
-  gameState.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  gameState.renderer.shadowMap.type = THREE.PCFShadowMap;
   gameState.renderer.toneMapping = THREE.ACESFilmicToneMapping;
   gameState.renderer.toneMappingExposure = 1.4;  // Gamma setting
   document.body.appendChild(gameState.renderer.domElement);
@@ -174,7 +174,9 @@ export function initScene() {
     // Right-click = interact with highlighted object
     document.addEventListener('mousedown', (e) => {
       if (e.button !== 2) return; // right button only
-      if (gameState.isPaused || !gameState.isPointerLocked) return;
+      if (gameState.isPaused) return;
+      if (!gameState.isPointerLocked && !gameState.mobileInteractPending) return;
+      gameState.mobileInteractPending = false;
       // Hardcoded pullstring interact — COMMENTED OUT: use editor-placed state objects instead
       // if (gameState.interactTarget === 'pullstring' && gameState.pullStringTab) { ... }
       if (gameState.interactTarget === 'state-obj' && gameState.interactObj) {

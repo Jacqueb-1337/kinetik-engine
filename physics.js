@@ -355,6 +355,7 @@ export function update(delta) {
     if (gameState.jumpAction) {
       gameState.jumpAction.time = 0;  // Reset animation to start
       gameState.jumpAction.paused = false;
+      gameState.jumpAction.timeScale = 2.5;  // Play windup fast
     }
     console.log('Jump windup started, animation reset to 0, target time:', JUMP_WINDUP_TIME);
   }
@@ -370,6 +371,7 @@ export function update(delta) {
         // Apply jump velocity
         gameState.velocityY = JUMP_SPEED;
         gameState.isJumpWindup = false;
+        gameState.jumpAction.timeScale = 1;  // Rest of jump at normal speed
         console.log('VELOCITY APPLIED! Jumping now at frame', (currentTime * ANIMATION_FPS).toFixed(1));
       }
     }
