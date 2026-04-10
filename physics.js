@@ -9,9 +9,9 @@ export function setInteractHook(fn) { _interactHook = fn; }
 export function setTooltipHook(fn) { _tooltipHook = fn; }
 
 function getPlayerBoundingBox() {
+  if (!gameState.player) return new THREE.Box3();
   const box = new THREE.Box3();
   
-  // Calculate bounding box from bone positions (follows skeletal animations)
   let hasBones = false;
   gameState.player.traverse((child) => {
     if (child.isBone) {

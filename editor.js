@@ -8,6 +8,9 @@ import { FBXLoader }         from 'three/examples/jsm/loaders/FBXLoader';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry';
 
+let _referenceSceneFn = null;
+export function registerReferenceScene(fn) { _referenceSceneFn = fn; }
+
 // â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const RAD = Math.PI / 180;
 const DEG = 180 / Math.PI;
@@ -257,6 +260,10 @@ function resizeRenderer() {
 
 // â”€â”€â”€ Reference scene (read-only hardcoded room visuals) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function loadReferenceScene() {
+  if (_referenceSceneFn) await _referenceSceneFn(E.refGroup);
+}
+
+function _removedSinisterReferenceScene() {
   const tl = new THREE.TextureLoader();
   function loadTex(url, rep) {
     const t = tl.load(url);

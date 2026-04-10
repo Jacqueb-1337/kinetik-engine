@@ -128,7 +128,7 @@ export function initScene() {
   if (!isEditorMode) {
     document.addEventListener('click', async () => {
       if (!gameState.isPaused && !gameState.mainMenuActive) {
-        // Step 1: Enter HTML5 fullscreen (required for Keyboard Lock API)
+        document.body.requestPointerLock().catch?.(() => {});
         if (!document.fullscreenElement) {
           try {
             await document.documentElement.requestFullscreen();
@@ -136,7 +136,6 @@ export function initScene() {
             console.log('Fullscreen not available:', e);
           }
         }
-        // Step 2: Lock keyboard to capture Escape key
         if (navigator.keyboard && navigator.keyboard.lock) {
           try {
             await navigator.keyboard.lock(['Escape']);
@@ -145,8 +144,6 @@ export function initScene() {
             console.log('Keyboard lock not available:', e);
           }
         }
-        // Step 3: Request pointer lock
-        document.body.requestPointerLock();
       }
     });
     document.addEventListener('pointerlockchange', () => {
@@ -382,18 +379,19 @@ export function exportScene() {
   
   console.log('Exporting scene...');
   
-  // Temporarily hide light cone and helpers before export
-  let lightCone = null;
-  if (gameState.tvScreenLight && gameState.tvScreenLight.userData.lightCone) {
-    lightCone = gameState.tvScreenLight.userData.lightCone;
-    lightCone.visible = false;
-  }
-  
+  // Temporarily hide any light cone helpers before export
+  const hiddenCones = [];
+  gameState.scene.traverse(obj => {
+    if (obj.userData.lightCone) {
+      obj.userData.lightCone.visible = false;
+      hiddenCones.push(obj.userData.lightCone);
+    }
+  });
+
   exporter.parse(
     gameState.scene,
     function (result) {
-      // Restore light cone visibility
-      if (lightCone) lightCone.visible = true;
+      hiddenCones.forEach(c => { c.visible = true; });
       
       const output = JSON.stringify(result, null, 2);
       const blob = new Blob([output], { type: 'text/plain' });
@@ -404,8 +402,7 @@ export function exportScene() {
       console.log('Scene exported as GLTF');
     },
     function (error) {
-      // Restore light cone visibility even on error
-      if (lightCone) lightCone.visible = true;
+      hiddenCones.forEach(c => { c.visible = true; });
       console.error('Error exporting scene:', error);
     },
     {
