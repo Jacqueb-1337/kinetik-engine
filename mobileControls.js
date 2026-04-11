@@ -202,13 +202,7 @@ function createControlElements() {
     transition: border 0.08s, box-shadow 0.08s, background 0.08s;
   `;
 
-  const svgRun = `<svg viewBox="0 0 32 32" width="52%" height="52%" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="20" cy="5" r="3" fill="rgba(255,255,255,0.9)"/>
-    <path d="M14 10l-4 6h5l2 7-5 5" stroke="rgba(255,255,255,0.9)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-    <path d="M14 10l4 3 4-4" stroke="rgba(255,255,255,0.9)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-    <path d="M15 23l1-6" stroke="rgba(255,255,255,0.9)" stroke-width="2.2" stroke-linecap="round" fill="none"/>
-  </svg>
-  <span style="color:rgba(255,255,255,0.6);font-size:9px;font-family:sans-serif;letter-spacing:0.5px;margin-top:1px;">RUN</span>`;
+  const svgRun = `<img src="./textures/run.png" style="width:55%;height:55%;object-fit:contain;pointer-events:none;">`;
 
   const svgJump = `<svg viewBox="0 0 32 32" width="52%" height="52%" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M16 26V8" stroke="rgba(255,255,255,0.9)" stroke-width="2.5" stroke-linecap="round"/>
@@ -216,13 +210,7 @@ function createControlElements() {
   </svg>
   <span style="color:rgba(255,255,255,0.6);font-size:9px;font-family:sans-serif;letter-spacing:0.5px;margin-top:1px;">JUMP</span>`;
 
-  const svgInteract = `<svg viewBox="0 0 32 32" width="52%" height="52%" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="13" y="4" width="6" height="14" rx="3" stroke="rgba(255,255,255,0.45)" stroke-width="2" fill="none"/>
-    <rect x="7"  y="10" width="5" height="12" rx="2.5" stroke="rgba(255,255,255,0.45)" stroke-width="2" fill="none"/>
-    <rect x="20" y="10" width="5" height="12" rx="2.5" stroke="rgba(255,255,255,0.45)" stroke-width="2" fill="none"/>
-    <path d="M7 22c0 3 2 6 9 6s9-3 9-6" stroke="rgba(255,255,255,0.45)" stroke-width="2" fill="none"/>
-  </svg>
-  <span style="color:rgba(255,255,255,0.25);font-size:9px;font-family:sans-serif;letter-spacing:0.5px;margin-top:1px;">USE</span>`;
+  const svgInteract = `<img src="./textures/interact.png" style="width:55%;height:55%;object-fit:contain;pointer-events:none;">`;
 
   makeHudButton('sprint-button', 'sprint', btnBase, svgRun);
 
