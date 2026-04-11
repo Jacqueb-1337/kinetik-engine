@@ -75,4 +75,4 @@ export const GRAVITY = -30;
 export const MOVE_SPEED = 5;
 export const JUMP_SPEED = 10;
 export const cameraDistance = 10;
-export const INTERACT_RANGE = 3;  // Max distance (metres) for all interactable objects
+export const INTERACT_RANGE = 6;  // Max distance (metres) for all interactable objects

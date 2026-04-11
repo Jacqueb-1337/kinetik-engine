@@ -322,6 +322,53 @@ async function spawnCsgResult(entry) {
   }
 }
 
+function spawnMergedModel(entry) {
+  const root = new THREE.Group();
+  (entry.mergedMeshes || []).forEach(md => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(md.positions, 3));
+    if (md.normals) geo.setAttribute('normal', new THREE.Float32BufferAttribute(md.normals, 3));
+    if (md.uvs)     geo.setAttribute('uv',     new THREE.Float32BufferAttribute(md.uvs, 2));
+    if (md.indices) geo.setIndex(new THREE.BufferAttribute(new Uint32Array(md.indices), 1));
+    const mat = new THREE.MeshStandardMaterial({ color: '#aaaacc', roughness: 1, metalness: 0, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = md.name;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    root.add(mesh);
+  });
+  root.position.set(...entry.pos);
+  root.rotation.set(entry.rot[0] * (Math.PI / 180), entry.rot[1] * (Math.PI / 180), entry.rot[2] * (Math.PI / 180));
+  root.scale.set(...entry.size);
+  root.castShadow    = entry.castShadow !== false;
+  root.receiveShadow = true;
+  root.userData.collidable = entry.collidable !== false;
+  root.userData.levelObj   = true;
+  root.userData.editorId   = entry.id;
+  if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
+  if (entry.noSelfInteract)    root.userData.noSelfInteract = true;
+  if (entry.meshOverrides) {
+    root.traverse(c => {
+      if (!c.isMesh) return;
+      const ovr = entry.meshOverrides[c.name];
+      if (!ovr) return;
+      if (ovr.visible === false) c.visible = false;
+      if (ovr.texture) {
+        const name = ovr.texture;
+        const applyTex = tex => {
+          tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
+        };
+        getTexLoader().load(`./textures/${name}.png`, applyTex, undefined, () => {
+          getTexLoader().load(`./textures/${name}.jpg`, applyTex);
+        });
+      }
+    });
+  }
+  return root;
+}
+
 async function _buildRecipeObj(e) {
   if (e.type === 'model' && e.modelPath) return spawnModel(e);
   const mesh = spawnPrim(e);
@@ -457,6 +504,8 @@ export async function loadLevel(name = 'main') {
         continue;
       } else if (entry.type === 'csg-result') {
         obj = await spawnCsgResult(entry);
+      } else if (entry.type === 'merged-model') {
+        obj = spawnMergedModel(entry);
       } else if (entry.type === 'model') {
         obj = await spawnModel(entry);
       } else if (entry.type === 'point-light' || entry.type === 'spot-light' || entry.type === 'dir-light') {

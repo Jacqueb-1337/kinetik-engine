@@ -17,14 +17,44 @@ function _fireActiveVars(obj, newIdx) {
   });
 }
 
-function _playSound(name) {
+let _audioCtx = null;
+function _getAudioCtx() {
+  if (!_audioCtx) _audioCtx = new AudioContext();
+  if (_audioCtx.state === 'suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+
+function _playSound(name, worldPos) {
   if (!name) return;
-  const exts = ['mp3', 'ogg', 'wav'];
+  let vol = 1, pan = 0;
+  if (worldPos && gameState.camera) {
+    const camPos = new THREE.Vector3();
+    gameState.camera.getWorldPosition(camPos);
+    const dist = camPos.distanceTo(worldPos);
+    vol = Math.max(0, 1 - dist / 40);
+    if (vol <= 0) return;
+    const right = new THREE.Vector3();
+    gameState.camera.getWorldDirection(new THREE.Vector3());
+    right.setFromMatrixColumn(gameState.camera.matrixWorld, 0).normalize();
+    const toSound = new THREE.Vector3().subVectors(worldPos, camPos).normalize();
+    pan = THREE.MathUtils.clamp(right.dot(toSound), -1, 1);
+  }
+  const exts = ['ogg', 'mp3', 'wav'];
   const tryNext = i => {
     if (i >= exts.length) return;
-    const a = new Audio(`./sounds/${name}.${exts[i]}`);
-    a.onerror = () => tryNext(i + 1);
-    a.play().catch(() => {});
+    const audio = new Audio(`./sounds/${name}.${exts[i]}`);
+    audio.volume = vol;
+    audio.onerror = () => tryNext(i + 1);
+    audio.play().then(() => {
+      try {
+        const ctx = _getAudioCtx();
+        const src = ctx.createMediaElementSource(audio);
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = pan;
+        src.connect(panner);
+        panner.connect(ctx.destination);
+      } catch (e) {}
+    }).catch(() => {});
   };
   tryNext(0);
 }
@@ -54,11 +84,18 @@ function _playStateSoundsForEvent(obj, stateIdx, event) {
       name = sounds[i % sounds.length].name;
       seq[key] = (i + 1) % sounds.length;
     }
-    _playSound(name);
+    _playSound(name, _getObjWorldPos(obj));
     return;
   }
   const legacy = event === 'enter' ? state.enterSound : state.exitSound;
-  _playSound(legacy);
+  _playSound(legacy, _getObjWorldPos(obj));
+}
+
+function _getObjWorldPos(obj) {
+  if (!obj?.isObject3D) return null;
+  const p = new THREE.Vector3();
+  obj.getWorldPosition(p);
+  return p;
 }
 
 export function fireButtonTrigger(obj, trigger) {

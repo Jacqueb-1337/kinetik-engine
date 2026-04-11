@@ -59,6 +59,7 @@ const E = {
   floorPlane:    null,        // invisible raycasting floor
 
   importedModels: [],         // [{name, path}]
+  importedActors: [],         // [{name, path}]
   availableTextures: [],      // ['floor', 'wall', 'ceiling', ...]
   texCache:       new Map(),  // texName -> THREE.Texture (editor-side cache)
   groups:         {},         // { gid: { name, ids: Set } }
@@ -104,6 +105,8 @@ const E = {
   facePickMode:      false,
   faceHighlightMesh: null,   // THREE.Mesh child of selected object
   uvEditorImage:     null,   // Image loaded for UV canvas preview
+
+  _stateDragSrc: undefined,  // index of state item being dragged for reorder
 };
 
 // â”€â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -242,6 +245,7 @@ async function init() {
 
   // List imported models from electron
   await refreshModelList();
+  await refreshActorList();
 
   // Wire up UI
   setupUI();
@@ -469,6 +473,25 @@ function levelToJSON() {
       objects.push(csgEntry);
       return;
     }
+    if (obj.userData.primType === 'merged-model') {
+      const mergedEntry = {
+        id:           obj.userData.editorId,
+        label:        obj.userData.label || '',
+        type:         'merged-model',
+        collidable:   obj.userData.collidable !== false,
+        castShadow:   obj.castShadow !== false,
+        pos:          [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
+        rot:          [+(obj.rotation.x*DEG).toFixed(2), +(obj.rotation.y*DEG).toFixed(2), +(obj.rotation.z*DEG).toFixed(2)],
+        size:         [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
+        mergedMeshes: _serializeMergedMeshes(obj),
+      };
+      if (obj.userData.meshOverrides) mergedEntry.meshOverrides = obj.userData.meshOverrides;
+      if (obj.userData.states?.length) mergedEntry.states = obj.userData.states;
+      if (obj.userData.links?.length)  mergedEntry.links  = obj.userData.links;
+      if (obj.userData.noSelfInteract) mergedEntry.noSelfInteract = true;
+      objects.push(mergedEntry);
+      return;
+    }
     const entry = {
       id:         obj.userData.editorId,
       label:      obj.userData.label || '',
@@ -487,9 +510,21 @@ function levelToJSON() {
     const _opacity = getMeshOpacity(obj);
     if (_opacity < 1) entry.opacity = +_opacity.toFixed(3);
     if (obj.userData.primType === 'model') entry.modelPath = obj.userData.modelPath;
+    if (obj.userData.primType === 'actor-spawn') {
+      entry.actorModel      = obj.userData.actorModel;
+      entry.spawnRadius     = obj.userData.spawnRadius ?? 0;
+      entry.persistent      = obj.userData.persistent !== false;
+      entry.singleInstance  = obj.userData.singleInstance === true;
+      if (obj.userData.meshOverrides && Object.keys(obj.userData.meshOverrides).length)
+        entry.meshOverrides = obj.userData.meshOverrides;
+      if (obj.userData.animations?.length)
+        entry.animations = obj.userData.animations;
+    }
     if (obj.userData.faceTextures)   entry.faceTextures   = obj.userData.faceTextures;
     if (obj.userData.meshOverrides)  entry.meshOverrides  = obj.userData.meshOverrides;
     if (obj.userData.masterTexture)  entry.masterTexture  = obj.userData.masterTexture;
+    if (obj.userData.roughness !== undefined) entry.roughness = obj.userData.roughness;
+    if (obj.userData.metalness !== undefined) entry.metalness = obj.userData.metalness;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -570,8 +605,9 @@ async function loadLevel(name) {
     const gltfLoader = new GLTFLoader();
     const fbxLoader  = new FBXLoader();
     const promises = data.objects.map(entry => {
-      if (entry.type === 'csg-result') return spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
-      if (entry.type === 'model')      return loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
+      if (entry.type === 'csg-result')    return spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
+      if (entry.type === 'model')          return loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
+      if (entry.type === 'merged-model')   return Promise.resolve(spawnMergedModel(entry));
       return Promise.resolve(spawnPrimFromEntry(entry));
     });
     await Promise.allSettled(promises);
@@ -607,6 +643,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
     const loader = ext === 'fbx' ? fbxLoader : gltfLoader;
     loader.load(ASSET_ROOT + entry.modelPath, result => {
       const root = result.scene || result;
+      root.castShadow = entry.castShadow !== false;
       root.traverse(c => { if (c.isMesh) { c.castShadow = entry.castShadow !== false; c.receiveShadow = true; } });
       applyEntryTransform(root, entry);
       root.userData.primType   = 'model';
@@ -642,7 +679,39 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
       }
       if (entry.masterTexture) {
         root.userData.masterTexture = entry.masterTexture;
-        _applyMasterTexture(root, entry.masterTexture);
+        root.userData.roughness = entry.roughness;
+        root.userData.metalness = entry.metalness;
+        const col = new THREE.Color(entry.color ?? '#aaaacc');
+        const roughness = entry.roughness ?? 1;
+        const metalness = entry.metalness ?? 0;
+        const loader = new THREE.TextureLoader();
+        const tryUrl = url => new Promise(res => loader.load(ASSET_ROOT + 'textures/' + url, res, undefined, () => res(null)));
+        (async () => {
+          let tex = await tryUrl(entry.masterTexture + '.png');
+          if (!tex) tex = await tryUrl(entry.masterTexture + '.jpg');
+          if (!tex) return;
+          tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+          root.traverse(c => {
+            if (!c.isMesh) return;
+            c.material = new THREE.MeshStandardMaterial({ color: col, map: tex, roughness, metalness });
+          });
+        })();
+      } else if (entry.roughness !== undefined || entry.metalness !== undefined) {
+        root.userData.roughness = entry.roughness;
+        root.userData.metalness = entry.metalness;
+        root.traverse(c => {
+          if (!c.isMesh || !c.material) return;
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          mats.forEach((m, i) => {
+            if (!m.isMeshStandardMaterial) {
+              const nm = new THREE.MeshStandardMaterial({ color: m.color, map: m.map, roughness: entry.roughness ?? 1, metalness: entry.metalness ?? 0 });
+              if (Array.isArray(c.material)) c.material[i] = nm; else c.material = nm;
+            } else {
+              if (entry.roughness !== undefined) { m.roughness = entry.roughness; m.needsUpdate = true; }
+              if (entry.metalness !== undefined) { m.metalness = entry.metalness; m.needsUpdate = true; }
+            }
+          });
+        });
       }
       E.placedGroup.add(root);
       resolve();
@@ -1090,6 +1159,30 @@ function updateFaceHighlight(mesh, faceIdx) {
 }
 
 function spawnPrimFromEntry(entry) {
+  if (entry.type === 'actor-spawn') {
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 10, 6),
+      new THREE.MeshStandardMaterial({ color: 0x44aaff, opacity: 0.7, transparent: true })
+    );
+    applyEntryTransform(mesh, entry);
+    mesh.userData = {
+      primType:       'actor-spawn',
+      actorModel:     entry.actorModel || '',
+      editorId:       entry.id,
+      label:          entry.label || '',
+      collidable:     false,
+      spawnRadius:    entry.spawnRadius ?? 0,
+      persistent:     entry.persistent !== false,
+      singleInstance: entry.singleInstance === true,
+      meshOverrides:  entry.meshOverrides ? { ...entry.meshOverrides } : {},
+      animations:     entry.animations ? [...entry.animations] : [],
+    };
+    mesh.name = entry.label || ('ActorSpawn_' + entry.id);
+    if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
+    if (entry.links?.length)  mesh.userData.links = entry.links;
+    E.placedGroup.add(mesh);
+    return mesh;
+  }
   if (isLightType(entry.type)) {
     const group = makeLightGroup(entry.type, {
       lightColor: entry.lightColor || '#ffffff',
@@ -1178,16 +1271,19 @@ function beginPlace(typeStr) {
   updatePlacingHint(true);
 
   const isModel   = typeStr.startsWith('model:');
+  const isActor   = typeStr.startsWith('actor:');
   const isLight   = isLightType(typeStr);
   const isTrigger = isTriggerType(typeStr);
   let ghostGeo;
   if (isLight) {
     ghostGeo = new THREE.SphereGeometry(0.18, 8, 6);
+  } else if (isActor) {
+    ghostGeo = new THREE.SphereGeometry(0.3, 8, 6);
   } else {
     ghostGeo = isModel ? new THREE.BoxGeometry(1,1,1) : (PRIM_GEOS[typeStr]?.() ?? new THREE.BoxGeometry(1,1,1));
   }
   const trigGhostColor = E.placingType === 'custom-trigger' ? 0xffaa44 : 0x44ffcc;
-  const ghostColor = isLight ? 0xffee44 : (isTrigger ? trigGhostColor : 0xe94560);
+  const ghostColor = isLight ? 0xffee44 : (isTrigger ? trigGhostColor : (isActor ? 0x44aaff : 0xe94560));
   E.ghostMesh = new THREE.Mesh(ghostGeo,
     new THREE.MeshStandardMaterial({ color: ghostColor, opacity: 0.45, transparent: true, depthWrite: false })
   );
@@ -1200,7 +1296,7 @@ function cancelPlace() {
   if (E.ghostMesh) { E.scene.remove(E.ghostMesh); E.ghostMesh = null; }
   E.placingType = null;
   updatePlacingHint(false);
-  document.querySelectorAll('.prim-btn, .model-item').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.prim-btn, .model-item, .actor-item').forEach(b => b.classList.remove('active'));
 }
 
 function commitPlace(worldPos) {
@@ -1248,17 +1344,30 @@ function commitPlace(worldPos) {
     pushUndo();
     E.placedGroup.add(mesh);
     selectObj(mesh); updateSceneList(); markDirty();
-  } else {
-    const mesh = makePrimMesh(E.placingType);
+  } else if (E.placingType.startsWith('actor:')) {
+    const actorPath = E.placingType.slice(6);
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.3, 10, 6),
+      new THREE.MeshStandardMaterial({ color: 0x44aaff, opacity: 0.7, transparent: true })
+    );
     mesh.position.copy(worldPos);
-    mesh.userData = { primType: E.placingType, editorId: id, label: '', collidable: true };
-    mesh.name = E.placingType + '_' + id;
+    mesh.userData = {
+      primType:       'actor-spawn',
+      actorModel:     actorPath,
+      editorId:       id,
+      label:          '',
+      collidable:     false,
+      spawnRadius:    0,
+      persistent:     true,
+      singleInstance: false,
+      meshOverrides:  {},
+      animations:     [],
+    };
+    mesh.name = 'ActorSpawn_' + id;
     pushUndo();
     E.placedGroup.add(mesh);
     selectObj(mesh); updateSceneList(); markDirty();
-  }
-  cancelPlace();
-}
+  } else {
 
 // â”€â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function selectObj(obj) {
@@ -1340,6 +1449,9 @@ function updateProps(obj) {
   const emissiveRow = document.getElementById('emissive-row');
   const emissiveColorEl = document.getElementById('obj-emissive-color');
   const emissiveIntEl   = document.getElementById('obj-emissive-intensity');
+  const materialRow     = document.getElementById('material-row');
+  const roughnessEl     = document.getElementById('obj-roughness');
+  const metalnessEl     = document.getElementById('obj-metalness');
   const labelEl   = document.getElementById('obj-label');
   const lightProps  = document.getElementById('light-props');
   const geomProps   = document.getElementById('geom-props');
@@ -1361,6 +1473,8 @@ function updateProps(obj) {
     if (geomProps)        geomProps.style.display        = 'none';
     if (textureSection)   textureSection.style.display   = 'none';
     if (triggerProps) triggerProps.style.display = 'none';
+    const actorSpawnSection0 = document.getElementById('actor-spawn-section');
+    if (actorSpawnSection0) actorSpawnSection0.style.display = 'none';
     setGroupDisplay(null);
     renderStatesPanel(null);
     renderLinksPanel(null);
@@ -1370,12 +1484,29 @@ function updateProps(obj) {
   const isLight     = isLightType(obj.userData.primType);
   const isTrigger   = isTriggerType(obj.userData.primType);
   const isCsgResult = obj.userData.primType === 'csg-result';
-  const isPrimitive = !isLight && !isTrigger && obj.userData.primType !== 'model' && !isCsgResult;
-  const hasTexture  = isPrimitive || isCsgResult; // CSG results can still have textures
-  const isModel     = obj.userData.primType === 'model';
+  const isMerged    = obj.userData.primType === 'merged-model';
+  const isActorSpawn = obj.userData.primType === 'actor-spawn';
+  const isPrimitive = !isLight && !isTrigger && obj.userData.primType !== 'model' && !isCsgResult && !isMerged && !isActorSpawn;
+  const hasTexture  = isPrimitive || isCsgResult;
+  const isModel     = obj.userData.primType === 'model' || isMerged;
 
   const meshEditSection = document.getElementById('mesh-edit-section');
   if (meshEditSection) meshEditSection.style.display = isModel ? '' : 'none';
+
+  const actorSpawnSection = document.getElementById('actor-spawn-section');
+  if (actorSpawnSection) {
+    actorSpawnSection.style.display = isActorSpawn ? '' : 'none';
+    if (isActorSpawn) {
+      const modelNameEl = document.getElementById('actor-spawn-model-name');
+      if (modelNameEl) modelNameEl.textContent = (obj.userData.actorModel || '').split('/').pop() || '-';
+      const radiusEl = document.getElementById('actor-spawn-radius');
+      if (radiusEl && document.activeElement !== radiusEl) radiusEl.value = obj.userData.spawnRadius ?? 0;
+      const persistEl = document.getElementById('actor-persistent');
+      if (persistEl) persistEl.checked = obj.userData.persistent !== false;
+      const singleEl = document.getElementById('actor-single-instance');
+      if (singleEl) singleEl.checked = obj.userData.singleInstance === true;
+    }
+  }
 
   if (selName) selName.textContent = obj.name;
   ['px','py','pz','sx','sy','sz','rx','ry','rz'].forEach(id => {
@@ -1415,6 +1546,16 @@ function updateProps(obj) {
     if (showEmissive) {
       if (emissiveColorEl) emissiveColorEl.value = obj.userData.emissiveColor ?? '#ffffff';
       if (emissiveIntEl)   emissiveIntEl.value   = obj.userData.emissiveIntensity ?? 0;
+    }
+  }
+
+  // Material row (roughness/metalness) — shown for non-light, non-trigger objects
+  if (materialRow) {
+    const showMat = !isLight && !isTrigger;
+    materialRow.style.display = showMat ? '' : 'none';
+    if (showMat && document.activeElement !== roughnessEl && document.activeElement !== metalnessEl) {
+      if (roughnessEl) roughnessEl.value = +(obj.userData.roughness ?? 1).toFixed(2);
+      if (metalnessEl) metalnessEl.value = +(obj.userData.metalness ?? 0).toFixed(2);
     }
   }
 
@@ -1883,9 +2024,216 @@ function makeDraggable(modalId, handleId) {
   });
 }
 
+function openMergeDialog() {
+  const candidates = [];
+  E.placedGroup.children.forEach(obj => {
+    if (obj.userData.isEditorHelper) return;
+    const t = obj.userData.primType;
+    if (isLightType(t) || isTriggerType(t)) return;
+    candidates.push(obj);
+  });
+  if (!candidates.length) { setStatus('No mergeable objects in scene'); return; }
+
+  const preSelected = new Set();
+  const gid = E.selected ? findGroupOfObj(E.selected) : null;
+  if (gid) {
+    const g = E.groups[gid];
+    candidates.forEach(obj => { if (g.ids.has(obj.userData.editorId)) preSelected.add(obj.userData.editorId); });
+  } else if (E.selected) {
+    preSelected.add(E.selected.userData.editorId);
+  } else {
+    candidates.forEach(obj => preSelected.add(obj.userData.editorId));
+  }
+
+  const list = document.getElementById('merge-object-list');
+  list.innerHTML = '';
+  candidates.forEach(obj => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:3px 4px;background:#0d0d20;border-radius:3px';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.checked = preSelected.has(obj.userData.editorId);
+    chk.style.cssText = 'width:20px;flex-shrink:0;cursor:pointer';
+    chk.dataset.eid = obj.userData.editorId;
+    const lbl = document.createElement('span');
+    lbl.textContent = obj.name || (obj.userData.primType + '_' + obj.userData.editorId);
+    lbl.style.cssText = 'font-size:11px;color:#aaaacc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const numInput = document.createElement('input');
+    numInput.type = 'number';
+    numInput.min = '1';
+    numInput.value = '1';
+    numInput.className = 'prop-input';
+    numInput.style.cssText = 'width:52px;font-size:11px;text-align:center';
+    numInput.dataset.eid = obj.userData.editorId;
+    row.appendChild(chk);
+    row.appendChild(lbl);
+    row.appendChild(numInput);
+    list.appendChild(row);
+  });
+
+  const nameInput = document.getElementById('merge-result-name');
+  nameInput.value = gid ? (E.groups[gid]?.name || 'merged') : (E.selected?.userData.label || 'merged');
+  document.getElementById('merge-modal').style.display = 'flex';
+}
+
+function closeMergeDialog() {
+  document.getElementById('merge-modal').style.display = 'none';
+}
+
+function executeMerge() {
+  const list = document.getElementById('merge-object-list');
+  const resultName = document.getElementById('merge-result-name').value.trim() || 'merged';
+
+  const plan = [];
+  list.querySelectorAll('div').forEach(row => {
+    const chk = row.querySelector('input[type=checkbox]');
+    const num = row.querySelector('input[type=number]');
+    if (!chk || !num || !chk.checked) return;
+    const eid = parseInt(chk.dataset.eid);
+    const obj = E.placedGroup.children.find(o => o.userData.editorId === eid);
+    if (!obj) return;
+    plan.push({ obj, meshGroup: parseInt(num.value) || 1 });
+  });
+
+  if (!plan.length) { setStatus('Select at least one object to merge'); return; }
+
+  pushUndo();
+  closeMergeDialog();
+
+  const groups = {};
+  plan.forEach(({ obj, meshGroup }) => {
+    if (!groups[meshGroup]) groups[meshGroup] = [];
+    groups[meshGroup].push(obj);
+  });
+
+  const centroid = new THREE.Vector3();
+  plan.forEach(({ obj }) => { const wp = new THREE.Vector3(); obj.getWorldPosition(wp); centroid.add(wp); });
+  centroid.divideScalar(plan.length);
+
+  const root = new THREE.Group();
+  const meshOverrides = {};
+  const sortedNums = Object.keys(groups).map(Number).sort((a, b) => a - b);
+
+  sortedNums.forEach(gNum => {
+    const srcObjs = groups[gNum];
+    const allMeshes = [];
+    srcObjs.forEach(o => {
+      if (o.isMesh) allMeshes.push(o);
+      else o.traverse(c => { if (c.isMesh) allMeshes.push(c); });
+    });
+    if (!allMeshes.length) return;
+    const geo = mergeGeometriesWorldSpace(allMeshes);
+    if (!geo) return;
+    geo.translate(-centroid.x, -centroid.y, -centroid.z);
+    const srcMat = allMeshes[0].material;
+    const mat = (srcMat && !Array.isArray(srcMat))
+      ? srcMat.clone()
+      : new THREE.MeshStandardMaterial({ color: '#aaaacc', roughness: 1, metalness: 0 });
+    mat.side = THREE.DoubleSide;
+    const meshName = 'mesh_' + gNum;
+    const childMesh = new THREE.Mesh(geo, mat);
+    childMesh.name = meshName;
+    childMesh.castShadow = true;
+    childMesh.receiveShadow = true;
+    root.add(childMesh);
+    meshOverrides[meshName] = {};
+  });
+
+  if (!root.children.length) { setStatus('Merge failed: no geometry found'); return; }
+
+  const id = E.nextId++;
+  root.position.copy(centroid);
+  root.castShadow = true;
+  root.receiveShadow = true;
+  root.userData = {
+    primType:      'merged-model',
+    editorId:      id,
+    label:         resultName,
+    collidable:    true,
+    meshOverrides: meshOverrides,
+  };
+  root.name = resultName;
+
+  plan.forEach(({ obj }) => {
+    const srcId = obj.userData.editorId;
+    for (const g of Object.values(E.groups)) g.ids.delete(srcId);
+    E.placedGroup.remove(obj);
+  });
+  for (const gid of Object.keys(E.groups)) { if (E.groups[gid].ids.size === 0) delete E.groups[gid]; }
+
+  E.placedGroup.add(root);
+  selectObj(root);
+  updateSceneList();
+  updateGroupsPanel();
+  markDirty();
+  setStatus(`Merged ${plan.length} objects into "${resultName}"`);
+}
+
+function _serializeMergedMeshes(obj) {
+  const meshes = [];
+  obj.children.forEach(child => {
+    if (!child.isMesh) return;
+    const geo = child.geometry;
+    const pos = geo.attributes.position?.array;
+    const nor = geo.attributes.normal?.array;
+    const uv  = geo.attributes.uv?.array;
+    const idx = geo.index?.array;
+    meshes.push({
+      name:      child.name,
+      positions: pos ? Array.from(pos) : [],
+      normals:   nor ? Array.from(nor) : null,
+      uvs:       uv  ? Array.from(uv)  : null,
+      indices:   idx ? Array.from(idx) : null,
+    });
+  });
+  return meshes;
+}
+
+function spawnMergedModel(entry) {
+  const root = new THREE.Group();
+  (entry.mergedMeshes || []).forEach(md => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(md.positions, 3));
+    if (md.normals) geo.setAttribute('normal', new THREE.Float32BufferAttribute(md.normals, 3));
+    if (md.uvs)     geo.setAttribute('uv',     new THREE.Float32BufferAttribute(md.uvs, 2));
+    if (md.indices) geo.setIndex(new THREE.BufferAttribute(new Uint32Array(md.indices), 1));
+    const mat = new THREE.MeshStandardMaterial({ color: '#aaaacc', roughness: 1, metalness: 0, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = md.name;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    root.add(mesh);
+  });
+  applyEntryTransform(root, entry);
+  root.castShadow = true;
+  root.receiveShadow = true;
+  root.userData = {
+    primType:   'merged-model',
+    editorId:   entry.id,
+    label:      entry.label || '',
+    collidable: entry.collidable !== false,
+  };
+  root.name = entry.label || ('Merged_' + entry.id);
+  if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
+  if (entry.links?.length)     root.userData.links  = entry.links;
+  if (entry.noSelfInteract)    root.userData.noSelfInteract = true;
+  if (entry.meshOverrides) {
+    root.userData.meshOverrides = entry.meshOverrides;
+    root.traverse(c => {
+      if (!c.isMesh) return;
+      const ovr = entry.meshOverrides[c.name];
+      if (!ovr) return;
+      if (ovr.visible === false) c.visible = false;
+      if (ovr.texture) _applyMeshEditorTexture(c, ovr.texture);
+    });
+  }
+  E.placedGroup.add(root);
+  return root;
+}
+
 function openMeshEditor() {
   const obj = E.selected;
-  if (!obj || obj.userData.primType !== 'model') return;
+  if (!obj || (obj.userData.primType !== 'model' && obj.userData.primType !== 'merged-model')) return;
   document.getElementById('mesh-model-name').textContent = obj.name || obj.userData.modelPath || 'Model';
 
   const masterIn = document.getElementById('mesh-master-tex');
@@ -1994,6 +2342,174 @@ function openMeshEditor() {
 function closeMeshEditor() {
   _setMeshHighlight(null, null);
   document.getElementById('mesh-modal').style.display = 'none';
+}
+
+function openActorMeshEditor() {
+  const obj = E.selected;
+  if (!obj || obj.userData.primType !== 'actor-spawn') return;
+
+  const actorPath = obj.userData.actorModel;
+  document.getElementById('actor-mesh-model-name').textContent = actorPath.split('/').pop() || 'Actor';
+
+  if (!obj.userData.meshOverrides) obj.userData.meshOverrides = {};
+  const overrides = obj.userData.meshOverrides;
+
+  const masterIn = document.getElementById('actor-mesh-master-tex');
+  masterIn.value = obj.userData.masterTexture || '';
+  masterIn.onchange = () => {
+    const texName = masterIn.value.trim() || null;
+    obj.userData.masterTexture = texName || undefined;
+    markDirty();
+  };
+  document.getElementById('btn-actor-mesh-master-import').onclick = async () => {
+    if (!window.electron?.importTexture) return;
+    const name = await window.electron.importTexture();
+    if (!name) return;
+    await refreshTextureList();
+    masterIn.value = name;
+    obj.userData.masterTexture = name;
+    markDirty();
+  };
+  document.getElementById('btn-actor-mesh-master-clear').onclick = () => {
+    masterIn.value = '';
+    delete obj.userData.masterTexture;
+    markDirty();
+  };
+
+  const listEl = document.getElementById('actor-mesh-list');
+  listEl.innerHTML = '<div style="color:#666688;font-size:11px;padding:8px">Loading model meshes...</div>';
+  document.getElementById('actor-mesh-modal').style.display = 'flex';
+
+  const ext = actorPath.split('.').pop().toLowerCase();
+  const loader = ext === 'fbx' ? new FBXLoader() : new GLTFLoader();
+  loader.load(ASSET_ROOT + actorPath, result => {
+    const root = result.scene || result;
+    const meshes = [];
+    root.traverse(c => { if (c.isMesh) meshes.push(c); });
+    listEl.innerHTML = '';
+    meshes.forEach(mesh => {
+      const key = mesh.name || mesh.uuid;
+      const ovr = overrides[key] || {};
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:20px 1fr 130px 22px;gap:4px;align-items:center;padding:3px 6px;background:#0d0d20;border-radius:3px';
+
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.checked = ovr.visible !== false;
+      chk.style.cursor = 'pointer';
+      chk.addEventListener('change', () => {
+        if (!overrides[key]) overrides[key] = {};
+        overrides[key].visible = chk.checked;
+        markDirty();
+      });
+
+      const label = document.createElement('span');
+      label.textContent = mesh.name || '(unnamed)';
+      label.style.cssText = 'font-size:11px;color:#aaaacc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+
+      const texIn = document.createElement('input');
+      texIn.type = 'text';
+      texIn.className = 'prop-input';
+      texIn.value = ovr.texture || '';
+      texIn.placeholder = 'texture name';
+      texIn.style.cssText = 'font-size:11px;width:100%';
+      texIn.setAttribute('list', 'tex-datalist');
+      texIn.addEventListener('change', () => {
+        const texName = texIn.value.trim() || null;
+        if (!overrides[key]) overrides[key] = {};
+        overrides[key].texture = texName;
+        markDirty();
+      });
+
+      const impBtn = document.createElement('button');
+      impBtn.className = 'btn';
+      impBtn.textContent = '+';
+      impBtn.title = 'Import texture';
+      impBtn.style.cssText = 'padding:2px 4px;font-size:11px';
+      impBtn.addEventListener('click', async () => {
+        if (!window.electron?.importTexture) return;
+        const name = await window.electron.importTexture();
+        if (!name) return;
+        await refreshTextureList();
+        texIn.value = name;
+        if (!overrides[key]) overrides[key] = {};
+        overrides[key].texture = name;
+        markDirty();
+      });
+
+      row.appendChild(chk);
+      row.appendChild(label);
+      row.appendChild(texIn);
+      row.appendChild(impBtn);
+      listEl.appendChild(row);
+    });
+    if (!meshes.length) {
+      listEl.innerHTML = '<div style="color:#666688;font-size:11px;padding:8px">No meshes found in model.</div>';
+    }
+  }, undefined, () => {
+    listEl.innerHTML = '<div style="color:#e94560;font-size:11px;padding:8px">Failed to load model.</div>';
+  });
+}
+
+function closeActorMeshEditor() {
+  document.getElementById('actor-mesh-modal').style.display = 'none';
+}
+
+async function openActorAnimsModal() {
+  const obj = E.selected;
+  if (!obj || obj.userData.primType !== 'actor-spawn') return;
+  document.getElementById('actor-anims-model-name').textContent = (obj.userData.actorModel || '').split('/').pop() || 'Actor';
+  if (!obj.userData.animations) obj.userData.animations = [];
+  _refreshActorAnimsList(obj);
+  document.getElementById('actor-anims-modal').style.display = 'flex';
+}
+
+function _refreshActorAnimsList(obj) {
+  const listEl = document.getElementById('actor-anims-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  const anims = obj.userData.animations || [];
+  if (!anims.length) {
+    listEl.innerHTML = '<div style="color:#666688;font-size:11px;padding:8px">No animations imported yet.</div>';
+    return;
+  }
+  anims.forEach((anim, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;grid-template-columns:1fr 120px 22px;gap:4px;align-items:center;padding:3px 6px;background:#0d0d20;border-radius:3px';
+
+    const nameIn = document.createElement('input');
+    nameIn.type = 'text';
+    nameIn.className = 'prop-input';
+    nameIn.value = anim.name || '';
+    nameIn.placeholder = 'clip name (key in code)';
+    nameIn.style.cssText = 'font-size:11px;width:100%';
+    nameIn.addEventListener('change', () => { anims[i].name = nameIn.value.trim(); markDirty(); });
+
+    const fileSpan = document.createElement('span');
+    fileSpan.textContent = (anim.file || '').split('/').pop() || '-';
+    fileSpan.style.cssText = 'font-size:10px;color:#666688;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    fileSpan.title = anim.file || '';
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn';
+    delBtn.textContent = '\u00d7';
+    delBtn.style.cssText = 'padding:2px 4px;font-size:12px';
+    delBtn.addEventListener('click', () => {
+      anims.splice(i, 1);
+      _refreshActorAnimsList(obj);
+      markDirty();
+    });
+
+    row.appendChild(nameIn);
+    row.appendChild(fileSpan);
+    row.appendChild(delBtn);
+    listEl.appendChild(row);
+  });
+}
+
+function closeActorAnimsModal() {
+  document.getElementById('actor-anims-modal').style.display = 'none';
 }
 
 function _renderSoundSection(container, soundDef, onUpdate) {
@@ -2592,6 +3108,27 @@ function mergeGeometriesWorldSpace(meshes) {
     const geo = mesh.geometry.clone();
     geo.applyMatrix4(mesh.matrixWorld);
 
+    // If the world matrix has a negative determinant (odd number of negative scales),
+    // winding order is flipped which breaks CSG inside/outside detection — flip it back.
+    if (mesh.matrixWorld.determinant() < 0) {
+      const idx = geo.index;
+      if (idx) {
+        for (let i = 0; i < idx.array.length; i += 3) {
+          const tmp = idx.array[i + 1]; idx.array[i + 1] = idx.array[i + 2]; idx.array[i + 2] = tmp;
+        }
+      } else {
+        const pos = geo.attributes.position;
+        for (let i = 0; i < pos.count; i += 3) {
+          for (let c = 0; c < 3; c++) {
+            const tmp = pos.getComponent(i + 1, c);
+            pos.setComponent(i + 1, c, pos.getComponent(i + 2, c));
+            pos.setComponent(i + 2, c, tmp);
+          }
+        }
+      }
+      geo.computeVertexNormals();
+    }
+
     const pos  = geo.attributes.position;
     const norm = geo.attributes.normal;
     const uv   = geo.attributes.uv;
@@ -2771,8 +3308,9 @@ async function restoreSnapshot(json) {
   }
   const gltfLoader = new GLTFLoader(), fbxLoader = new FBXLoader();
   for (const entry of (data.objects || [])) {
-    if (entry.type === 'csg-result') await spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
-    else if (entry.type === 'model') await loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
+    if (entry.type === 'csg-result')          await spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
+    else if (entry.type === 'model')           await loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
+    else if (entry.type === 'merged-model')    spawnMergedModel(entry);
     else spawnPrimFromEntry(entry);
   }
   updateSceneList(); updateGroupsPanel(); markDirty();
@@ -2812,6 +3350,34 @@ async function refreshModelList() {
   renderModelList();
   await refreshTextureList();
   await refreshSoundList();
+}
+
+async function refreshActorList() {
+  if (!window.electron?.listActors) return;
+  try { E.importedActors = await window.electron.listActors(); } catch { E.importedActors = []; }
+  renderActorList();
+}
+
+function renderActorList() {
+  const empty = document.getElementById('actor-empty');
+  const list  = document.getElementById('actor-list');
+  if (!list) return;
+  list.querySelectorAll('.actor-item').forEach(el => el.remove());
+  if (!E.importedActors.length) { if (empty) empty.style.display = ''; return; }
+  if (empty) empty.style.display = 'none';
+  E.importedActors.forEach(a => {
+    const div = document.createElement('div');
+    div.className = 'actor-item model-item';
+    div.textContent = a.name;
+    div.title = a.path;
+    div.addEventListener('click', () => {
+      if (!E.levelName) { setStatus('Open or create a level first'); return; }
+      document.querySelectorAll('.prim-btn, .model-item, .actor-item').forEach(b => b.classList.remove('active'));
+      div.classList.add('active');
+      beginPlace('actor:' + a.path);
+    });
+    list.appendChild(div);
+  });
 }
 
 async function refreshTextureList() {
@@ -3108,6 +3674,7 @@ function renderStatesPanel(obj) {
 
     item.innerHTML = `
       <div class="state-item-header">
+        <span data-si="drag-handle" style="cursor:grab;color:#444466;font-size:12px;padding:0 4px 0 0;user-select:none;flex-shrink:0" title="Drag to reorder">&#8942;</span>
         <span style="font-size:10px;color:#5555aa;min-width:16px">${idx}</span>
         <input class="prop-input" data-si="name" value="${escHtml(state.name || ('State '+idx))}" style="flex:1">
         <input class="prop-input" data-si="dur" type="number" step="0.1" min="0" value="${state.duration ?? 0}" style="width:34px" title="Transition duration (s)">s
@@ -3528,6 +4095,30 @@ function renderStatesPanel(obj) {
     renderInputRows();
     item.appendChild(inputsSection);
 
+    item.setAttribute('draggable', 'true');
+    item.addEventListener('dragstart', e => {
+      E._stateDragSrc = idx;
+      e.dataTransfer.effectAllowed = 'move';
+      item.style.opacity = '0.5';
+    });
+    item.addEventListener('dragend', () => { item.style.opacity = ''; });
+    item.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      item.style.outline = '1px dashed #5577aa';
+    });
+    item.addEventListener('dragleave', () => { item.style.outline = ''; });
+    item.addEventListener('drop', e => {
+      e.preventDefault();
+      item.style.outline = '';
+      if (E._stateDragSrc === undefined || E._stateDragSrc === idx) return;
+      pushUndo();
+      const [moved] = obj.userData.states.splice(E._stateDragSrc, 1);
+      obj.userData.states.splice(idx, 0, moved);
+      renderStatesPanel(obj);
+      markDirty();
+    });
+
     list.appendChild(item);
   });
 
@@ -3910,6 +4501,32 @@ function setupUI() {
     });
     markDirty();
   });
+  document.getElementById('obj-roughness')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('obj-roughness')?.addEventListener('input', e => {
+    if (!E.selected) return;
+    const v = Math.max(0, Math.min(1, parseFloat(e.target.value) ?? 1));
+    E.selected.userData.roughness = v;
+    E.selected.traverse(c => {
+      if (c.isMesh && c.material) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { if ('roughness' in m) { m.roughness = v; m.needsUpdate = true; } });
+      }
+    });
+    markDirty();
+  });
+  document.getElementById('obj-metalness')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('obj-metalness')?.addEventListener('input', e => {
+    if (!E.selected) return;
+    const v = Math.max(0, Math.min(1, parseFloat(e.target.value) ?? 0));
+    E.selected.userData.metalness = v;
+    E.selected.traverse(c => {
+      if (c.isMesh && c.material) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { if ('metalness' in m) { m.metalness = v; m.needsUpdate = true; } });
+      }
+    });
+    markDirty();
+  });
   document.getElementById('obj-opacity')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('obj-opacity')?.addEventListener('input', e => {
     if (!E.selected || !E.selected.material) return;
@@ -4079,6 +4696,7 @@ function setupUI() {
   makeDraggable('uv-modal', 'uv-modal-drag');
   makeDraggable('mesh-modal', 'mesh-modal-drag');
   makeDraggable('sound-list-modal', 'sound-list-modal-drag');
+  makeDraggable('actor-mesh-modal', 'actor-mesh-modal-drag');
 
   document.getElementById('btn-sound-list-close')?.addEventListener('click', closeSoundListModal);
 
@@ -4217,6 +4835,9 @@ function setupUI() {
     else beginPivot();
   });
   document.getElementById('btn-reset-pivot').addEventListener('click', resetPivot);
+  document.getElementById('btn-merge').addEventListener('click', openMergeDialog);
+  document.getElementById('btn-merge-confirm').addEventListener('click', executeMerge);
+  document.getElementById('btn-merge-modal-close').addEventListener('click', closeMergeDialog);
 
   // Scene list collapse
   document.getElementById('btn-toggle-scene-list').addEventListener('click', () => {
@@ -4224,6 +4845,67 @@ function setupUI() {
     const open = wrap.style.display !== 'none';
     wrap.style.display = open ? 'none' : '';
     document.getElementById('btn-toggle-scene-list').textContent = open ? '>' : 'v';
+  });
+
+  // Actor import
+  document.getElementById('btn-import-actor')?.addEventListener('click', async () => {
+    if (!window.electron?.importActor) { setStatus('Actor import requires Electron'); return; }
+    const p = await window.electron.importActor();
+    if (p) {
+      await refreshActorList();
+      setStatus(`Imported actor: ${p.split(/[\\/]/).pop()}`);
+    }
+  });
+
+  // Actor spawn property inputs
+  document.getElementById('actor-spawn-radius')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('actor-spawn-radius')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType === 'actor-spawn') {
+      E.selected.userData.spawnRadius = parseFloat(e.target.value) || 0;
+      markDirty();
+    }
+  });
+  document.getElementById('actor-persistent')?.addEventListener('change', e => {
+    if (E.selected?.userData.primType === 'actor-spawn') {
+      E.selected.userData.persistent = e.target.checked;
+      markDirty();
+    }
+  });
+  document.getElementById('actor-single-instance')?.addEventListener('change', e => {
+    if (E.selected?.userData.primType === 'actor-spawn') {
+      E.selected.userData.singleInstance = e.target.checked;
+      markDirty();
+    }
+  });
+
+  // Actor modal buttons
+  document.getElementById('btn-actor-mesh-edit')?.addEventListener('click', openActorMeshEditor);
+  document.getElementById('btn-actor-anims')?.addEventListener('click', openActorAnimsModal);
+  document.getElementById('btn-actor-mesh-close')?.addEventListener('click', closeActorMeshEditor);
+  document.getElementById('btn-actor-anims-close')?.addEventListener('click', closeActorAnimsModal);
+  document.getElementById('btn-actor-import-anim')?.addEventListener('click', async () => {
+    const obj = E.selected;
+    if (!obj || obj.userData.primType !== 'actor-spawn') return;
+    if (!window.electron?.importActorAnim) return;
+    const filePath = await window.electron.importActorAnim(obj.userData.actorModel);
+    if (!filePath) return;
+    if (!obj.userData.animations) obj.userData.animations = [];
+    const clipName = filePath.split('/').pop().replace(/\.[^.]+$/, '');
+    obj.userData.animations.push({ name: clipName, file: filePath });
+    _refreshActorAnimsList(obj);
+    markDirty();
+  });
+  document.getElementById('btn-actor-ai')?.addEventListener('click', () => {
+    document.getElementById('actor-ai-modal').style.display = '';
+  });
+  document.getElementById('btn-actor-pathfinding')?.addEventListener('click', () => {
+    document.getElementById('actor-pathfinding-modal').style.display = '';
+  });
+  document.getElementById('btn-actor-ai-close')?.addEventListener('click', () => {
+    document.getElementById('actor-ai-modal').style.display = 'none';
+  });
+  document.getElementById('btn-actor-pathfinding-close')?.addEventListener('click', () => {
+    document.getElementById('actor-pathfinding-modal').style.display = 'none';
   });
 
   window.addEventListener('resize', resizeRenderer);
@@ -4245,12 +4927,14 @@ function updateTransformSnap() {
 }
 
 // Snap obj's nearest face to the nearest face of any other placed mesh (Alt-snap).
+// Each axis is evaluated independently so e.g. floor-snap (Y) doesn't block wall-snap (X).
 function snapToNearestFace(obj) {
   const THRESHOLD = 0.35;
   const box = new THREE.Box3().setFromObject(obj);
-  let bestAxis = null, bestDelta = 0, bestDist = THRESHOLD;
+  const best = { x: null, y: null, z: null };
 
-  const checkSnap = other => {
+  E.placedGroup.children.forEach(other => {
+    if (other === obj || other.userData.isEditorHelper || other.userData.isLightGroup) return;
     const otherBox = new THREE.Box3().setFromObject(other);
     ['x','y','z'].forEach(axis => {
       const perp = axis === 'x' ? ['y','z'] : axis === 'y' ? ['x','z'] : ['x','y'];
@@ -4259,21 +4943,20 @@ function snapToNearestFace(obj) {
       if (box.max[perp[1]] <= otherBox.min[perp[1]] || box.min[perp[1]] >= otherBox.max[perp[1]]) return;
       // selected +face vs other -face
       const d1 = Math.abs(box.max[axis] - otherBox.min[axis]);
-      if (d1 < bestDist) { bestDist = d1; bestAxis = axis; bestDelta = otherBox.min[axis] - box.max[axis]; }
+      if (d1 < THRESHOLD && (!best[axis] || d1 < best[axis].dist))
+        best[axis] = { delta: otherBox.min[axis] - box.max[axis], dist: d1 };
       // selected -face vs other +face
       const d2 = Math.abs(box.min[axis] - otherBox.max[axis]);
-      if (d2 < bestDist) { bestDist = d2; bestAxis = axis; bestDelta = otherBox.max[axis] - box.min[axis]; }
+      if (d2 < THRESHOLD && (!best[axis] || d2 < best[axis].dist))
+        best[axis] = { delta: otherBox.max[axis] - box.min[axis], dist: d2 };
     });
-  };
-
-  E.placedGroup.children.forEach(other => {
-    if (other === obj || other.userData.isEditorHelper || other.userData.isLightGroup) return;
-    checkSnap(other);
   });
-  if (bestAxis !== null) {
-    obj.position[bestAxis] += bestDelta;
-    obj.updateMatrixWorld(true);
-  }
+
+  let snapped = false;
+  ['x','y','z'].forEach(axis => {
+    if (best[axis]) { obj.position[axis] += best[axis].delta; snapped = true; }
+  });
+  if (snapped) obj.updateMatrixWorld(true);
 }
 
 // â”€â”€â”€ Collider helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

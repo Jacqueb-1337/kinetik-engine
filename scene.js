@@ -328,9 +328,11 @@ export function updateCamera() {
       gameState.smoothedCameraPos = headPos.clone();
     }
     
-    // Smoothly interpolate camera position (higher value = less damping)
+    // Smoothly interpolate camera position — tight on XZ, heavy damping on Y to kill run bob
     const dampingFactor = 0.25;
-    gameState.smoothedCameraPos.lerp(headPos, dampingFactor);
+    gameState.smoothedCameraPos.x += (headPos.x - gameState.smoothedCameraPos.x) * dampingFactor;
+    gameState.smoothedCameraPos.z += (headPos.z - gameState.smoothedCameraPos.z) * dampingFactor;
+    gameState.smoothedCameraPos.y += (headPos.y - gameState.smoothedCameraPos.y) * 0.03;
     
     // Calculate intended camera position (head + backward offset)
     const intendedCameraPos = gameState.smoothedCameraPos.clone();

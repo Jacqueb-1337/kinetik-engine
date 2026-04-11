@@ -155,7 +155,21 @@ function toggleFreecam() {
 
 function toggleCameraMode() {
   gameState.cameraMode = (gameState.cameraMode + 1) % 3;
-  console.log('Camera mode:', gameState.cameraMode, 'Player visible:', gameState.player && gameState.player.visible);
+  const isThirdPerson = gameState.cameraMode !== 0;
+  if (isThirdPerson) {
+    gameState.camera.layers.enable(1);
+  } else {
+    gameState.camera.layers.disable(1);
+  }
+  if (gameState.player) {
+    gameState.player.traverse(child => {
+      if (child.isMesh && child.material) {
+        child.material.transparent = !isThirdPerson;
+        child.material.opacity = isThirdPerson ? 1 : 0;
+        child.material.needsUpdate = true;
+      }
+    });
+  }
 }
 
 export function updateFreecam(delta) {
