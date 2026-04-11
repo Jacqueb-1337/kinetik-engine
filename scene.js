@@ -5,7 +5,7 @@ import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter';
 import { gameState, cameraDistance, platformConfig } from './globals.js';
 import { isFreecamActive as isFreecamActiveMobile } from './mobileControls.js';
 import { isFreecamActive as isFreecamActiveDesktop } from './input.js';
-import { advanceObjectState } from './stateManager.js';
+import { advanceObjectState, fireButtonTrigger } from './stateManager.js';
 
 // Split a combined mesh into its disconnected vertex islands (e.g. two knobs sharing one mesh)
 export function splitMeshIntoIslands(mesh) {
@@ -182,7 +182,7 @@ export function initScene() {
         r.setFromCamera(mouse, gameState.camera);
         return r.intersectObject(gameState.tvKnobMesh, true).length > 0;
       })();
-      if ((gameState.tvKnobInteractable || knobHovered) && gameState.tvKnobMesh) {
+      if (knobHovered && gameState.tvKnobMesh) {
         event.preventDefault();
         const step = THREE.MathUtils.degToRad(3);
         const direction = event.deltaY > 0 ? 1 : -1;
@@ -191,6 +191,12 @@ export function initScene() {
         const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x + direction * step, min, max);
         gameState.tvKnobMesh.rotation.x = newX;
         gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+      } else if (!gameState.isPaused && gameState.interactObj) {
+        const _st = gameState.interactObj.userData.states?.[gameState.interactObj.userData.currentState ?? 0];
+        if (_st?.buttons?.length) {
+          event.preventDefault();
+          fireButtonTrigger(gameState.interactObj, event.deltaY > 0 ? 'scrolldown' : 'scrollup');
+        }
       } else if (gameState.cameraMode === 1 || gameState.cameraMode === 2) {
         event.preventDefault();
         const zoomSpeed = 0.1;

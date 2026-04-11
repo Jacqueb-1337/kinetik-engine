@@ -9,6 +9,76 @@ export function setLevelVar(name, value) {
   levelVars[name] = value;
 }
 
+function _fireActiveVars(obj, newIdx) {
+  const states = obj.userData.states;
+  if (!states?.length) return;
+  states.forEach((s, i) => {
+    if (s.activeVar && s.activeVar in levelVars) levelVars[s.activeVar] = i === newIdx;
+  });
+}
+
+function _playSound(name) {
+  if (!name) return;
+  const exts = ['mp3', 'ogg', 'wav'];
+  const tryNext = i => {
+    if (i >= exts.length) return;
+    const a = new Audio(`sounds/${name}.${exts[i]}`);
+    a.onerror = () => tryNext(i + 1);
+    a.play().catch(() => {});
+  };
+  tryNext(0);
+}
+
+const _soundSeqState = new WeakMap();
+function _getSoundSeq(obj) {
+  if (!_soundSeqState.has(obj)) _soundSeqState.set(obj, {});
+  return _soundSeqState.get(obj);
+}
+
+function _playStateSoundsForEvent(obj, stateIdx, event) {
+  const state = obj.userData.states?.[stateIdx];
+  if (!state) return;
+  const def = event === 'enter' ? state.enterSounds : state.exitSounds;
+  if (def?.sounds?.length) {
+    const { mode, sounds } = def;
+    let name;
+    if (mode === 'random') {
+      const total = sounds.reduce((s, r) => s + (r.weight ?? 1), 0);
+      let r = Math.random() * total;
+      for (const s of sounds) { r -= (s.weight ?? 1); if (r <= 0) { name = s.name; break; } }
+      if (!name) name = sounds[sounds.length - 1].name;
+    } else {
+      const seq = _getSoundSeq(obj);
+      const key = stateIdx + '_' + event;
+      const i = seq[key] ?? 0;
+      name = sounds[i % sounds.length].name;
+      seq[key] = (i + 1) % sounds.length;
+    }
+    _playSound(name);
+    return;
+  }
+  const legacy = event === 'enter' ? state.enterSound : state.exitSound;
+  _playSound(legacy);
+}
+
+export function fireButtonTrigger(obj, trigger) {
+  const states = obj?.userData?.states;
+  if (!states?.length) return;
+  const state = states[obj.userData.currentState ?? 0];
+  if (!state?.buttons?.length) return;
+  for (const b of state.buttons) {
+    if (b.trigger !== trigger || !b.varName || !(b.varName in levelVars)) continue;
+    const cur = parseFloat(levelVars[b.varName]) || 0;
+    const val = parseFloat(b.varValue) || 0;
+    switch (b.varOp) {
+      case 'set': levelVars[b.varName] = val; break;
+      case 'add': levelVars[b.varName] = cur + val; break;
+      case 'sub': levelVars[b.varName] = cur - val; break;
+      case 'mul': levelVars[b.varName] = cur * val; break;
+    }
+  }
+}
+
 // Check all stateful objects for auto-condition transitions
 export function checkVarConditions() {
   for (const obj of gameState.statefulObjects) {
@@ -17,7 +87,11 @@ export function checkVarConditions() {
       const state = obj.userData.states[idx];
       if (!state.conditionEnabled || !state.condition) continue;
       if (_evalCondition(state.condition) && obj.userData.currentState !== idx) {
+        const prevIdx = obj.userData.currentState ?? 0;
         obj.userData.currentState = idx;
+        _fireActiveVars(obj, idx);
+        _playStateSoundsForEvent(obj, prevIdx, 'exit');
+        _playStateSoundsForEvent(obj, idx, 'enter');
         const dur = state.duration ?? 0;
         if (dur <= 0) _applyStateImmediate(obj, state);
         else _startStateAnim(obj, state, dur);
@@ -59,6 +133,9 @@ export function initStatefulObjects() {
     const states = obj.userData.states;
     if (!states?.length) continue;
     obj.userData.currentState = 0;
+    _fireActiveVars(obj, 0);
+    _soundSeqState.delete(obj);
+    _playStateSoundsForEvent(obj, 0, 'enter');
     _applyStateImmediate(obj, states[0]);
   }
 }
@@ -71,7 +148,11 @@ export function advanceObjectState(obj) {
   const states = obj.userData.states;
   if (!states?.length) return;
   const nextIdx = ((obj.userData.currentState ?? 0) + 1) % states.length;
+  const prevIdx = obj.userData.currentState ?? 0;
   obj.userData.currentState = nextIdx;
+  _fireActiveVars(obj, nextIdx);
+  _playStateSoundsForEvent(obj, prevIdx, 'exit');
+  _playStateSoundsForEvent(obj, nextIdx, 'enter');
   const state = states[nextIdx];
   const duration = state.duration ?? 0;
   if (duration <= 0) {
@@ -169,7 +250,11 @@ export function applyObjectStateImmediate(obj, stateIdx) {
   const states = obj.userData.states;
   if (!states?.length) return;
   const idx = Math.max(0, Math.min(stateIdx, states.length - 1));
+  const prevIdx = obj.userData.currentState ?? 0;
   obj.userData.currentState = idx;
+  _fireActiveVars(obj, idx);
+  _playStateSoundsForEvent(obj, prevIdx, 'exit');
+  _playStateSoundsForEvent(obj, idx, 'enter');
   _applyStateImmediate(obj, states[idx]);
 }
 

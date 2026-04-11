@@ -62,6 +62,7 @@ const E = {
   availableTextures: [],      // ['floor', 'wall', 'ceiling', ...]
   texCache:       new Map(),  // texName -> THREE.Texture (editor-side cache)
   groups:         {},         // { gid: { name, ids: Set } }
+  groupCollapsed: {},         // { gid: bool } — true = collapsed in panel
   levelVars:      {},         // { "lv_name": { type: "number"|"bool"|"string", initial: value } }
   nextId:         1,
   undoStack:      [],
@@ -456,7 +457,7 @@ function levelToJSON() {
         label:      obj.userData.label || '',
         type:       'csg-result',
         collidable: obj.userData.collidable !== false,
-        castShadow: obj.castShadow !== false,
+        castShadow: obj.userData.castShadow !== false,
         pos:        [0, 0, 0],
         rot:        [0, 0, 0],
         size:       [1, 1, 1],
@@ -471,7 +472,7 @@ function levelToJSON() {
       label:      obj.userData.label || '',
       type:       obj.userData.primType || 'model',
       collidable: obj.userData.collidable !== false,
-      castShadow: obj.castShadow !== false,
+      castShadow: obj.userData.castShadow !== false,
       pos:        [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
       rot:        [+(obj.rotation.x*DEG).toFixed(2), +(obj.rotation.y*DEG).toFixed(2), +(obj.rotation.z*DEG).toFixed(2)],
       size:       [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
@@ -486,6 +487,7 @@ function levelToJSON() {
     if (obj.userData.primType === 'model') entry.modelPath = obj.userData.modelPath;
     if (obj.userData.faceTextures)   entry.faceTextures   = obj.userData.faceTextures;
     if (obj.userData.meshOverrides)  entry.meshOverrides  = obj.userData.meshOverrides;
+    if (obj.userData.masterTexture)  entry.masterTexture  = obj.userData.masterTexture;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -552,6 +554,7 @@ async function loadLevel(name) {
 
   E.nextId = data?.nextId || 1;
   E.groups = {};
+  E.groupCollapsed = {};
   if (data?.groups) {
     for (const [gid, g] of Object.entries(data.groups)) {
       E.groups[gid] = { name: g.name, ids: new Set(g.ids) };
@@ -589,6 +592,7 @@ function clearPlaced() {
   E.undoStack = [];
   E.redoStack = [];
   E.groups = {};
+  E.groupCollapsed = {};
   E.levelVars = {};
   updateSceneList();
   updateGroupsPanel();
@@ -634,6 +638,10 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
           if (ovr.visible === false) c.visible = false;
           if (ovr.texture) _applyMeshEditorTexture(c, ovr.texture);
         });
+      }
+      if (entry.masterTexture) {
+        root.userData.masterTexture = entry.masterTexture;
+        _applyMasterTexture(root, entry.masterTexture);
       }
       E.placedGroup.add(root);
       resolve();
@@ -1545,31 +1553,40 @@ function updateGroupsPanel() {
 
   gids.forEach(gid => {
     const g = E.groups[gid];
+    if (!(gid in E.groupCollapsed)) E.groupCollapsed[gid] = true;
+    const collapsed = E.groupCollapsed[gid];
+
     const header = document.createElement('div');
     header.className = 'group-header';
-    header.innerHTML = `<span class="collapse-arrow">></span>
+    header.innerHTML = `<span class="collapse-arrow">${collapsed ? '>' : 'v'}</span>
       <span class="group-name-lbl">${escHtml(g.name)}</span>`;
+    header.addEventListener('click', () => {
+      E.groupCollapsed[gid] = !E.groupCollapsed[gid];
+      updateGroupsPanel();
+    });
     panel.appendChild(header);
 
-    [...g.ids].forEach(mid => {
-      const obj = E.placedGroup.children.find(o => o.userData.editorId === mid);
-      const row = document.createElement('div');
-      row.className = 'group-entry' + (obj === E.selected ? ' selected' : '');
-      row.innerHTML = `<span class="ge-name">${escHtml(obj ? obj.name : `(#${mid})`)}</span>
-        <button class="ge-rm" title="Remove from group">X</button>`;
-      row.addEventListener('click', e => {
-        if (e.target.classList.contains('ge-rm')) return;
-        if (obj) { selectObj(obj); E.orbit.target.copy(obj.position); }
+    if (!collapsed) {
+      [...g.ids].forEach(mid => {
+        const obj = E.placedGroup.children.find(o => o.userData.editorId === mid);
+        const row = document.createElement('div');
+        row.className = 'group-entry' + (obj === E.selected ? ' selected' : '');
+        row.innerHTML = `<span class="ge-name">${escHtml(obj ? obj.name : `(#${mid})`)}</span>
+          <button class="ge-rm" title="Remove from group">X</button>`;
+        row.addEventListener('click', e => {
+          if (e.target.classList.contains('ge-rm')) return;
+          if (obj) { selectObj(obj); E.orbit.target.copy(obj.position); }
+        });
+        row.querySelector('.ge-rm').addEventListener('click', () => {
+          g.ids.delete(mid);
+          if (g.ids.size === 0) delete E.groups[gid];
+          updateGroupsPanel();
+          if (E.selected) setGroupDisplay(findGroupOfObj(E.selected));
+          markDirty();
+        });
+        panel.appendChild(row);
       });
-      row.querySelector('.ge-rm').addEventListener('click', () => {
-        g.ids.delete(mid);
-        if (g.ids.size === 0) delete E.groups[gid];
-        updateGroupsPanel();
-        if (E.selected) setGroupDisplay(findGroupOfObj(E.selected));
-        markDirty();
-      });
-      panel.appendChild(row);
-    });
+    }
   });
 }
 
@@ -1647,12 +1664,56 @@ function cloneSelected() {
   pushUndo();
   const src = E.selected;
   const clone = src.clone();
-  clone.userData = { ...src.userData, editorId: E.nextId++ };
+  const srcUD = src.userData;
+  clone.userData = {
+    ...srcUD,
+    editorId: E.nextId++,
+    states: srcUD.states ? JSON.parse(JSON.stringify(srcUD.states)) : undefined,
+  };
   clone.position.x += 1;
   clone.name = src.name + '_copy';
   E.placedGroup.add(clone);
   selectObj(clone);
   updateSceneList(); markDirty();
+}
+
+function cloneGroup(gid) {
+  if (!gid || !E.groups[gid]) return;
+  pushUndo();
+  const g = E.groups[gid];
+  const memberIds = [...g.ids];
+  const idMap = {};
+
+  const clones = memberIds.map(mid => {
+    const src = E.placedGroup.children.find(o => o.userData.editorId === mid);
+    if (!src) return null;
+    const c = src.clone();
+    const newId = E.nextId++;
+    idMap[mid] = newId;
+    const srcUD = src.userData;
+    c.userData = {
+      ...srcUD,
+      editorId: newId,
+      states: srcUD.states ? JSON.parse(JSON.stringify(srcUD.states)) : undefined,
+      links: srcUD.links ? [...srcUD.links] : undefined,
+    };
+    c.position.x += 1;
+    c.name = src.name + '_copy';
+    return c;
+  }).filter(Boolean);
+
+  clones.forEach(c => {
+    if (c.userData.links) {
+      c.userData.links = c.userData.links.map(lid => idMap[lid] ?? lid);
+    }
+    E.placedGroup.add(c);
+  });
+
+  const newGid = 'g' + Date.now();
+  E.groups[newGid] = { name: g.name + '_copy', ids: new Set(clones.map(c => c.userData.editorId)) };
+  E.groupCollapsed[newGid] = true;
+
+  updateSceneList(); updateGroupsPanel(); markDirty();
 }
 
 function deleteSelected() {
@@ -1826,6 +1887,31 @@ function openMeshEditor() {
   if (!obj || obj.userData.primType !== 'model') return;
   document.getElementById('mesh-model-name').textContent = obj.name || obj.userData.modelPath || 'Model';
 
+  const masterIn = document.getElementById('mesh-master-tex');
+  masterIn.value = obj.userData.masterTexture || '';
+  masterIn.onchange = () => {
+    const texName = masterIn.value.trim() || null;
+    obj.userData.masterTexture = texName || undefined;
+    _applyMasterTexture(obj, texName);
+    markDirty();
+  };
+  document.getElementById('btn-mesh-master-import').onclick = async () => {
+    if (!window.electron?.importTexture) return;
+    const name = await window.electron.importTexture();
+    if (!name) return;
+    await refreshTextureList();
+    masterIn.value = name;
+    obj.userData.masterTexture = name;
+    _applyMasterTexture(obj, name);
+    markDirty();
+  };
+  document.getElementById('btn-mesh-master-clear').onclick = () => {
+    masterIn.value = '';
+    delete obj.userData.masterTexture;
+    _applyMasterTexture(obj, null);
+    markDirty();
+  };
+
   const list = document.getElementById('mesh-list');
   list.innerHTML = '';
 
@@ -1909,6 +1995,122 @@ function closeMeshEditor() {
   document.getElementById('mesh-modal').style.display = 'none';
 }
 
+function _renderSoundSection(container, soundDef, onUpdate) {
+  container.innerHTML = '';
+  const isRandom = soundDef.mode === 'random';
+
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px';
+  const modeLbl = document.createElement('span');
+  modeLbl.textContent = 'Mode:';
+  modeLbl.style.cssText = 'font-size:10px;color:#666688;flex-shrink:0';
+  const modeSel = document.createElement('select');
+  modeSel.className = 'prop-input';
+  modeSel.style.cssText = 'font-size:11px;padding:2px 4px';
+  [['sequential','Sequential'],['random','Random (weighted)']].forEach(([v, l]) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = l;
+    if (soundDef.mode === v) o.selected = true;
+    modeSel.appendChild(o);
+  });
+  modeSel.addEventListener('change', e => {
+    soundDef.mode = e.target.value;
+    _renderSoundSection(container, soundDef, onUpdate);
+    onUpdate();
+  });
+  modeRow.appendChild(modeLbl);
+  modeRow.appendChild(modeSel);
+  container.appendChild(modeRow);
+
+  const listDiv = document.createElement('div');
+  listDiv.style.cssText = 'display:flex;flex-direction:column;gap:3px;margin-bottom:6px';
+  soundDef.sounds.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:4px;align-items:center';
+
+    const nameIn = document.createElement('input');
+    nameIn.className = 'prop-input';
+    nameIn.type = 'text';
+    nameIn.value = s.name || '';
+    nameIn.placeholder = 'sound name';
+    nameIn.setAttribute('list', 'sound-datalist');
+    nameIn.style.cssText = 'flex:1;font-size:11px';
+    nameIn.addEventListener('change', e => { s.name = e.target.value.trim(); onUpdate(); });
+
+    row.appendChild(nameIn);
+
+    if (isRandom) {
+      const wtLbl = document.createElement('span');
+      wtLbl.textContent = 'w:';
+      wtLbl.style.cssText = 'font-size:10px;color:#666688;flex-shrink:0';
+      const wtIn = document.createElement('input');
+      wtIn.className = 'prop-input';
+      wtIn.type = 'number'; wtIn.min = '0'; wtIn.step = '0.1';
+      wtIn.value = s.weight ?? 1;
+      wtIn.style.width = '44px';
+      wtIn.addEventListener('change', e => { s.weight = parseFloat(e.target.value) || 1; onUpdate(); });
+      row.appendChild(wtLbl);
+      row.appendChild(wtIn);
+    }
+
+    const del = document.createElement('button');
+    del.className = 'btn btn-del';
+    del.style.cssText = 'padding:2px 6px;font-size:11px;flex-shrink:0';
+    del.textContent = '×';
+    del.addEventListener('click', () => {
+      soundDef.sounds.splice(i, 1);
+      _renderSoundSection(container, soundDef, onUpdate);
+      onUpdate();
+    });
+    row.appendChild(del);
+    listDiv.appendChild(row);
+  });
+  container.appendChild(listDiv);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:4px';
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn';
+  addBtn.style.cssText = 'font-size:11px;padding:2px 10px';
+  addBtn.textContent = '+ Add';
+  addBtn.addEventListener('click', () => {
+    soundDef.sounds.push({ name: '', weight: 1 });
+    _renderSoundSection(container, soundDef, onUpdate);
+    onUpdate();
+  });
+  const impBtn = document.createElement('button');
+  impBtn.className = 'btn';
+  impBtn.style.cssText = 'font-size:11px;padding:2px 10px';
+  impBtn.textContent = '+ Import';
+  impBtn.addEventListener('click', async () => {
+    if (!window.electron?.importSound) return;
+    const name = await window.electron.importSound();
+    if (!name) return;
+    await refreshSoundList();
+    soundDef.sounds.push({ name, weight: 1 });
+    _renderSoundSection(container, soundDef, onUpdate);
+    onUpdate();
+  });
+  btnRow.appendChild(addBtn);
+  btnRow.appendChild(impBtn);
+  container.appendChild(btnRow);
+}
+
+function openSoundListModal(obj, stateIdx) {
+  const state = obj.userData.states[stateIdx];
+  document.getElementById('sound-list-modal-title').textContent = state.name || ('State ' + stateIdx);
+  if (!state.enterSounds) state.enterSounds = { mode: 'sequential', sounds: [] };
+  if (!state.exitSounds)  state.exitSounds  = { mode: 'sequential', sounds: [] };
+  const dirty = () => markDirty();
+  _renderSoundSection(document.getElementById('snd-enter-list'), state.enterSounds, dirty);
+  _renderSoundSection(document.getElementById('snd-exit-list'),  state.exitSounds,  dirty);
+  document.getElementById('sound-list-modal').style.display = 'flex';
+}
+
+function closeSoundListModal() {
+  document.getElementById('sound-list-modal').style.display = 'none';
+}
+
 function _applyMeshEditorTexture(mesh, texName) {
   if (!texName) return;
   const loader = new THREE.TextureLoader();
@@ -1921,6 +2123,33 @@ function _applyMeshEditorTexture(mesh, texName) {
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
   })();
+}
+
+function _applyMasterTexture(obj, texName) {
+  if (texName) {
+    const loader = new THREE.TextureLoader();
+    const tryLoad = url => new Promise(resolve => loader.load(url, resolve, undefined, () => resolve(null)));
+    (async () => {
+      let tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.png`);
+      if (!tex) tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.jpg`);
+      if (!tex) return;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      obj.traverse(c => {
+        if (!c.isMesh) return;
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
+      });
+    })();
+  } else {
+    obj.traverse(c => {
+      if (!c.isMesh) return;
+      const key = c.name || c.uuid;
+      const ovr = obj.userData.meshOverrides?.[key];
+      if (ovr?.texture) {
+        _applyMeshEditorTexture(c, ovr.texture);
+      }
+    });
+  }
 }
 
 function _loadUVEditorImage(texName) {
@@ -2565,6 +2794,7 @@ async function refreshModelList() {
   try { E.importedModels = await window.electron.listModels(); } catch { E.importedModels = []; }
   renderModelList();
   await refreshTextureList();
+  await refreshSoundList();
 }
 
 async function refreshTextureList() {
@@ -2574,6 +2804,20 @@ async function refreshTextureList() {
   if (!dl) return;
   dl.innerHTML = '';
   E.availableTextures.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    dl.appendChild(opt);
+  });
+}
+
+async function refreshSoundList() {
+  if (!window.electron?.listSounds) return;
+  let sounds = [];
+  try { sounds = await window.electron.listSounds(); } catch { sounds = []; }
+  const dl = document.getElementById('sound-datalist');
+  if (!dl) return;
+  dl.innerHTML = '';
+  sounds.forEach(name => {
     const opt = document.createElement('option');
     opt.value = name;
     dl.appendChild(opt);
@@ -2987,6 +3231,13 @@ function renderStatesPanel(obj) {
           <input class="prop-input" data-si="condVal" type="text" value="${escHtml(String(state.condition?.value ?? ''))}" style="width:44px" placeholder="value">
         </div>
       </div>
+      <div class="state-item-row">
+        <label style="white-space:nowrap">Active var</label>
+        <input class="prop-input" data-si="activeVar" type="text" value="${escHtml(state.activeVar || '')}" placeholder="lv_... (set true when active)" style="flex:1">
+      </div>
+      <div class="state-item-row">
+        <button class="btn" data-si="soundsBtn" style="font-size:11px;padding:3px 10px;width:100%">&#127925; Sounds...</button>
+      </div>
     `;
 
     const g  = sel => item.querySelector(`[data-si="${sel}"]`);
@@ -3149,12 +3400,116 @@ function renderStatesPanel(obj) {
       markDirty();
     });
 
+    g('activeVar').addEventListener('change', e => {
+      const v = e.target.value.trim();
+      if (v) st.activeVar = v; else delete st.activeVar;
+      markDirty();
+    });
+
+    g('soundsBtn').addEventListener('click', () => openSoundListModal(obj, idx));
+
     g('goto').addEventListener('click', () => applyStateToEditorObj(obj, obj.userData.states[idx]));
     g('del').addEventListener('click', () => {
       obj.userData.states.splice(idx, 1);
       if (!obj.userData.states.length) delete obj.userData.states;
       renderStatesPanel(obj); markDirty();
     });
+
+    // Inputs section — button trigger → var operation bindings
+    const inputsSection = document.createElement('div');
+    inputsSection.className = 'state-field-row';
+    inputsSection.style.marginTop = '4px';
+    const inputsHead = document.createElement('div');
+    inputsHead.className = 'state-field-head';
+    inputsHead.style.gap = '4px';
+    const inputsLabel = document.createElement('label');
+    inputsLabel.style.cssText = 'font-size:10px;font-weight:bold';
+    inputsLabel.textContent = 'Inputs';
+    const btnAddInput = document.createElement('button');
+    btnAddInput.className = 'btn';
+    btnAddInput.style.cssText = 'font-size:10px;padding:2px 6px;margin-left:auto';
+    btnAddInput.textContent = '+ Add';
+    inputsHead.appendChild(inputsLabel);
+    inputsHead.appendChild(btnAddInput);
+    inputsSection.appendChild(inputsHead);
+    const inputsList = document.createElement('div');
+    inputsSection.appendChild(inputsList);
+
+    const renderInputRows = () => {
+      inputsList.innerHTML = '';
+      (st.buttons || []).forEach((b, bi) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin-top:3px';
+
+        const trigSel = document.createElement('select');
+        trigSel.className = 'prop-input';
+        trigSel.style.cssText = 'width:96px;font-size:10px;padding:2px';
+        [['scrollup','↑ scroll up'],['scrolldown','↓ scroll down'],['rightclick','right-click'],['click','click']].forEach(([v, lbl]) => {
+          const o = document.createElement('option');
+          o.value = v; o.textContent = lbl;
+          if (b.trigger === v) o.selected = true;
+          trigSel.appendChild(o);
+        });
+        trigSel.addEventListener('change', e => { b.trigger = e.target.value; markDirty(); });
+
+        const opSel = document.createElement('select');
+        opSel.className = 'prop-input';
+        opSel.style.cssText = 'width:46px;font-size:10px;padding:2px';
+        [['set','set'],['add','add'],['sub','sub'],['mul','mul']].forEach(([v, lbl]) => {
+          const o = document.createElement('option');
+          o.value = v; o.textContent = lbl;
+          if (b.varOp === v) o.selected = true;
+          opSel.appendChild(o);
+        });
+        opSel.addEventListener('change', e => { b.varOp = e.target.value; markDirty(); });
+
+        const varSel = document.createElement('select');
+        varSel.className = 'prop-input';
+        varSel.style.cssText = 'flex:1;min-width:50px;font-size:10px;padding:2px';
+        const noneOpt = document.createElement('option');
+        noneOpt.value = ''; noneOpt.textContent = '(none)';
+        varSel.appendChild(noneOpt);
+        Object.keys(E.levelVars).forEach(k => {
+          const o = document.createElement('option');
+          o.value = k; o.textContent = k;
+          if (b.varName === k) o.selected = true;
+          varSel.appendChild(o);
+        });
+        varSel.addEventListener('change', e => { b.varName = e.target.value; markDirty(); });
+
+        const valInput = document.createElement('input');
+        valInput.className = 'prop-input';
+        valInput.type = 'number'; valInput.step = '0.01';
+        valInput.style.width = '44px';
+        valInput.value = b.varValue ?? 0;
+        valInput.addEventListener('change', e => { b.varValue = parseFloat(e.target.value) || 0; markDirty(); });
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-del';
+        delBtn.style.cssText = 'font-size:10px;padding:2px 5px';
+        delBtn.textContent = '\xd7';
+        delBtn.addEventListener('click', () => {
+          st.buttons.splice(bi, 1);
+          if (!st.buttons.length) delete st.buttons;
+          renderInputRows();
+          markDirty();
+        });
+
+        row.appendChild(trigSel); row.appendChild(opSel); row.appendChild(varSel);
+        row.appendChild(valInput); row.appendChild(delBtn);
+        inputsList.appendChild(row);
+      });
+    };
+
+    btnAddInput.addEventListener('click', () => {
+      if (!st.buttons) st.buttons = [];
+      st.buttons.push({ trigger: 'scrollup', varOp: 'add', varName: '', varValue: 0 });
+      renderInputRows();
+      markDirty();
+    });
+
+    renderInputRows();
+    item.appendChild(inputsSection);
 
     list.appendChild(item);
   });
@@ -3505,7 +3860,10 @@ function setupUI() {
       E.selected.userData.castShadow = e.target.checked;
       E.selected.traverse(c => { if (c.isLight) c.castShadow = e.target.checked; });
     } else {
-      E.selected.castShadow = e.target.checked;
+      const v = e.target.checked;
+      E.selected.userData.castShadow = v;
+      E.selected.castShadow = v;
+      E.selected.traverse(c => { if (c.isMesh) c.castShadow = v; });
     }
     markDirty();
   });
@@ -3703,6 +4061,9 @@ function setupUI() {
 
   makeDraggable('uv-modal', 'uv-modal-drag');
   makeDraggable('mesh-modal', 'mesh-modal-drag');
+  makeDraggable('sound-list-modal', 'sound-list-modal-drag');
+
+  document.getElementById('btn-sound-list-close')?.addEventListener('click', closeSoundListModal);
 
   // UV modal wiring
   document.getElementById('btn-uv-close')?.addEventListener('click', closeUVEditor);
@@ -3811,6 +4172,20 @@ function setupUI() {
     for (const g of Object.values(E.groups)) g.ids.delete(id);
     for (const gid of Object.keys(E.groups)) { if (E.groups[gid].ids.size === 0) delete E.groups[gid]; }
     setGroupDisplay(null); updateGroupsPanel(); markDirty();
+  });
+
+  document.getElementById('btn-clone-group').addEventListener('click', () => {
+    if (!E.selected) { setStatus('Select a member of the group to clone'); return; }
+    const gid = findGroupOfObj(E.selected);
+    if (!gid) { setStatus('Selected object is not in a group'); return; }
+    cloneGroup(gid);
+  });
+
+  document.getElementById('btn-toggle-groups-panel').addEventListener('click', () => {
+    const p = document.getElementById('groups-panel');
+    const open = p.style.display !== 'none';
+    p.style.display = open ? 'none' : '';
+    document.getElementById('btn-toggle-groups-panel').textContent = open ? '>' : 'v';
   });
 
   // Actions
