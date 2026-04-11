@@ -22,7 +22,7 @@ function _playSound(name) {
   const exts = ['mp3', 'ogg', 'wav'];
   const tryNext = i => {
     if (i >= exts.length) return;
-    const a = new Audio(`sounds/${name}.${exts[i]}`);
+    const a = new Audio(`./sounds/${name}.${exts[i]}`);
     a.onerror = () => tryNext(i + 1);
     a.play().catch(() => {});
   };
@@ -135,7 +135,6 @@ export function initStatefulObjects() {
     obj.userData.currentState = 0;
     _fireActiveVars(obj, 0);
     _soundSeqState.delete(obj);
-    _playStateSoundsForEvent(obj, 0, 'enter');
     _applyStateImmediate(obj, states[0]);
   }
 }
