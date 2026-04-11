@@ -141,9 +141,9 @@ async function init() {
   E.transform.setRotationSnap(THREE.MathUtils.degToRad(5));
   E.scene.add(E.transform);
   E.transform.addEventListener('change', () => {
-    // If rotating/scaling around a custom pivot, keep pivot point fixed in world space.
+    // If rotating around a custom pivot, keep pivot point fixed in world space.
     // NOTE: updateMatrixWorld must be called first — TC fires 'change' before updating matrixWorld.
-    if (E._pivotDragStart && E.selected?.userData.pivotOffset) {
+    if (E._pivotDragStart && E.selected?.userData.pivotOffset && E.transform.mode === 'rotate') {
       const obj = E.selected;
       obj.updateMatrixWorld(true);   // force-flush the new quaternion/position into matrixWorld
       const localOffset = new THREE.Vector3().fromArray(obj.userData.pivotOffset);
@@ -165,10 +165,12 @@ async function init() {
     if (e.value) {
       // Drag started — push undo before transform happens, then record pivot
       if (E.selected || E.groupPivot) pushUndo();
-      if (E.selected?.userData.pivotOffset) {
+      if (E.selected?.userData.pivotOffset && E.transform.mode === 'rotate') {
         const obj = E.selected;
         const localOffset = new THREE.Vector3().fromArray(obj.userData.pivotOffset);
         E._pivotDragStart = localOffset.clone().applyMatrix4(obj.matrixWorld);
+      } else {
+        E._pivotDragStart = null;
       }
     } else {
       E._pivotDragStart = null;
@@ -457,7 +459,7 @@ function levelToJSON() {
         label:      obj.userData.label || '',
         type:       'csg-result',
         collidable: obj.userData.collidable !== false,
-        castShadow: obj.userData.castShadow !== false,
+        castShadow: obj.castShadow !== false,
         pos:        [0, 0, 0],
         rot:        [0, 0, 0],
         size:       [1, 1, 1],
@@ -472,7 +474,7 @@ function levelToJSON() {
       label:      obj.userData.label || '',
       type:       obj.userData.primType || 'model',
       collidable: obj.userData.collidable !== false,
-      castShadow: obj.userData.castShadow !== false,
+      castShadow: isLightType(obj.userData.primType) ? obj.userData.castShadow !== false : obj.castShadow !== false,
       pos:        [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
       rot:        [+(obj.rotation.x*DEG).toFixed(2), +(obj.rotation.y*DEG).toFixed(2), +(obj.rotation.z*DEG).toFixed(2)],
       size:       [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
@@ -501,7 +503,6 @@ function levelToJSON() {
         entry.angle    = obj.userData.angle    ?? 30;
         entry.penumbra = obj.userData.penumbra ?? 0.15;
       }
-      entry.castShadow = obj.userData.castShadow !== false;
     }
     if (obj.userData.states?.length)   entry.states         = obj.userData.states;
     if (obj.userData.links?.length)      entry.links          = obj.userData.links;
@@ -545,6 +546,8 @@ async function saveLevel() {
 
 async function loadLevel(name) {
   clearPlaced();
+  E.undoStack = [];
+  E.redoStack = [];
   E.levelName = name;
 
   let data = null;
@@ -567,11 +570,11 @@ async function loadLevel(name) {
     const gltfLoader = new GLTFLoader();
     const fbxLoader  = new FBXLoader();
     const promises = data.objects.map(entry => {
-      if (entry.type === 'csg-result') return spawnCsgResult(entry, gltfLoader, fbxLoader);
+      if (entry.type === 'csg-result') return spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
       if (entry.type === 'model')      return loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
       return Promise.resolve(spawnPrimFromEntry(entry));
     });
-    await Promise.all(promises);
+    await Promise.allSettled(promises);
   }
 
   E.isDirty = false;
@@ -589,8 +592,6 @@ function clearPlaced() {
   while (E.placedGroup.children.length) E.placedGroup.remove(E.placedGroup.children[0]);
   E.colHelpers.forEach(h => E.scene.remove(h));
   E.colHelpers = [];
-  E.undoStack = [];
-  E.redoStack = [];
   E.groups = {};
   E.groupCollapsed = {};
   E.levelVars = {};
@@ -2450,19 +2451,21 @@ function cancelCut() {
   setStatus('Cut cancelled');
 }
 
-// Temporarily tint the cutter mesh orange / restore original color
+// Temporarily tint the cutter mesh orange / restore original material
 function _tintCutter(obj, on) {
   if (!obj) return;
   obj.traverse(c => {
     if (!c.isMesh) return;
     if (on) {
-      c.userData._savedColor = c.material.color?.getHex?.() ?? null;
-      if (c.material.color) c.material.color.setHex(0xff6600);
+      c.userData._savedMaterial = c.material;
+      const tinted = c.material.clone();
+      if (tinted.color) tinted.color.setHex(0xff6600);
+      c.material = tinted;
     } else {
-      if (c.userData._savedColor !== null && c.material.color) {
-        c.material.color.setHex(c.userData._savedColor);
+      if (c.userData._savedMaterial) {
+        c.material = c.userData._savedMaterial;
+        delete c.userData._savedMaterial;
       }
-      delete c.userData._savedColor;
     }
   });
 }
@@ -2510,8 +2513,13 @@ async function performCut(targetObj) {
     // Perform subtraction: A minus B
     const result = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
 
-    // Replace targetObj in placedGroup with the result mesh
-    result.position.setScalar(0);
+    // Center the geometry at its bounding box midpoint so the gizmo and
+    // orbit target land on the wall, not at world origin.
+    result.geometry.computeBoundingBox();
+    const _csgCenter = new THREE.Vector3();
+    result.geometry.boundingBox.getCenter(_csgCenter);
+    result.geometry.translate(-_csgCenter.x, -_csgCenter.y, -_csgCenter.z);
+    result.position.copy(_csgCenter);
     result.rotation.set(0, 0, 0);
     result.scale.setScalar(1);
     result.castShadow    = targetObj.castShadow;
@@ -2663,11 +2671,20 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
     if (!brushB) continue;
     brushA.updateMatrixWorld(true);
     brushB.updateMatrixWorld(true);
-    brushA = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
+    try {
+      brushA = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
+    } catch (err) {
+      console.warn('CSG evaluate failed for cutter, skipping:', err);
+    }
   }
 
   const result = brushA;
-  result.position.setScalar(0);
+  // Center geometry at bounding box midpoint so gizmo/orbit land on the object.
+  result.geometry.computeBoundingBox();
+  const _csgCenter = new THREE.Vector3();
+  result.geometry.boundingBox.getCenter(_csgCenter);
+  result.geometry.translate(-_csgCenter.x, -_csgCenter.y, -_csgCenter.z);
+  result.position.copy(_csgCenter);
   result.rotation.set(0, 0, 0);
   result.scale.setScalar(1);
   result.castShadow = entry.castShadow !== false;
@@ -2754,7 +2771,7 @@ async function restoreSnapshot(json) {
   }
   const gltfLoader = new GLTFLoader(), fbxLoader = new FBXLoader();
   for (const entry of (data.objects || [])) {
-    if (entry.type === 'csg-result') await spawnCsgResult(entry, gltfLoader, fbxLoader);
+    if (entry.type === 'csg-result') await spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
     else if (entry.type === 'model') await loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
     else spawnPrimFromEntry(entry);
   }
@@ -4276,13 +4293,14 @@ function updateColliderHelpers() {
 // â”€â”€â”€ Keyboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function setupKeys() {
   window.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return; // don't capture while typing in fields
-    if (e.code === 'Space') e.preventDefault(); // prevent page scroll
-    E.keys[e.code] = true;
-
     if (e.ctrlKey && e.code === 'KeyS')                         { e.preventDefault(); saveLevel(); return; }
     if (e.ctrlKey && !e.shiftKey && e.code === 'KeyZ')          { e.preventDefault(); undo(); return; }
     if (e.ctrlKey && (e.shiftKey && e.code === 'KeyZ' || e.code === 'KeyY')) { e.preventDefault(); redo(); return; }
+
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    if (e.code === 'Space') e.preventDefault(); // prevent page scroll
+    E.keys[e.code] = true;
+
     if (e.ctrlKey && e.code === 'KeyD')                         { e.preventDefault(); cloneSelected(); return; }
 
     if (e.ctrlKey && e.code === 'KeyW') { e.preventDefault(); setTransformMode('translate'); return; }

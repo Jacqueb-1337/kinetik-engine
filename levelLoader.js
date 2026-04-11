@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
 import { initStatefulObjects, levelVars } from './stateManager.js';
+import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 
 const RAD = Math.PI / 180;
 
@@ -230,6 +231,36 @@ function spawnModel(entry) {
           }
         });
       }
+      if (entry.masterTexture) {
+        const col = new THREE.Color(entry.color ?? '#aaaacc');
+        const roughness = entry.roughness ?? 1;
+        const metalness = entry.metalness ?? 0;
+        const name = entry.masterTexture;
+        const applyMaster = tex => {
+          tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+          root.traverse(c => {
+            if (!c.isMesh) return;
+            c.material = new THREE.MeshStandardMaterial({ color: col, map: tex, roughness, metalness });
+          });
+        };
+        getTexLoader().load(`./textures/${name}.png`, applyMaster, undefined, () => {
+          getTexLoader().load(`./textures/${name}.jpg`, applyMaster);
+        });
+      } else if (entry.roughness !== undefined || entry.metalness !== undefined) {
+        root.traverse(c => {
+          if (!c.isMesh || !c.material) return;
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          mats.forEach((m, i) => {
+            if (!m.isMeshStandardMaterial) {
+              const nm = new THREE.MeshStandardMaterial({ color: m.color, map: m.map, roughness: entry.roughness ?? 1, metalness: entry.metalness ?? 0 });
+              if (Array.isArray(c.material)) c.material[i] = nm; else c.material = nm;
+            } else {
+              if (entry.roughness !== undefined) { m.roughness = entry.roughness; m.needsUpdate = true; }
+              if (entry.metalness !== undefined) { m.metalness = entry.metalness; m.needsUpdate = true; }
+            }
+          });
+        });
+      }
       resolve(root);
     }, undefined, err => {
       console.warn('[levelLoader] Failed to load model:', entry.modelPath, err);
@@ -243,7 +274,6 @@ function spawnModel(entry) {
 async function spawnCsgResult(entry) {
   // Try to do the actual CSG subtraction at runtime
   try {
-    const { Evaluator, Brush, SUBTRACTION } = await import('three-bvh-csg');
     const evaluator = new Evaluator();
     const recipe = entry.csgRecipe;
 
