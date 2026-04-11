@@ -1368,6 +1368,16 @@ function commitPlace(worldPos) {
     E.placedGroup.add(mesh);
     selectObj(mesh); updateSceneList(); markDirty();
   } else {
+    const mesh = makePrimMesh(E.placingType);
+    mesh.position.copy(worldPos);
+    mesh.userData = { primType: E.placingType, editorId: id, label: '', collidable: true };
+    mesh.name = E.placingType + '_' + id;
+    pushUndo();
+    E.placedGroup.add(mesh);
+    selectObj(mesh); updateSceneList(); markDirty();
+  }
+  cancelPlace();
+}
 
 // â”€â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function selectObj(obj) {
@@ -1436,6 +1446,22 @@ function setRotInputs(euler) {
     const el = document.getElementById('r' + a);
     if (el && document.activeElement !== el) el.value = (euler[a] * DEG).toFixed(1);
   }
+}
+
+function _applyColor(obj, hex) {
+  if (isLightType(obj.userData.primType)) {
+    obj.userData.lightColor = hex;
+    const col = new THREE.Color(hex);
+    obj.traverse(c => {
+      if (c.isLight) c.color.set(col);
+      if (c.isMesh && c.material) { const mats = Array.isArray(c.material) ? c.material : [c.material]; mats.forEach(m => { if (m.color) m.color.set(col); }); }
+      if ((c.isLine || c.isLineSegments) && c.material) c.material.color.set(col);
+    });
+  } else {
+    const mats = Array.isArray(obj.material) ? obj.material : (obj.material ? [obj.material] : []);
+    mats.forEach(m => { if (m.color) m.color.set(hex); });
+  }
+  markDirty();
 }
 
 function updateProps(obj) {
@@ -1517,12 +1543,19 @@ function updateProps(obj) {
   setRotInputs(obj.rotation);
 
   if (colEl) {
+    const hexEl = document.getElementById('obj-color-hex');
+    const matColor = Array.isArray(obj.material) ? obj.material[0]?.color : obj.material?.color;
     if (isLight) {
       colEl.disabled = false;
       colEl.value = obj.userData.lightColor || '#ffffff';
+      if (hexEl && document.activeElement !== hexEl) hexEl.value = obj.userData.lightColor || '#ffffff';
     } else {
-      colEl.disabled = !obj.material?.color || isTrigger;
-      if (obj.material?.color && !isTrigger) colEl.value = '#' + obj.material.color.getHexString();
+      colEl.disabled = !matColor || isTrigger;
+      if (matColor && !isTrigger) {
+        const hex = '#' + matColor.getHexString();
+        colEl.value = hex;
+        if (hexEl && document.activeElement !== hexEl) hexEl.value = hex;
+      }
     }
   }
   if (opacityEl && document.activeElement !== opacityEl) {
@@ -3177,13 +3210,14 @@ function mergeGeometriesWorldSpace(meshes) {
 
 // Serialize an object to a level-entry-style record (for csgRecipe storage)
 function _entryFromObj(obj) {
+  const matColor = Array.isArray(obj.material) ? obj.material[0]?.color : obj.material?.color;
   return {
     type:      obj.userData.primType || 'box',
     modelPath: obj.userData.modelPath || null,
     pos:       [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
     rot:       [+(obj.rotation.x*DEG).toFixed(2), +(obj.rotation.y*DEG).toFixed(2), +(obj.rotation.z*DEG).toFixed(2)],
     size:      [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
-    color:     obj.material?.color ? '#' + obj.material.color.getHexString() : '#aaaacc',
+    color:     matColor ? '#' + matColor.getHexString() : '#aaaacc',
   };
 }
 
@@ -4443,19 +4477,18 @@ function setupUI() {
   document.getElementById('obj-color').addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('obj-color').addEventListener('input', e => {
     if (!E.selected) return;
-    if (isLightType(E.selected.userData.primType)) {
-      // Update light color
-      E.selected.userData.lightColor = e.target.value;
-      const col = new THREE.Color(e.target.value);
-      E.selected.traverse(c => {
-        if (c.isLight) c.color.set(col);
-        if (c.isMesh && c.material) c.material.color.set(col);
-        if ((c.isLine || c.isLineSegments) && c.material) c.material.color.set(col);
-      });
-      markDirty();
-    } else if (E.selected?.material?.color) {
-      E.selected.material.color.set(e.target.value); markDirty();
-    }
+    const hexEl = document.getElementById('obj-color-hex');
+    if (hexEl) hexEl.value = e.target.value;
+    _applyColor(E.selected, e.target.value);
+  });
+  document.getElementById('obj-color-hex')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('obj-color-hex')?.addEventListener('input', e => {
+    if (!E.selected) return;
+    const hex = e.target.value.trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+    const colEl = document.getElementById('obj-color');
+    if (colEl) colEl.value = hex;
+    _applyColor(E.selected, hex);
   });
   document.getElementById('chk-collidable').addEventListener('mousedown', () => { if (E.selected) pushUndo(); });
   document.getElementById('chk-collidable').addEventListener('change', e => {

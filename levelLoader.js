@@ -310,6 +310,11 @@ async function spawnCsgResult(entry) {
     if (entry.noSelfInteract)    result.userData.noSelfInteract = true;
     // Apply texture if saved from editor
     if (entry.faceTextures) applyFaceTextures(result, entry.faceTextures, entry.color ?? '#aaaacc');
+    else if (entry.color) {
+      const col = new THREE.Color(entry.color);
+      const mats = Array.isArray(result.material) ? result.material : [result.material];
+      mats.forEach(m => { if (m?.color) m.color.set(col); });
+    }
     return result;
 
   } catch (err) {
@@ -390,6 +395,27 @@ function _objToBrush(obj, Brush) {
     m.updateMatrixWorld(true);
     const g = m.geometry.clone();
     g.applyMatrix4(m.matrixWorld);
+
+    // Negative determinant = odd number of negative scales → winding flipped, fix it
+    if (m.matrixWorld.determinant() < 0) {
+      const idx = g.index;
+      if (idx) {
+        for (let i = 0; i < idx.array.length; i += 3) {
+          const tmp = idx.array[i + 1]; idx.array[i + 1] = idx.array[i + 2]; idx.array[i + 2] = tmp;
+        }
+      } else {
+        const pos = g.attributes.position;
+        for (let i = 0; i < pos.count; i += 3) {
+          for (let c = 0; c < 3; c++) {
+            const tmp = pos.getComponent(i + 1, c);
+            pos.setComponent(i + 1, c, pos.getComponent(i + 2, c));
+            pos.setComponent(i + 2, c, tmp);
+          }
+        }
+      }
+      g.computeVertexNormals();
+    }
+
     const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv, idx = g.index;
     posA.push(pos.array);
     if (nor) norA.push(nor.array);
