@@ -8,7 +8,7 @@ import { isFreecamActive as isFreecamActiveDesktop } from './input.js';
 import { advanceObjectState } from './stateManager.js';
 
 // Split a combined mesh into its disconnected vertex islands (e.g. two knobs sharing one mesh)
-function splitMeshIntoIslands(mesh) {
+export function splitMeshIntoIslands(mesh) {
   const geometry = mesh.geometry;
   const posAttr = geometry.attributes.position;
   const indexAttr = geometry.index;
@@ -102,9 +102,13 @@ export function initScene() {
   gameState.camera.position.set(0, 5, 10);
   gameState.camera.lookAt(0, 1, 0);
 
-  gameState.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  gameState.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
   gameState.renderer.sortObjects = true;
-  gameState.renderer.setSize(window.innerWidth, window.innerHeight);
+  const { w: rw, h: rh } = platformConfig.getRendererSize(window.innerWidth, window.innerHeight);
+  gameState.renderer.setSize(rw, rh);
+  gameState.renderer.domElement.style.width  = '100vw';
+  gameState.renderer.domElement.style.height = '100vh';
+  gameState.renderer.domElement.style.imageRendering = 'pixelated';
   gameState.renderer.shadowMap.enabled = true;
   gameState.renderer.shadowMap.type = THREE.PCFShadowMap;
   gameState.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -161,15 +165,76 @@ export function initScene() {
       }
     });
 
-    // Scroll wheel — third-person zoom
+    // Track mouse position for knob hover detection during scroll
+    let _mouseClientX = 0, _mouseClientY = 0;
+    document.addEventListener('mousemove', (ev) => { _mouseClientX = ev.clientX; _mouseClientY = ev.clientY; }, { passive: true });
+
+    // Scroll wheel — knob interaction takes priority, then third-person zoom
     document.addEventListener('wheel', (event) => {
-      if (gameState.cameraMode === 1 || gameState.cameraMode === 2) {
+      const knobHovered = (() => {
+        if (!gameState.isPaused || !gameState.tvKnobMesh) return false;
+        const rect = gameState.renderer.domElement.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+          ((_mouseClientX - rect.left) / rect.width)  *  2 - 1,
+         -((_mouseClientY - rect.top)  / rect.height) *  2 + 1
+        );
+        const r = new THREE.Raycaster();
+        r.setFromCamera(mouse, gameState.camera);
+        return r.intersectObject(gameState.tvKnobMesh, true).length > 0;
+      })();
+      if ((gameState.tvKnobInteractable || knobHovered) && gameState.tvKnobMesh) {
+        event.preventDefault();
+        const step = THREE.MathUtils.degToRad(3);
+        const direction = event.deltaY > 0 ? 1 : -1;
+        const min = Math.min(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+        const max = Math.max(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+        const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x + direction * step, min, max);
+        gameState.tvKnobMesh.rotation.x = newX;
+        gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+      } else if (gameState.cameraMode === 1 || gameState.cameraMode === 2) {
         event.preventDefault();
         const zoomSpeed = 0.1;
         const direction = event.deltaY > 0 ? -1 : 1;
         gameState.cameraDistanceThirdPerson = Math.max(2, Math.min(15, gameState.cameraDistanceThirdPerson + direction * zoomSpeed));
       }
     }, { passive: false });
+
+    // Knob drag in pause menu — tangential mouse motion relative to knob screen-center
+    const _knobRaycaster = new THREE.Raycaster();
+    let _knobDragging = false, _knobCX = 0, _knobCY = 0, _knobMouseX = 0, _knobMouseY = 0;
+    gameState.renderer.domElement.addEventListener('mousedown', (e) => {
+      if (!gameState.isPaused || !gameState.tvKnobMesh) return;
+      const rect = gameState.renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width)  *  2 - 1,
+       -((e.clientY - rect.top)  / rect.height) *  2 + 1
+      );
+      _knobRaycaster.setFromCamera(mouse, gameState.camera);
+      if (_knobRaycaster.intersectObject(gameState.tvKnobMesh, true).length === 0) return;
+      const knobWorld = new THREE.Vector3();
+      gameState.tvKnobMesh.getWorldPosition(knobWorld);
+      const proj = knobWorld.clone().project(gameState.camera);
+      _knobCX = (proj.x  + 1) / 2 * rect.width  + rect.left;
+      _knobCY = (-proj.y + 1) / 2 * rect.height + rect.top;
+      _knobMouseX = e.clientX; _knobMouseY = e.clientY;
+      _knobDragging = true;
+      e.stopPropagation();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!_knobDragging || !gameState.tvKnobMesh) return;
+      const rx = _knobMouseX - _knobCX, ry = _knobMouseY - _knobCY;
+      const len = Math.sqrt(rx * rx + ry * ry) || 1;
+      const tx = ry / len, ty = -rx / len;
+      const dx = e.clientX - _knobMouseX, dy = e.clientY - _knobMouseY;
+      _knobMouseX = e.clientX; _knobMouseY = e.clientY;
+      const tangential = dx * tx + dy * ty;
+      const min = Math.min(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+      const max = Math.max(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+      const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x - tangential * 0.025, min, max);
+      gameState.tvKnobMesh.rotation.x = newX;
+      gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+    });
+    document.addEventListener('mouseup', () => { _knobDragging = false; });
 
     // Right-click = interact with highlighted object
     document.addEventListener('mousedown', (e) => {
@@ -204,7 +269,8 @@ export function initScene() {
 export function onResize() {
   gameState.camera.aspect = window.innerWidth / window.innerHeight;
   gameState.camera.updateProjectionMatrix();
-  gameState.renderer.setSize(window.innerWidth, window.innerHeight);
+  const { w: rw, h: rh } = platformConfig.getRendererSize(window.innerWidth, window.innerHeight);
+  gameState.renderer.setSize(rw, rh, false);
   
   // Update UI camera aspect ratio
   if (gameState.uiCamera) {

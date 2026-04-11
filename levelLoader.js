@@ -209,6 +209,27 @@ function spawnModel(entry) {
       }
       if (entry.states?.length)   { root.userData.states = entry.states; root.userData.currentState = 0; }
       if (entry.noSelfInteract)     root.userData.noSelfInteract = true;
+      if (entry.meshOverrides) {
+        root.userData.meshOverrides = entry.meshOverrides;
+        root.traverse(c => {
+          if (!c.isMesh) return;
+          const key = c.name || c.uuid;
+          const ovr = entry.meshOverrides[key];
+          if (!ovr) return;
+          if (ovr.visible === false) c.visible = false;
+          if (ovr.texture) {
+            const name = ovr.texture;
+            const applyTex = tex => {
+              tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+              const mats = Array.isArray(c.material) ? c.material : [c.material];
+              mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
+            };
+            getTexLoader().load(`./textures/${name}.png`, applyTex, undefined, () => {
+              getTexLoader().load(`./textures/${name}.jpg`, applyTex);
+            });
+          }
+        });
+      }
       resolve(root);
     }, undefined, err => {
       console.warn('[levelLoader] Failed to load model:', entry.modelPath, err);

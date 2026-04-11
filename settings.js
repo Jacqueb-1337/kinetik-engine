@@ -1,30 +1,14 @@
-// settings.js — Cross-platform persistent settings
-//
-// Priority chain per platform:
-//   Mobile (Android/iOS):  @capacitor/preferences  (native SharedPreferences / NSUserDefaults)
-//   Desktop (Electron):    IPC → app.getPath('userData')/settings/<key>.json
-//   Web / fallback:        localStorage
-
 import { platformConfig } from './platform.js';
 
-let _Preferences = null;
-
-async function _getPreferences() {
-  if (_Preferences) return _Preferences;
-  if (platformConfig.isMobile) {
-    try {
-      const mod = await import('@capacitor/preferences');
-      _Preferences = mod.Preferences;
-      return _Preferences;
-    } catch (e) {
-      console.warn('[settings] @capacitor/preferences not available:', e);
-    }
+function _getPreferences() {
+  if (platformConfig.isMobile && window.Capacitor?.Plugins?.Preferences) {
+    return window.Capacitor.Plugins.Preferences;
   }
   return null;
 }
 
 export async function readSetting(key) {
-  const Preferences = await _getPreferences();
+  const Preferences = _getPreferences();
   if (Preferences) {
     try {
       const { value } = await Preferences.get({ key: 'sinister_' + key });
@@ -47,7 +31,7 @@ export async function readSetting(key) {
 }
 
 export async function writeSetting(key, value) {
-  const Preferences = await _getPreferences();
+  const Preferences = _getPreferences();
   if (Preferences) {
     try {
       await Preferences.set({ key: 'sinister_' + key, value: JSON.stringify(value) });

@@ -88,8 +88,7 @@ const touchState = {
   // Joystick configuration
   joystickMaxRadius: 55,    // Walk zone radius
   joystickDeadzone: 10,     // Center deadzone
-  autoRunDistance: 120,     // Distance to trigger auto-run
-  autoRunAngleTolerance: 25, // Degrees from forward to consider "straight"
+  autoRunOvershoot: 45,      // Pixels above joystick top edge to arm run-lock
   
   // Visual elements
   joystickBase: null,
@@ -435,43 +434,35 @@ function updateJoystick(x, y) {
   const angle = Math.atan2(dy, dx);
   
   touchState.joystickCurrent = { x, y };
-  
-  // Check for auto-run trigger
-  if (distance > touchState.autoRunDistance && !touchState.autoRunActive && gameState.hudConfig?.autoRunLock !== false) {
-    // Check if moving roughly forward (upward on screen = forward in game)
-    const degrees = (angle * 180 / Math.PI + 360) % 360; // Convert to 0-360, 0=right
-    const forwardDeg = 270; // Up on screen (270 degrees = straight up, negative Y)
-    const angleDiff = Math.abs(((degrees - forwardDeg + 180) % 360) - 180);
-    
-    if (angleDiff < touchState.autoRunAngleTolerance) {
-      activateAutoRun();
-      return;
-    }
-  }
-  
+
   // If auto-run active and moved back into walk zone, deactivate
   if (touchState.autoRunActive && distance < touchState.joystickMaxRadius * 0.8) {
     deactivateAutoRun();
   }
-  
+
   // Clamp thumb to max radius (unless auto-run)
   let thumbX = x;
   let thumbY = y;
-  
+
   if (!touchState.autoRunActive && distance > touchState.joystickMaxRadius) {
     thumbX = touchState.joystickOrigin.x + Math.cos(angle) * touchState.joystickMaxRadius;
     thumbY = touchState.joystickOrigin.y + Math.sin(angle) * touchState.joystickMaxRadius;
   }
-  
+
   // Update visual thumb position
   touchState.joystickThumb.style.left = thumbX + 'px';
   touchState.joystickThumb.style.top = thumbY + 'px';
-  
+
+  // Run-zone indicator: finger is above the top edge of the base circle
+  const runArmed = !touchState.autoRunActive
+    && gameState.hudConfig?.autoRunLock !== false
+    && (touchState.joystickOrigin.y - y) > (touchState.joystickMaxRadius + touchState.autoRunOvershoot);
+
   // Update thumb color based on state
   if (touchState.autoRunActive || touchState.sprintLocked) {
     touchState.joystickThumb.style.background = 'rgba(255, 100, 100, 0.7)';
-  } else if (distance > touchState.joystickMaxRadius * 0.7) {
-    touchState.joystickThumb.style.background = 'rgba(255, 200, 100, 0.6)';
+  } else if (runArmed) {
+    touchState.joystickThumb.style.background = 'rgba(255, 160, 40, 0.85)';
   } else {
     touchState.joystickThumb.style.background = 'rgba(255, 255, 255, 0.5)';
   }
@@ -483,19 +474,17 @@ function updateJoystick(x, y) {
 function endJoystick(x, y) {
   const dx = x - touchState.joystickOrigin.x;
   const dy = y - touchState.joystickOrigin.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  const angle = Math.atan2(dy, dx);
-  
-  // Check for auto-run on release if moving straight forward outside walk zone
-  if (distance > touchState.joystickMaxRadius && !touchState.autoRunActive && gameState.hudConfig?.autoRunLock !== false) {
-    const degrees = (angle * 180 / Math.PI + 360) % 360;
-    const forwardDeg = 270; // Up on screen (270 degrees = straight up, negative Y)
-    const angleDiff = Math.abs(((degrees - forwardDeg + 180) % 360) - 180);
-    
-    if (angleDiff < touchState.autoRunAngleTolerance) {
-      activateAutoRun();
-      return; // Keep joystick active
-    }
+
+  // Lock run if finger released above the top edge by the overshoot threshold
+  const runArmed = !touchState.autoRunActive
+    && gameState.hudConfig?.autoRunLock !== false
+    && (touchState.joystickOrigin.y - y) > (touchState.joystickMaxRadius + touchState.autoRunOvershoot);
+
+  if (runArmed) {
+    activateAutoRun();
+    touchState.joystickTouchId = null;
+    touchState.joystickActive = false;
+    return;
   }
   
   // Normal release - deactivate everything if not auto-running
@@ -615,8 +604,8 @@ function updateGameInput(dx, dy, distance) {
   gameState.keys['KeyA'] = normalizedX < -0.3;
   gameState.keys['KeyD'] = normalizedX > 0.3;
   
-  // Sprint if locked or distance is high
-  gameState.keys['ShiftLeft'] = touchState.sprintLocked || distance > touchState.joystickMaxRadius * 0.85;
+  // Sprint only when explicitly locked
+  gameState.keys['ShiftLeft'] = touchState.sprintLocked;
 }
 
 function startCameraRotation(touchId, x, y) {

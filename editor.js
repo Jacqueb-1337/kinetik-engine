@@ -8,12 +8,32 @@ import { FBXLoader }         from 'three/examples/jsm/loaders/FBXLoader';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry';
 
-let _referenceSceneFn = null;
-export function registerReferenceScene(fn) { _referenceSceneFn = fn; }
+let _highlightedMesh = null;
+let _highlightSavedEmissive = null;
+let _highlightedRow = null;
+
+function _setMeshHighlight(mesh, row) {
+  if (_highlightedMesh && _highlightSavedEmissive) {
+    const mats = Array.isArray(_highlightedMesh.material) ? _highlightedMesh.material : [_highlightedMesh.material];
+    mats.forEach((m, i) => { if (m.emissive && _highlightSavedEmissive[i]) m.emissive.copy(_highlightSavedEmissive[i]); });
+  }
+  if (_highlightedRow) _highlightedRow.style.background = '#0d0d20';
+  _highlightedMesh = null;
+  _highlightSavedEmissive = null;
+  _highlightedRow = null;
+  if (!mesh) return;
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  _highlightSavedEmissive = mats.map(m => m.emissive ? m.emissive.clone() : null);
+  mats.forEach(m => { if (m.emissive) m.emissive.set(0x004488); });
+  _highlightedMesh = mesh;
+  _highlightedRow = row;
+  if (row) row.style.background = '#1a2a4a';
+}
 
 // â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const RAD = Math.PI / 180;
 const DEG = 180 / Math.PI;
+const ASSET_ROOT = '../';
 
 
 // â”€â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -30,7 +50,6 @@ const E = {
 
   // Object tracking
   placedGroup:   null,        // Group containing only user-placed objects
-  refGroup:      null,        // Group containing hardcoded reference meshes (immutable visuals)
   gridHelper:    null,
   colHelpers:    [],           // BoxHelper list for collision wireframes
 
@@ -49,7 +68,6 @@ const E = {
   redoStack:      [],
 
   // toolbar toggles
-  showRef:        true,
   showGrid:       true,
   showColliders:  false,
   previewLighting: false,   // when true, simulate game lighting instead of editor lighting
@@ -172,10 +190,6 @@ async function init() {
   E.placedGroup.name = '__placed__';
   E.scene.add(E.placedGroup);
 
-  E.refGroup = new THREE.Group();
-  E.refGroup.name = '__ref__';
-  E.scene.add(E.refGroup);
-
   // Grid
   E.gridHelper = new THREE.GridHelper(60, 60, 0x333360, 0x222240);
   E.scene.add(E.gridHelper);
@@ -223,9 +237,6 @@ async function init() {
   E.floorPlane.name = '__floor__';
   E.scene.add(E.floorPlane);
 
-  // Load reference scene (hardcoded room visuals, immutable)
-  await loadReferenceScene();
-
   // List imported models from electron
   await refreshModelList();
 
@@ -259,10 +270,6 @@ function resizeRenderer() {
 }
 
 // â”€â”€â”€ Reference scene (read-only hardcoded room visuals) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-async function loadReferenceScene() {
-  if (_referenceSceneFn) await _referenceSceneFn(E.refGroup);
-}
-
 function _removedSinisterReferenceScene() {
   const tl = new THREE.TextureLoader();
   function loadTex(url, rep) {
@@ -311,7 +318,7 @@ function _removedSinisterReferenceScene() {
 
   // Desk
   const gltfLoader = new GLTFLoader();
-  gltfLoader.load('low_poly_desk.glb', gltf => {
+  gltfLoader.load(ASSET_ROOT + 'low_poly_desk.glb', gltf => {
     const desk = gltf.scene;
     desk.position.set(0, 0, -8);
     desk.scale.setScalar(2.5);
@@ -320,7 +327,7 @@ function _removedSinisterReferenceScene() {
   });
 
   // TV
-  gltfLoader.load('tv1.glb', gltf => {
+  gltfLoader.load(ASSET_ROOT + 'tv1.glb', gltf => {
     const tv = gltf.scene;
     tv.position.set(0, 2.7, -8);
     tv.scale.setScalar(0.8);
@@ -477,7 +484,8 @@ function levelToJSON() {
     const _opacity = getMeshOpacity(obj);
     if (_opacity < 1) entry.opacity = +_opacity.toFixed(3);
     if (obj.userData.primType === 'model') entry.modelPath = obj.userData.modelPath;
-    if (obj.userData.faceTextures)  entry.faceTextures  = obj.userData.faceTextures;
+    if (obj.userData.faceTextures)   entry.faceTextures   = obj.userData.faceTextures;
+    if (obj.userData.meshOverrides)  entry.meshOverrides  = obj.userData.meshOverrides;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -569,11 +577,7 @@ async function loadLevel(name) {
   updateGroupsPanel();
 
   const objCount = data?.objects?.length ?? 0;
-  if (name === 'main') {
-    setStatus(`Loaded "main" (hard-coded scene) - ${objCount} user object(s). Reference objects are immutable.`);
-  } else {
-    setStatus(objCount ? `Loaded "${name}" - ${objCount} object(s)` : `New level "${name}" - add objects to get started`);
-  }
+  setStatus(objCount ? `Loaded "${name}" - ${objCount} object(s)` : `New level "${name}" - add objects to get started`);
 }
 
 function clearPlaced() {
@@ -596,7 +600,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
   return new Promise(resolve => {
     const ext = (entry.modelPath || '').split('.').pop().toLowerCase();
     const loader = ext === 'fbx' ? fbxLoader : gltfLoader;
-    loader.load(entry.modelPath, result => {
+    loader.load(ASSET_ROOT + entry.modelPath, result => {
       const root = result.scene || result;
       root.traverse(c => { if (c.isMesh) { c.castShadow = entry.castShadow !== false; c.receiveShadow = true; } });
       applyEntryTransform(root, entry);
@@ -618,6 +622,17 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
             const mats = Array.isArray(c.material) ? c.material : [c.material];
             mats.forEach(m => { if ('emissive' in m) { m.emissive.copy(col); m.emissiveIntensity = entry.emissiveIntensity; } });
           }
+        });
+      }
+      if (entry.meshOverrides) {
+        root.userData.meshOverrides = entry.meshOverrides;
+        root.traverse(c => {
+          if (!c.isMesh) return;
+          const key = c.name || c.uuid;
+          const ovr = entry.meshOverrides[key];
+          if (!ovr) return;
+          if (ovr.visible === false) c.visible = false;
+          if (ovr.texture) _applyMeshEditorTexture(c, ovr.texture);
         });
       }
       E.placedGroup.add(root);
@@ -933,8 +948,8 @@ function makeFaceTexMat(hexColor, config) {
       mat.needsUpdate = true;
     };
     // Try .png first, fall back to .jpg
-    loader.load(`textures/${config.name}.png`, applyTex, undefined,
-      () => loader.load(`textures/${config.name}.jpg`, applyTex)
+    loader.load(`${ASSET_ROOT}textures/${config.name}.png`, applyTex, undefined,
+      () => loader.load(`${ASSET_ROOT}textures/${config.name}.jpg`, applyTex)
     );
   }
   return mat;
@@ -1187,7 +1202,7 @@ function commitPlace(worldPos) {
     const modelPath = E.placingType.slice(6);
     const ext = modelPath.split('.').pop().toLowerCase();
     const loader = ext === 'fbx' ? new FBXLoader() : new GLTFLoader();
-    loader.load(modelPath, result => {
+    loader.load(ASSET_ROOT + modelPath, result => {
       const root = result.scene || result;
       root.traverse(c => { if (c.isMesh) { c.castShadow = c.receiveShadow = true; } });
       root.position.copy(worldPos);
@@ -1348,6 +1363,10 @@ function updateProps(obj) {
   const isCsgResult = obj.userData.primType === 'csg-result';
   const isPrimitive = !isLight && !isTrigger && obj.userData.primType !== 'model' && !isCsgResult;
   const hasTexture  = isPrimitive || isCsgResult; // CSG results can still have textures
+  const isModel     = obj.userData.primType === 'model';
+
+  const meshEditSection = document.getElementById('mesh-edit-section');
+  if (meshEditSection) meshEditSection.style.display = isModel ? '' : 'none';
 
   if (selName) selName.textContent = obj.name;
   ['px','py','pz','sx','sy','sz','rx','ry','rz'].forEach(id => {
@@ -1759,13 +1778,149 @@ function openUVEditor() {
   if (label) label.textContent = E.selectedFace !== null ? BOX_FACE_NAMES[E.selectedFace] : 'All Faces';
 
   const modal = document.getElementById('uv-modal');
-  modal.style.display = 'flex';
+  modal.style.display = 'block';
 
   _loadUVEditorImage(cfg.name);
 }
 
 function closeUVEditor() {
   document.getElementById('uv-modal').style.display = 'none';
+}
+
+function makeDraggable(modalId, handleId) {
+  const modal = document.getElementById(modalId);
+  const handle = document.getElementById(handleId);
+  if (!modal || !handle) return;
+  let ox = 0, oy = 0, startX = 0, startY = 0, dragging = false;
+  handle.addEventListener('mousedown', e => {
+    if (e.target.tagName === 'BUTTON') return;
+    dragging = true;
+    const r = modal.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    ox = r.left; oy = r.top;
+    modal.style.transform = 'none';
+    modal.style.left = ox + 'px';
+    modal.style.top  = oy + 'px';
+    handle.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const mw = modal.offsetWidth,  mh = modal.offsetHeight;
+    const nx = Math.max(0, Math.min(vw - mw, ox + dx));
+    const ny = Math.max(0, Math.min(vh - mh, oy + dy));
+    modal.style.left = nx + 'px';
+    modal.style.top  = ny + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.style.cursor = 'grab';
+  });
+}
+
+function openMeshEditor() {
+  const obj = E.selected;
+  if (!obj || obj.userData.primType !== 'model') return;
+  document.getElementById('mesh-model-name').textContent = obj.name || obj.userData.modelPath || 'Model';
+
+  const list = document.getElementById('mesh-list');
+  list.innerHTML = '';
+
+  const meshes = [];
+  obj.traverse(c => { if (c.isMesh) meshes.push(c); });
+
+  if (!obj.userData.meshOverrides) obj.userData.meshOverrides = {};
+  const overrides = obj.userData.meshOverrides;
+
+  meshes.forEach(mesh => {
+    const key = mesh.name || mesh.uuid;
+    const ovr = overrides[key] || {};
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;grid-template-columns:20px 1fr 130px 22px;gap:4px;align-items:center;padding:3px 6px;background:#0d0d20;border-radius:3px';
+
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.checked = ovr.visible !== false;
+    chk.style.cursor = 'pointer';
+    chk.addEventListener('change', () => {
+      mesh.visible = chk.checked;
+      if (!overrides[key]) overrides[key] = {};
+      overrides[key].visible = chk.checked;
+      markDirty();
+    });
+
+    const label = document.createElement('span');
+    label.textContent = mesh.name || '(unnamed)';
+    label.style.cssText = 'font-size:11px;color:#aaaacc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer';
+    label.addEventListener('click', () => {
+      if (_highlightedMesh === mesh) { _setMeshHighlight(null, null); }
+      else { _setMeshHighlight(mesh, row); }
+    });
+
+    const texIn = document.createElement('input');
+    texIn.type = 'text';
+    texIn.className = 'prop-input';
+    texIn.value = ovr.texture || '';
+    texIn.placeholder = 'texture name';
+    texIn.style.cssText = 'font-size:11px;width:100%';
+    texIn.setAttribute('list', 'tex-datalist');
+    texIn.addEventListener('change', () => {
+      const texName = texIn.value.trim() || null;
+      if (!overrides[key]) overrides[key] = {};
+      overrides[key].texture = texName;
+      _applyMeshEditorTexture(mesh, texName);
+      markDirty();
+    });
+
+    row.appendChild(chk);
+    row.appendChild(label);
+    row.appendChild(texIn);
+
+    const impBtn = document.createElement('button');
+    impBtn.className = 'btn';
+    impBtn.textContent = '+';
+    impBtn.title = 'Import texture';
+    impBtn.style.cssText = 'padding:2px 4px;font-size:11px';
+    impBtn.addEventListener('click', async () => {
+      if (!window.electron?.importTexture) return;
+      const name = await window.electron.importTexture();
+      if (!name) return;
+      await refreshTextureList();
+      texIn.value = name;
+      if (!overrides[key]) overrides[key] = {};
+      overrides[key].texture = name;
+      _applyMeshEditorTexture(mesh, name);
+      markDirty();
+    });
+    row.appendChild(impBtn);
+
+    list.appendChild(row);
+  });
+
+  document.getElementById('mesh-modal').style.display = 'flex';
+}
+
+function closeMeshEditor() {
+  _setMeshHighlight(null, null);
+  document.getElementById('mesh-modal').style.display = 'none';
+}
+
+function _applyMeshEditorTexture(mesh, texName) {
+  if (!texName) return;
+  const loader = new THREE.TextureLoader();
+  const tryLoad = url => new Promise(resolve => loader.load(url, resolve, undefined, () => resolve(null)));
+  (async () => {
+    let tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.png`);
+    if (!tex) tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.jpg`);
+    if (!tex) return;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
+  })();
 }
 
 function _loadUVEditorImage(texName) {
@@ -2321,7 +2476,7 @@ async function _buildEntryObj(e, gltfLoader, fbxLoader) {
     return new Promise(resolve => {
       const ext = e.modelPath.split('.').pop().toLowerCase();
       const loader = ext === 'fbx' ? fbxLoader : gltfLoader;
-      loader.load(e.modelPath, result => {
+      loader.load(ASSET_ROOT + e.modelPath, result => {
         const root = result.scene || result;
         root.position.set(...e.pos);
         root.rotation.set(e.rot[0]*RAD, e.rot[1]*RAD, e.rot[2]*RAD);
@@ -2458,7 +2613,7 @@ async function openLevelModal() {
   const mainItem = document.createElement('div');
   mainItem.className = 'level-list-item';
   mainItem.dataset.level = 'main';
-  mainItem.textContent = 'main (hard-coded scene)';
+  mainItem.textContent = 'main';
   mainItem.addEventListener('click', () => {
     listDiv.querySelectorAll('.level-list-item').forEach(el => el.classList.remove('selected'));
     mainItem.classList.add('selected');
@@ -3219,11 +3374,6 @@ function setupUI() {
   document.getElementById('btn-scale').addEventListener('click',  () => setTransformMode('scale'));
 
   // Toolbar toggles
-  document.getElementById('btn-ref').addEventListener('click', () => {
-    E.showRef = !E.showRef;
-    E.refGroup.visible = E.showRef;
-    document.getElementById('btn-ref').classList.toggle('active', E.showRef);
-  });
   document.getElementById('btn-grid').addEventListener('click', () => {
     E.showGrid = !E.showGrid;
     E.gridHelper.visible = E.showGrid;
@@ -3547,6 +3697,13 @@ function setupUI() {
   // Edit UV button
   document.getElementById('btn-uv-edit')?.addEventListener('click', openUVEditor);
 
+  // Edit Meshes button + mesh modal wiring
+  document.getElementById('btn-mesh-edit')?.addEventListener('click', openMeshEditor);
+  document.getElementById('btn-mesh-close')?.addEventListener('click', closeMeshEditor);
+
+  makeDraggable('uv-modal', 'uv-modal-drag');
+  makeDraggable('mesh-modal', 'mesh-modal-drag');
+
   // UV modal wiring
   document.getElementById('btn-uv-close')?.addEventListener('click', closeUVEditor);
   document.getElementById('btn-uv-apply')?.addEventListener('click', () => {
@@ -3721,9 +3878,6 @@ function snapToNearestFace(obj) {
     if (other === obj || other.userData.isEditorHelper || other.userData.isLightGroup) return;
     checkSnap(other);
   });
-  // Also snap against hardcoded reference walls
-  E.refGroup?.children.forEach(other => { checkSnap(other); });
-
   if (bestAxis !== null) {
     obj.position[bestAxis] += bestDelta;
     obj.updateMatrixWorld(true);

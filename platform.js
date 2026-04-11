@@ -22,6 +22,20 @@ export const platformConfig = {
   
   get needsTouchInput() {
     return this.isMobile;
+  },
+
+  get renderScale() {
+    return this.isMobile ? 0.75 : 1.0;
+  },
+
+  getRendererSize(vw, vh) {
+    if (this.isMobile) {
+      const rs = this.renderScale;
+      return { w: Math.floor(vw * rs), h: Math.floor(vh * rs) };
+    }
+    const h = 480;
+    const w = Math.round(h * vw / vh);
+    return { w, h };
   }
 };
 

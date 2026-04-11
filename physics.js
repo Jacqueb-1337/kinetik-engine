@@ -422,6 +422,25 @@ export function update(delta) {
     gameState.canJump = false;
   }
 
+  // Ceiling collision — cast upward from capsule center to prevent passing through geometry above
+  if (gameState.velocityY > 0) {
+    const ceilOrigin = playerCylinder.center.clone();
+    gameState.raycaster.set(ceilOrigin, new THREE.Vector3(0, 1, 0));
+    let ceilHits = [];
+    if (gameState.ground) ceilHits = ceilHits.concat(gameState.raycaster.intersectObject(gameState.ground));
+    if (gameState.adjacentFloor) ceilHits = ceilHits.concat(gameState.raycaster.intersectObject(gameState.adjacentFloor));
+    if (standableObjects.length > 0) ceilHits = ceilHits.concat(gameState.raycaster.intersectObjects(standableObjects, true));
+    if (ceilHits.length > 0) {
+      ceilHits.sort((a, b) => a.distance - b.distance);
+      const hit = ceilHits[0];
+      if (hit.distance <= playerCylinder.halfHeight + 0.15) {
+        const centerOffset = playerCylinder.center.y - gameState.player.position.y;
+        gameState.player.position.y = hit.point.y - playerCylinder.halfHeight - centerOffset;
+        gameState.velocityY = 0;
+      }
+    }
+  }
+
   // Update hitbox helper
   updateHitboxHelper(playerCylinder);
 
