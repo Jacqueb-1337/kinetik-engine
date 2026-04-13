@@ -63,7 +63,7 @@ export function updateStateSounds() {
   }
 }
 
-function _playSound(name, worldPos) {
+export function playSound(name, worldPos) {
   if (!name) return;
   const exts = ['ogg', 'mp3', 'wav'];
   const tryNext = i => {
@@ -122,11 +122,11 @@ function _playStateSoundsForEvent(obj, stateIdx, event) {
       name = sounds[i % sounds.length].name;
       seq[key] = (i + 1) % sounds.length;
     }
-    _playSound(name, _getObjWorldPos(obj));
+    playSound(name, _getObjWorldPos(obj));
     return;
   }
   const legacy = event === 'enter' ? state.enterSound : state.exitSound;
-  _playSound(legacy, _getObjWorldPos(obj));
+  playSound(legacy, _getObjWorldPos(obj));
 }
 
 function _getObjWorldPos(obj) {

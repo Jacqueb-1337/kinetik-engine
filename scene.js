@@ -11,19 +11,15 @@ let _knobSaveHook = null;
 export function setKnobSaveHook(fn) { _knobSaveHook = fn; }
 let _channelChangeHook = null;
 export function setChannelChangeHook(fn) { _channelChangeHook = fn; }
+let _volClickHook = null;
+export function setVolClickHook(fn) { _volClickHook = fn; }
 
 let _volNotch = -1;
-function _playVolClick(value) {
-  const n = Math.floor(Math.random() * 6) + 1;
-  const a = new Audio(`./sounds/vol${n}.wav`);
-  a.volume = Math.max(0.01, value) * 0.3;
-  a.play().catch(() => {});
-}
 function _updateVolNotch(value) {
   const notch = Math.round(value * 30);
   if (notch !== _volNotch) {
     _volNotch = notch;
-    _playVolClick(value);
+    if (_volClickHook) _volClickHook(value);
   }
 }
 
