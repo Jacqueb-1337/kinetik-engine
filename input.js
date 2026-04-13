@@ -23,13 +23,6 @@ export function initInput() {
       return;
     }
 
-    // Handle Q key to quit when paused
-    if (e.code === 'KeyQ' && gameState.isPaused) {
-      if (navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
-      if (document.fullscreenElement) document.exitFullscreen();
-      location.reload();
-    }
-    
     // Handle F3 key to toggle debug overlay
     if (e.code === 'F3') {
       e.preventDefault();

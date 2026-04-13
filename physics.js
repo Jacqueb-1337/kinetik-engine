@@ -287,14 +287,18 @@ export function update(delta) {
   // Apply movement with smoothed speed
   const playerCapsule = getPlayerCylinder();
   const moveAmount = MOVE_SPEED * delta * gameState.currentSpeed;
-  
-  // Build collider list once per frame
+
+  // Build collider list once per frame, pre-filtered by proximity
+  const _px = gameState.player.position.x, _pz = gameState.player.position.z;
+  const CULL_DIST = 8;
   const checkObjects = gameState.scene.children.filter(obj => {
     const isWall = (obj.geometry instanceof THREE.BoxGeometry || obj.geometry instanceof THREE.PlaneGeometry) &&
       obj !== gameState.ground &&
       obj !== gameState.player;
     const isCollidable = obj.userData?.collidable || gameState.collidableObjects?.includes(obj);
-    return isWall || isCollidable;
+    if (!isWall && !isCollidable) return false;
+    const dx = obj.position.x - _px, dz = obj.position.z - _pz;
+    return (dx*dx + dz*dz) < CULL_DIST * CULL_DIST;
   });
 
   // Three ray heights covering the full player capsule: ankle, centre, head.
@@ -395,9 +399,12 @@ export function update(delta) {
   }
   
   // Check for collidable objects that can be stood on (like tables)
+  const _gpx = gameState.player.position.x, _gpz = gameState.player.position.z;
   const standableObjects = gameState.scene.children.filter(obj => {
     const isCollidable = obj.userData?.collidable || gameState.collidableObjects?.includes(obj);
-    return isCollidable && obj !== gameState.player;
+    if (!isCollidable || obj === gameState.player) return false;
+    const dx = obj.position.x - _gpx, dz = obj.position.z - _gpz;
+    return (dx*dx + dz*dz) < 64;
   });
   if (standableObjects.length > 0) {
     const objIntersects = gameState.raycaster.intersectObjects(standableObjects, true);

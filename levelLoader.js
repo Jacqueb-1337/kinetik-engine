@@ -6,8 +6,32 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
 import { initStatefulObjects, levelVars } from './stateManager.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 const RAD = Math.PI / 180;
+
+function _flipGeometryNormals(geo) {
+  const normals = geo.getAttribute('normal');
+  if (normals) {
+    for (let i = 0; i < normals.count; i++) {
+      normals.setXYZ(i, -normals.getX(i), -normals.getY(i), -normals.getZ(i));
+    }
+    normals.needsUpdate = true;
+  }
+  const index = geo.index;
+  if (index) {
+    for (let i = 0; i < index.count; i += 3) {
+      const b = index.getX(i + 1);
+      index.setX(i + 1, index.getX(i + 2));
+      index.setX(i + 2, b);
+    }
+    index.needsUpdate = true;
+  }
+}
 
 let _gltfLoader = null;
 function getGLTFLoader() {
@@ -38,31 +62,70 @@ const WRAP_MAP = {
 function buildFaceTexMat(baseColor, cfg, side = THREE.FrontSide) {
   if (!cfg?.name) return new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.9, side });
   const wrapMode = WRAP_MAP[cfg.wrap] ?? THREE.RepeatWrapping;
-  const tex = getTexLoader().load(
-    `./textures/${cfg.name}.png`,
-    undefined,
-    undefined,
-    () => getTexLoader().load(`./textures/${cfg.name}.jpg`, t => {
-      t.wrapS = t.wrapT = wrapMode;
-      t.repeat.set(cfg.rx ?? 1, cfg.ry ?? 1);
-      t.offset.set(cfg.ox ?? 0, cfg.oy ?? 0);
-      t.needsUpdate = true;
-    })
+
+  const applyUV = t => {
+    t.wrapS = t.wrapT = wrapMode;
+    t.repeat.set(cfg.rx ?? 1, cfg.ry ?? 1);
+    t.offset.set(cfg.ox ?? 0, cfg.oy ?? 0);
+    t.needsUpdate = true;
+  };
+
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, side });
+
+  const applyDiffuse = t => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    applyUV(t);
+    mat.map = t;
+    mat.color.set(0xffffff);
+    mat.needsUpdate = true;
+  };
+  getTexLoader().load(`./textures/${cfg.name}.png`, applyDiffuse, undefined,
+    () => getTexLoader().load(`./textures/${cfg.name}.jpg`, applyDiffuse)
   );
-  tex.wrapS = tex.wrapT = wrapMode;
-  tex.repeat.set(cfg.rx ?? 1, cfg.ry ?? 1);
-  tex.offset.set(cfg.ox ?? 0, cfg.oy ?? 0);
-  return new THREE.MeshStandardMaterial({ map: tex, color: baseColor, roughness: 0.9, side });
+
+  if (cfg.normalMap) {
+    const nTex = getTexLoader().load(
+      `./textures/${cfg.normalMap}.png`, undefined, undefined,
+      () => getTexLoader().load(`./textures/${cfg.normalMap}.jpg`, t => { applyUV(t); mat.normalMap = t; mat.needsUpdate = true; })
+    );
+    applyUV(nTex);
+    mat.normalMap = nTex;
+  }
+
+  if (cfg.roughnessMap) {
+    const rTex = getTexLoader().load(
+      `./textures/${cfg.roughnessMap}.png`, undefined, undefined,
+      () => getTexLoader().load(`./textures/${cfg.roughnessMap}.jpg`, t => { applyUV(t); mat.roughnessMap = t; mat.roughness = 1.0; mat.needsUpdate = true; })
+    );
+    applyUV(rTex);
+    mat.roughnessMap = rTex;
+    mat.roughness = 1.0;
+  }
+
+  if (cfg.bumpMap) {
+    const bScale = cfg.bumpScale ?? 1.0;
+    const bTex = getTexLoader().load(
+      `./textures/${cfg.bumpMap}.png`, undefined, undefined,
+      () => getTexLoader().load(`./textures/${cfg.bumpMap}.jpg`, t => { applyUV(t); mat.bumpMap = t; mat.bumpScale = bScale; mat.needsUpdate = true; })
+    );
+    applyUV(bTex);
+    mat.bumpMap = bTex;
+    mat.bumpScale = bScale;
+  }
+
+  return mat;
 }
 
-// Apply faceTextures data to a mesh's material (multi-material for box per-face, single otherwise)
+// Apply faceTextures data to a mesh's material + face overlay children
 function applyFaceTextures(mesh, faceTextures, baseColor = '#aaaacc') {
   if (!faceTextures) return;
   const isBox = mesh.geometry instanceof THREE.BoxGeometry;
-  const hasPerFace = isBox && Object.keys(faceTextures).some(k => k !== 'all' && /^\d$/.test(k));
+  const hasBoxPerFace = isBox && Object.keys(faceTextures).some(k => k !== 'all' && /^\d$/.test(k));
+  const hasFaceMode   = Object.keys(faceTextures).some(k => k.startsWith('f_'));
   const side = isBox ? THREE.FrontSide : THREE.DoubleSide;
 
-  if (hasPerFace) {
+  // Base material
+  if (hasBoxPerFace) {
     mesh.material = Array.from({ length: 6 }, (_, i) => {
       const cfg = faceTextures[String(i)] ?? faceTextures['all'] ?? null;
       return buildFaceTexMat(baseColor, cfg, side);
@@ -70,6 +133,116 @@ function applyFaceTextures(mesh, faceTextures, baseColor = '#aaaacc') {
   } else {
     mesh.material = buildFaceTexMat(baseColor, faceTextures['all'] ?? null, side);
   }
+
+  // Face mode overlays: one child mesh per f_... key that has a texture
+  if (hasFaceMode && mesh.geometry) {
+    const groups = _computeFaceGroupsRuntime(mesh);
+    const geo     = mesh.geometry;
+    const posAttr = geo.attributes.position;
+    const uvAttr  = geo.attributes.uv;
+    const normAttr = geo.attributes.normal;
+    const idxArr  = geo.index ? geo.index.array : null;
+    const vi = (ti, c) => idxArr ? idxArr[ti * 3 + c] : ti * 3 + c;
+
+    for (const [key, cfg] of Object.entries(faceTextures)) {
+      if (!key.startsWith('f_') || !cfg?.name) continue;
+      const group = groups.find(g => g.key === key);
+      if (!group) continue;
+
+      const positions = [], uvCoords = [], normals = [];
+      for (const ti of group.tris) {
+        for (let c = 0; c < 3; c++) {
+          const i = vi(ti, c);
+          positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+          if (uvAttr)   uvCoords.push(uvAttr.getX(i), uvAttr.getY(i));
+          if (normAttr) normals.push(normAttr.getX(i), normAttr.getY(i), normAttr.getZ(i));
+        }
+      }
+
+      const overlayGeo = new THREE.BufferGeometry();
+      overlayGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      if (uvCoords.length) overlayGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvCoords, 2));
+      if (normals.length)  overlayGeo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      else                 overlayGeo.computeVertexNormals();
+
+      const mat = buildFaceTexMat(baseColor, cfg, THREE.DoubleSide);
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = -1;
+      mat.polygonOffsetUnits  = -1;
+
+      const overlayMesh = new THREE.Mesh(overlayGeo, mat);
+      overlayMesh.renderOrder = 1;
+      overlayMesh.castShadow    = mesh.castShadow;
+      overlayMesh.receiveShadow = mesh.receiveShadow;
+      mesh.add(overlayMesh);
+    }
+  }
+}
+
+// Minimal face group computation for runtime (mirrors editor's computeFaceGroups)
+function _computeFaceGroupsRuntime(mesh) {
+  const geo = mesh.geometry;
+  if (!geo?.attributes?.position) return [];
+  const pos    = geo.attributes.position;
+  const idxArr = geo.index ? geo.index.array : null;
+  const triCount = idxArr ? idxArr.length / 3 : pos.count / 3;
+  const vi = (ti, c) => idxArr ? idxArr[ti * 3 + c] : ti * 3 + c;
+  const _v = i => new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+  const vKey = (x, y, z) => `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
+
+  const triNormals = [], triAreas = [];
+  for (let t = 0; t < triCount; t++) {
+    const a = _v(vi(t,0)), b = _v(vi(t,1)), c = _v(vi(t,2));
+    const cross = b.clone().sub(a).cross(c.clone().sub(a));
+    triAreas.push(cross.length() / 2);
+    triNormals.push(cross.normalize());
+  }
+
+  const edgeMap = new Map();
+  for (let t = 0; t < triCount; t++) {
+    const vs = [vKey(pos.getX(vi(t,0)),pos.getY(vi(t,0)),pos.getZ(vi(t,0))),
+                vKey(pos.getX(vi(t,1)),pos.getY(vi(t,1)),pos.getZ(vi(t,1))),
+                vKey(pos.getX(vi(t,2)),pos.getY(vi(t,2)),pos.getZ(vi(t,2)))];
+    for (let e = 0; e < 3; e++) {
+      const ek = vs[e] < vs[(e+1)%3] ? `${vs[e]}|${vs[(e+1)%3]}` : `${vs[(e+1)%3]}|${vs[e]}`;
+      if (!edgeMap.has(ek)) edgeMap.set(ek, []);
+      edgeMap.get(ek).push(t);
+    }
+  }
+
+  const visited = new Uint8Array(triCount);
+  const groups  = [];
+  for (let start = 0; start < triCount; start++) {
+    if (visited[start]) continue;
+    const N = triNormals[start];
+    const group = [], queue = [start];
+    visited[start] = 1;
+    while (queue.length) {
+      const t = queue.shift();
+      group.push(t);
+      const vs = [vKey(pos.getX(vi(t,0)),pos.getY(vi(t,0)),pos.getZ(vi(t,0))),
+                  vKey(pos.getX(vi(t,1)),pos.getY(vi(t,1)),pos.getZ(vi(t,1))),
+                  vKey(pos.getX(vi(t,2)),pos.getY(vi(t,2)),pos.getZ(vi(t,2)))];
+      for (let e = 0; e < 3; e++) {
+        const ek = vs[e] < vs[(e+1)%3] ? `${vs[e]}|${vs[(e+1)%3]}` : `${vs[(e+1)%3]}|${vs[e]}`;
+        for (const n of (edgeMap.get(ek) || []))
+          if (!visited[n] && triNormals[n].dot(N) > 0.9998) { visited[n] = 1; queue.push(n); }
+      }
+    }
+    let area = 0;
+    const centroid = new THREE.Vector3();
+    for (const t of group) {
+      area += triAreas[t];
+      centroid.addScaledVector(new THREE.Vector3(
+        (pos.getX(vi(t,0))+pos.getX(vi(t,1))+pos.getX(vi(t,2)))/3,
+        (pos.getY(vi(t,0))+pos.getY(vi(t,1))+pos.getY(vi(t,2)))/3,
+        (pos.getZ(vi(t,0))+pos.getZ(vi(t,1))+pos.getZ(vi(t,2)))/3), triAreas[t]);
+    }
+    if (area > 0) centroid.divideScalar(area);
+    const key = `f_${N.x.toFixed(2)}_${N.y.toFixed(2)}_${N.z.toFixed(2)}_${centroid.x.toFixed(2)}_${centroid.y.toFixed(2)}_${centroid.z.toFixed(2)}`;
+    groups.push({ tris: group, key });
+  }
+  return groups;
 }
 
 // Primitive geometry factories matching the editor
@@ -137,6 +310,7 @@ function spawnPrim(entry) {
   if (entry.isAdjFloor)    { mesh.userData.isAdjFloor  = true; gameState.adjacentFloor = mesh; }
   if (entry.states?.length)    { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
   if (entry.noSelfInteract)      mesh.userData.noSelfInteract = true;
+  if (entry.pivotOffset)         mesh.userData.pivotOffset = entry.pivotOffset;
   return mesh;
 }
 
@@ -177,6 +351,7 @@ function spawnLight(entry) {
   light.userData.editorId  = entry.id;
   if (entry.states?.length)   { light.userData.states = entry.states; light.userData.currentState = 0; }
   if (entry.noSelfInteract)     light.userData.noSelfInteract = true;
+  if (entry.pivotOffset)        light.userData.pivotOffset = entry.pivotOffset;
   return light;
 }
 
@@ -193,6 +368,9 @@ function spawnModel(entry) {
           c.receiveShadow = true;
           c.userData.collidable = entry.collidable !== false;
           c.userData.levelObj   = true;
+          if (c.geometry) c.geometry.computeBoundsTree();
+          const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
+          mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
         }
       });
       applyTransform(root, entry);
@@ -210,6 +388,7 @@ function spawnModel(entry) {
       }
       if (entry.states?.length)   { root.userData.states = entry.states; root.userData.currentState = 0; }
       if (entry.noSelfInteract)     root.userData.noSelfInteract = true;
+      if (entry.pivotOffset)        root.userData.pivotOffset = entry.pivotOffset;
       if (entry.meshOverrides) {
         root.userData.meshOverrides = entry.meshOverrides;
         root.traverse(c => {
@@ -221,6 +400,7 @@ function spawnModel(entry) {
           if (ovr.texture) {
             const name = ovr.texture;
             const applyTex = tex => {
+              tex.colorSpace = THREE.SRGBColorSpace;
               tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
               const mats = Array.isArray(c.material) ? c.material : [c.material];
               mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
@@ -237,6 +417,7 @@ function spawnModel(entry) {
         const metalness = entry.metalness ?? 0;
         const name = entry.masterTexture;
         const applyMaster = tex => {
+          tex.colorSpace = THREE.SRGBColorSpace;
           tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
           root.traverse(c => {
             if (!c.isMesh) return;
@@ -260,6 +441,17 @@ function spawnModel(entry) {
             }
           });
         });
+      }
+      if (entry.doubleSide) {
+        root.traverse(c => {
+          if (c.isMesh && c.material) {
+            const mats = Array.isArray(c.material) ? c.material : [c.material];
+            mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+          }
+        });
+      }
+      if (entry.invertNormals) {
+        root.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
       }
       resolve(root);
     }, undefined, err => {
@@ -293,8 +485,21 @@ async function spawnCsgResult(entry) {
     }
 
     const result = brushA;
-    result.position.setScalar(0);
-    result.rotation.set(0, 0, 0);
+    result.geometry.computeBoundingBox();
+    const _csgCenter = new THREE.Vector3();
+    result.geometry.boundingBox.getCenter(_csgCenter);
+    result.geometry.translate(-_csgCenter.x, -_csgCenter.y, -_csgCenter.z);
+    result.geometry.computeBoundsTree();
+    if (entry.pos && (entry.pos[0] !== 0 || entry.pos[1] !== 0 || entry.pos[2] !== 0)) {
+      result.position.set(entry.pos[0], entry.pos[1], entry.pos[2]);
+    } else {
+      result.position.copy(_csgCenter);
+    }
+    if (entry.rot && (entry.rot[0] !== 0 || entry.rot[1] !== 0 || entry.rot[2] !== 0)) {
+      result.rotation.set(entry.rot[0]*RAD, entry.rot[1]*RAD, entry.rot[2]*RAD);
+    } else {
+      result.rotation.set(0, 0, 0);
+    }
     result.scale.setScalar(1);
     result.castShadow    = entry.castShadow !== false;
     result.receiveShadow = true;
@@ -309,11 +514,18 @@ async function spawnCsgResult(entry) {
     if (entry.states?.length)  { result.userData.states = entry.states; result.userData.currentState = 0; }
     if (entry.noSelfInteract)    result.userData.noSelfInteract = true;
     // Apply texture if saved from editor
-    if (entry.faceTextures) applyFaceTextures(result, entry.faceTextures, entry.color ?? '#aaaacc');
-    else if (entry.color) {
-      const col = new THREE.Color(entry.color);
-      const mats = Array.isArray(result.material) ? result.material : [result.material];
-      mats.forEach(m => { if (m?.color) m.color.set(col); });
+    if (entry.faceTextures) applyFaceTextures(result, entry.faceTextures, entry.color ?? entry.csgRecipe?.base?.color ?? '#aaaacc');
+    else {
+      const colorToApply = entry.color ?? entry.csgRecipe?.base?.color;
+      if (colorToApply) {
+        const col = new THREE.Color(colorToApply);
+        const mats = Array.isArray(result.material) ? result.material : [result.material];
+        mats.forEach(m => {
+          if (m?.color) m.color.set(col);
+          if (entry.roughness !== undefined && 'roughness' in m) m.roughness = entry.roughness;
+          if (entry.metalness !== undefined && 'metalness' in m) m.metalness = entry.metalness;
+        });
+      }
     }
     return result;
 
@@ -335,10 +547,10 @@ function spawnMergedModel(entry) {
     if (md.normals) geo.setAttribute('normal', new THREE.Float32BufferAttribute(md.normals, 3));
     if (md.uvs)     geo.setAttribute('uv',     new THREE.Float32BufferAttribute(md.uvs, 2));
     if (md.indices) geo.setIndex(new THREE.BufferAttribute(new Uint32Array(md.indices), 1));
-    const mat = new THREE.MeshStandardMaterial({ color: '#aaaacc', roughness: 1, metalness: 0, side: THREE.DoubleSide });
+    const mat = new THREE.MeshStandardMaterial({ color: entry.color ?? '#aaaacc', roughness: 1, metalness: 0, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = md.name;
-    mesh.castShadow = true;
+    mesh.castShadow = entry.castShadow !== false;
     mesh.receiveShadow = true;
     root.add(mesh);
   });
@@ -352,6 +564,7 @@ function spawnMergedModel(entry) {
   root.userData.editorId   = entry.id;
   if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
   if (entry.noSelfInteract)    root.userData.noSelfInteract = true;
+  if (entry.pivotOffset)       root.userData.pivotOffset = entry.pivotOffset;
   if (entry.meshOverrides) {
     root.traverse(c => {
       if (!c.isMesh) return;
@@ -361,6 +574,7 @@ function spawnMergedModel(entry) {
       if (ovr.texture) {
         const name = ovr.texture;
         const applyTex = tex => {
+          tex.colorSpace = THREE.SRGBColorSpace;
           tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
           const mats = Array.isArray(c.material) ? c.material : [c.material];
           mats.forEach(m => { if (m) { m.map = tex; m.needsUpdate = true; } });
@@ -371,10 +585,143 @@ function spawnMergedModel(entry) {
       }
     });
   }
+  if (entry.doubleSide) {
+    root.traverse(c => {
+      if (c.isMesh && c.material) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+      }
+    });
+  }
+  if (entry.invertNormals) {
+    root.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
+  }
   return root;
 }
 
+function spawnImageModel(entry) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const exts = ['png', 'jpg', 'jpeg', 'webp'];
+    const hasExt = /\.[^./\\]+$/.test(entry.imagePath || '');
+    let extIdx = 0;
+    const base = entry.imagePath || '';
+    const tryNext = () => {
+      if (hasExt) { img.src = './' + base; return; }
+      if (extIdx >= exts.length) { resolve(null); return; }
+      img.src = './' + base + '.' + exts[extIdx++];
+    };
+    img.onerror = () => { if (hasExt) resolve(null); else tryNext(); };
+    img.onload = () => {
+      const W = img.naturalWidth || 1;
+      const H = img.naturalHeight || 1;
+      const aspect = H / W;
+      const COLS = Math.min(W, 256);
+      const ROWS = Math.max(1, Math.round(COLS * aspect));
+      const canvas = document.createElement('canvas');
+      canvas.width = COLS; canvas.height = ROWS;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, COLS, ROWS);
+      const d = ctx.getImageData(0, 0, COLS, ROWS).data;
+      const getA = (c, r) => (c < 0 || c >= COLS || r < 0 || r >= ROWS) ? 0 : d[(r * COLS + c) * 4 + 3];
+      const THR = 127;
+      const D = 0.1;
+      const verts = [], norms = [];
+      const ecrss = (a1, x1, y1, a2, x2, y2) => {
+        const t = (a1 === a2) ? 0.5 : Math.max(0, Math.min(1, (THR - a1) / (a2 - a1)));
+        return [x1 + t * (x2 - x1), y1 + t * (y2 - y1)];
+      };
+      const p3 = (px, py) => [(px + 0.5) / COLS - 0.5, aspect * (0.5 - (py + 0.5) / ROWS)];
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const aTL = getA(c,r), aTR = getA(c+1,r), aBL = getA(c,r+1), aBR = getA(c+1,r+1);
+          const abv = a => a >= THR;
+          const idx = (abv(aTL)?8:0)|(abv(aTR)?4:0)|(abv(aBR)?2:0)|(abv(aBL)?1:0);
+          if (idx === 0 || idx === 15) continue;
+          const tp = () => ecrss(aTL,c,r,   aTR,c+1,r);
+          const rt = () => ecrss(aTR,c+1,r, aBR,c+1,r+1);
+          const bt = () => ecrss(aBL,c,r+1, aBR,c+1,r+1);
+          const lt = () => ecrss(aTL,c,r,   aBL,c,r+1);
+          let segs;
+          switch (idx) {
+            case 1:  segs = [[lt(),bt()]]; break;
+            case 2:  segs = [[bt(),rt()]]; break;
+            case 3:  segs = [[lt(),rt()]]; break;
+            case 4:  segs = [[rt(),tp()]]; break;
+            case 5:  segs = [[rt(),bt()],[lt(),tp()]]; break;
+            case 6:  segs = [[bt(),tp()]]; break;
+            case 7:  segs = [[lt(),tp()]]; break;
+            case 8:  segs = [[tp(),lt()]]; break;
+            case 9:  segs = [[tp(),bt()]]; break;
+            case 10: segs = [[tp(),rt()],[bt(),lt()]]; break;
+            case 11: segs = [[tp(),rt()]]; break;
+            case 12: segs = [[rt(),lt()]]; break;
+            case 13: segs = [[rt(),bt()]]; break;
+            case 14: segs = [[bt(),lt()]]; break;
+            default: segs = [];
+          }
+          for (const [[x1,y1],[x2,y2]] of segs) {
+            const [ax,ay] = p3(x1,y1), [bx,by] = p3(x2,y2);
+            const dx = bx-ax, dy = by-ay, len = Math.sqrt(dx*dx+dy*dy)||1;
+            const nx = dy/len, ny = -dx/len;
+            const OV = 0.005;
+            verts.push(ax,ay,OV, bx,by,OV, bx,by,-D, ax,ay,OV, bx,by,-D, ax,ay,-D);
+            for (let i = 0; i < 6; i++) norms.push(nx, ny, 0);
+          }
+        }
+      }
+      let sr = 0, sg = 0, sb = 0, sn = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 10) { sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++; }
+      }
+      const autoColor = sn ? '#' + [sr,sg,sb].map(c => Math.round(c/sn).toString(16).padStart(2,'0')).join('') : '#888888';
+      const sideColor = entry.wallColor || autoColor;
+      const tex = new THREE.Texture(img);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      const faceMat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, roughness: 1, metalness: 0, side: THREE.FrontSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+      const sideMat  = new THREE.MeshStandardMaterial({ color: sideColor, roughness: 1, metalness: 0, side: THREE.DoubleSide });
+      const frontMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, aspect), faceMat);
+      const backFaceMat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, roughness: 1, metalness: 0, side: THREE.BackSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+      const backMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, aspect), backFaceMat);
+      backMesh.position.z = -D;
+      const sideGeo = new THREE.BufferGeometry();
+      sideGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      sideGeo.setAttribute('normal',   new THREE.Float32BufferAttribute(norms, 3));
+      const sideMesh = new THREE.Mesh(sideGeo, sideMat);
+      const castShadow = entry.castShadow !== false;
+      [frontMesh, backMesh, sideMesh].forEach(m => { m.castShadow = castShadow; m.receiveShadow = true; });
+      frontMesh.userData.collidable = entry.collidable !== false;
+      sideMesh.userData.collidable  = entry.collidable !== false;
+      if (frontMesh.geometry) frontMesh.geometry.computeBoundsTree?.();
+      if (verts.length)        sideMesh.geometry.computeBoundsTree?.();
+      const group = new THREE.Group();
+      group.add(frontMesh, backMesh, sideMesh);
+      group.position.set(...entry.pos);
+      group.rotation.set(entry.rot[0] * RAD, entry.rot[1] * RAD, entry.rot[2] * RAD);
+      group.scale.set(...entry.size);
+      group.userData.levelObj   = true;
+      group.userData.editorId   = entry.id;
+      group.userData.collidable = entry.collidable !== false;
+      if (entry.states?.length) { group.userData.states = entry.states; group.userData.currentState = 0; }
+    resolve(group);
+    };
+    tryNext();
+  });
+}
+
 async function _buildRecipeObj(e) {
+  if (e.type === 'csg-result') {
+    if (e.csgRecipe) return spawnCsgResult(e);
+    return null;
+  }
+  if (e.type === 'merged-model') {
+    const m = spawnMergedModel(e);
+    if (m) m.updateMatrixWorld(true);
+    return m;
+  }
+  if (e.type === 'image-model' && e.imagePath) return spawnImageModel(e);
   if (e.type === 'model' && e.modelPath) return spawnModel(e);
   const mesh = spawnPrim(e);
   if (mesh) mesh.updateMatrixWorld(true);
@@ -520,6 +867,7 @@ export async function loadLevel(name = 'main') {
             triggerVar:      entry.triggerVar      || '',
             triggerVarOp:    entry.triggerVarOp    || 'set',
             triggerVarValue: entry.triggerVarValue ?? 'true',
+            presenceVar:     entry.presenceVar     || '',
             _inside:   false,
             _worldPos: { x: px, y: py, z: pz },
             _halfW:    Math.abs(sx) / 2,
@@ -532,6 +880,8 @@ export async function loadLevel(name = 'main') {
         obj = await spawnCsgResult(entry);
       } else if (entry.type === 'merged-model') {
         obj = spawnMergedModel(entry);
+      } else if (entry.type === 'image-model') {
+        obj = await spawnImageModel(entry);
       } else if (entry.type === 'model') {
         obj = await spawnModel(entry);
       } else if (entry.type === 'point-light' || entry.type === 'spot-light' || entry.type === 'dir-light') {

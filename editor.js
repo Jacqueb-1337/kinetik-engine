@@ -106,6 +106,14 @@ const E = {
   faceHighlightMesh: null,   // THREE.Mesh child of selected object
   uvEditorImage:     null,   // Image loaded for UV canvas preview
 
+  // Face mode
+  faceModeActive:    false,
+  faceModeGroups:    [],     // computed coplanar groups for the active object
+  faceModeHovered:   -1,     // index of group under cursor
+  faceModeSelected:  -1,     // index of selected group (-1 = none)
+  faceHoverMesh:     null,   // scene-level hover highlight mesh
+  faceSelectMesh:    null,   // scene-level selected highlight mesh
+
   _stateDragSrc: undefined,  // index of state item being dragged for reorder
 };
 
@@ -124,6 +132,7 @@ async function init() {
   const viewport = document.getElementById('viewport');
   E.renderer = new THREE.WebGLRenderer({ antialias: true });
   E.renderer.setPixelRatio(devicePixelRatio);
+  E.renderer.outputColorSpace = THREE.SRGBColorSpace;
   E.renderer.shadowMap.enabled = true;
   E.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   resizeRenderer();
@@ -167,7 +176,8 @@ async function init() {
     E.orbit.enabled = !e.value;
     if (e.value) {
       // Drag started — push undo before transform happens, then record pivot
-      if (E.selected || E.groupPivot) pushUndo();
+      // (group transforms push undo in beginGroupTransform, before reparenting)
+      if (E.selected && !E.groupPivot) pushUndo();
       if (E.selected?.userData.pivotOffset && E.transform.mode === 'rotate') {
         const obj = E.selected;
         const localOffset = new THREE.Vector3().fromArray(obj.userData.pivotOffset);
@@ -453,22 +463,51 @@ function _removedSinisterReferenceScene() {
 
 // â”€â”€â”€ Level save / load â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function levelToJSON() {
+  // If a group pivot is active, temporarily reparent members into placedGroup with
+  // their world-space transforms so the serialization loop sees them correctly.
+  const _pivotSaved = [];
+  if (E.groupPivot && E.groupPivotMembers.length) {
+    E.groupPivotMembers.forEach(m => {
+      const wp = new THREE.Vector3();
+      const wq = new THREE.Quaternion();
+      const ws = new THREE.Vector3();
+      m.updateMatrixWorld(true);
+      m.getWorldPosition(wp);
+      m.getWorldQuaternion(wq);
+      m.getWorldScale(ws);
+      _pivotSaved.push({ m, lp: m.position.clone(), lq: m.quaternion.clone(), ls: m.scale.clone() });
+      E.groupPivot.remove(m);
+      m.position.copy(wp);
+      m.quaternion.copy(wq);
+      m.scale.copy(ws);
+      E.placedGroup.add(m);
+    });
+  }
+
   const objects = [];
   E.placedGroup.children.forEach(obj => {
     if (obj.userData.isEditorHelper) return;
     // CSG result: store the recipe, not pos/rot/size (result lives at world origin)
     if (obj.userData.primType === 'csg-result') {
+      const matColor = Array.isArray(obj.material) ? obj.material[0]?.color : obj.material?.color;
       const csgEntry = {
         id:         obj.userData.editorId,
         label:      obj.userData.label || '',
         type:       'csg-result',
         collidable: obj.userData.collidable !== false,
         castShadow: obj.castShadow !== false,
-        pos:        [0, 0, 0],
-        rot:        [0, 0, 0],
+        pos:        [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
+        rot:        [+(obj.rotation.x*DEG).toFixed(4), +(obj.rotation.y*DEG).toFixed(4), +(obj.rotation.z*DEG).toFixed(4)],
         size:       [1, 1, 1],
+        color:      matColor ? '#' + matColor.getHexString() : '#aaaacc',
         csgRecipe:  obj.userData.csgRecipe,
       };
+      if (obj.userData.emissiveIntensity > 0) {
+        csgEntry.emissiveIntensity = obj.userData.emissiveIntensity;
+        csgEntry.emissiveColor     = obj.userData.emissiveColor ?? '#ffffff';
+      }
+      if (obj.userData.roughness !== undefined) csgEntry.roughness = obj.userData.roughness;
+      if (obj.userData.metalness !== undefined) csgEntry.metalness = obj.userData.metalness;
       if (obj.userData.faceTextures) csgEntry.faceTextures = obj.userData.faceTextures;
       objects.push(csgEntry);
       return;
@@ -486,10 +525,31 @@ function levelToJSON() {
         mergedMeshes: _serializeMergedMeshes(obj),
       };
       if (obj.userData.meshOverrides) mergedEntry.meshOverrides = obj.userData.meshOverrides;
+      if (obj.userData._baseColor) mergedEntry.color = obj.userData._baseColor;
+      if (obj.userData.doubleSide) mergedEntry.doubleSide = true;
+      if (obj.userData.invertNormals) mergedEntry.invertNormals = true;
       if (obj.userData.states?.length) mergedEntry.states = obj.userData.states;
       if (obj.userData.links?.length)  mergedEntry.links  = obj.userData.links;
       if (obj.userData.noSelfInteract) mergedEntry.noSelfInteract = true;
       objects.push(mergedEntry);
+      return;
+    }
+    if (obj.userData.primType === 'image-model') {
+      const imgEntry = {
+        id:         obj.userData.editorId,
+        label:      obj.userData.label || '',
+        type:       'image-model',
+        imagePath:  obj.userData.imagePath,
+        wallColor:  obj.userData.wallColor,
+        collidable: obj.userData.collidable !== false,
+        castShadow: obj.castShadow !== false,
+        pos:        [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
+        rot:        [+(obj.rotation.x*DEG).toFixed(2), +(obj.rotation.y*DEG).toFixed(2), +(obj.rotation.z*DEG).toFixed(2)],
+        size:       [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
+      };
+      if (obj.userData.states?.length) imgEntry.states = obj.userData.states;
+      if (obj.userData.links?.length)  imgEntry.links  = obj.userData.links;
+      objects.push(imgEntry);
       return;
     }
     const entry = {
@@ -501,7 +561,7 @@ function levelToJSON() {
       pos:        [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
       rot:        [+(obj.rotation.x*DEG).toFixed(2), +(obj.rotation.y*DEG).toFixed(2), +(obj.rotation.z*DEG).toFixed(2)],
       size:       [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
-      color:      obj.material?.color ? '#' + obj.material.color.getHexString() : '#aaaacc',
+      color:      obj.userData._baseColor ?? (Array.isArray(obj.material) ? ('#' + (obj.material[0]?.color?.getHexString() ?? 'aaaacc')) : (obj.material?.color ? '#' + obj.material.color.getHexString() : '#aaaacc')),
     };
     if (obj.userData.emissiveIntensity > 0) {
       entry.emissiveIntensity = obj.userData.emissiveIntensity;
@@ -525,6 +585,8 @@ function levelToJSON() {
     if (obj.userData.masterTexture)  entry.masterTexture  = obj.userData.masterTexture;
     if (obj.userData.roughness !== undefined) entry.roughness = obj.userData.roughness;
     if (obj.userData.metalness !== undefined) entry.metalness = obj.userData.metalness;
+    if (obj.userData.doubleSide) entry.doubleSide = true;
+    if (obj.userData.invertNormals) entry.invertNormals = true;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -549,6 +611,7 @@ function levelToJSON() {
         entry.triggerVar      = obj.userData.triggerVar      || '';
         entry.triggerVarOp    = obj.userData.triggerVarOp    || 'set';
         entry.triggerVarValue = obj.userData.triggerVarValue ?? 'true';
+        entry.presenceVar     = obj.userData.presenceVar     || '';
       } else {
         entry.saveSlot = obj.userData.saveSlot || 'autosave';
         entry.onceOnly = obj.userData.onceOnly !== false;
@@ -562,6 +625,16 @@ function levelToJSON() {
   for (const [gid, g] of Object.entries(E.groups)) {
     groups[gid] = { name: g.name, ids: [...g.ids] };
   }
+
+  // Restore any group pivot members back to their local-pivot transforms
+  _pivotSaved.forEach(({ m, lp, lq, ls }) => {
+    E.placedGroup.remove(m);
+    m.position.copy(lp);
+    m.quaternion.copy(lq);
+    m.scale.copy(ls);
+    E.groupPivot.add(m);
+  });
+
   return { levelName: E.levelName, nextId: E.nextId, objects, groups, vars: E.levelVars };
 }
 
@@ -608,6 +681,7 @@ async function loadLevel(name) {
       if (entry.type === 'csg-result')    return spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
       if (entry.type === 'model')          return loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
       if (entry.type === 'merged-model')   return Promise.resolve(spawnMergedModel(entry));
+      if (entry.type === 'image-model')    return spawnImageModel(entry);
       return Promise.resolve(spawnPrimFromEntry(entry));
     });
     await Promise.allSettled(promises);
@@ -655,6 +729,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
       if (entry.states?.length) { root.userData.states = entry.states; root.userData.currentState = 0; }
       if (entry.links?.length)  root.userData.links  = entry.links;
       if (entry.noSelfInteract) root.userData.noSelfInteract = true;
+      if (entry.pivotOffset)    root.userData.pivotOffset = entry.pivotOffset;
       if (entry.emissiveIntensity > 0) {
         root.userData.emissiveIntensity = entry.emissiveIntensity;
         root.userData.emissiveColor     = entry.emissiveColor ?? '#ffffff';
@@ -712,6 +787,19 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
             }
           });
         });
+      }
+      if (entry.doubleSide) {
+        root.userData.doubleSide = true;
+        root.traverse(c => {
+          if (c.isMesh && c.material) {
+            const mats = Array.isArray(c.material) ? c.material : [c.material];
+            mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+          }
+        });
+      }
+      if (entry.invertNormals) {
+        root.userData.invertNormals = true;
+        root.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
       }
       E.placedGroup.add(root);
       resolve();
@@ -1005,45 +1093,299 @@ function makePrimMesh(type, color = 0xaaaacc) {
 // Box geometry face indices: 0=+X(right), 1=-X(left), 2=+Y(top), 3=-Y(bottom), 4=+Z(front), 5=-Z(back)
 const BOX_FACE_NAMES = ['Right (+X)', 'Left (-X)', 'Top (+Y)', 'Bottom (-Y)', 'Front (+Z)', 'Back (-Z)'];
 
+// Compute coplanar connected face groups for arbitrary mesh geometry.
+// Returns array of {tris:[triIdx,...], normal, centroid, area, key} sorted by area desc.
+// Filters out groups that are too small (area < minArea) or too complex (tris > maxTris).
+function computeFaceGroups(mesh, minArea = 0.002, maxTris = 60) {
+  const geo = mesh.geometry;
+  if (!geo?.attributes?.position) return [];
+  const pos = geo.attributes.position;
+  const idxArr = geo.index ? geo.index.array : null;
+  const triCount = idxArr ? idxArr.length / 3 : pos.count / 3;
+  if (triCount === 0) return [];
+
+  const _v = (i) => new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+  const vKey = (x, y, z) => `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
+  const vi = (ti, corner) => idxArr ? idxArr[ti * 3 + corner] : ti * 3 + corner;
+
+  // Per-triangle normals and areas
+  const triNormals = new Array(triCount);
+  const triAreas   = new Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const a = _v(vi(t,0)), b = _v(vi(t,1)), c = _v(vi(t,2));
+    const cross = b.clone().sub(a).cross(c.clone().sub(a));
+    triAreas[t]   = cross.length() / 2;
+    triNormals[t] = cross.normalize();
+  }
+
+  // Build edge-to-triangle adjacency (by vertex position key)
+  const edgeMap = new Map();
+  for (let t = 0; t < triCount; t++) {
+    const verts = [vKey(pos.getX(vi(t,0)), pos.getY(vi(t,0)), pos.getZ(vi(t,0))),
+                   vKey(pos.getX(vi(t,1)), pos.getY(vi(t,1)), pos.getZ(vi(t,1))),
+                   vKey(pos.getX(vi(t,2)), pos.getY(vi(t,2)), pos.getZ(vi(t,2)))];
+    for (let e = 0; e < 3; e++) {
+      const ek = verts[e] < verts[(e+1)%3] ? `${verts[e]}|${verts[(e+1)%3]}` : `${verts[(e+1)%3]}|${verts[e]}`;
+      if (!edgeMap.has(ek)) edgeMap.set(ek, []);
+      edgeMap.get(ek).push(t);
+    }
+  }
+
+  // BFS to find connected coplanar groups (dot product > 0.9998 ≈ < 1 degree difference)
+  const visited = new Uint8Array(triCount);
+  const groups  = [];
+  for (let start = 0; start < triCount; start++) {
+    if (visited[start]) continue;
+    const N = triNormals[start];
+    const group = [];
+    const queue = [start];
+    visited[start] = 1;
+    while (queue.length) {
+      const t = queue.shift();
+      group.push(t);
+      const verts = [vKey(pos.getX(vi(t,0)), pos.getY(vi(t,0)), pos.getZ(vi(t,0))),
+                     vKey(pos.getX(vi(t,1)), pos.getY(vi(t,1)), pos.getZ(vi(t,1))),
+                     vKey(pos.getX(vi(t,2)), pos.getY(vi(t,2)), pos.getZ(vi(t,2)))];
+      for (let e = 0; e < 3; e++) {
+        const ek = verts[e] < verts[(e+1)%3] ? `${verts[e]}|${verts[(e+1)%3]}` : `${verts[(e+1)%3]}|${verts[e]}`;
+        for (const n of (edgeMap.get(ek) || [])) {
+          if (!visited[n] && triNormals[n].dot(N) > 0.9998) { visited[n] = 1; queue.push(n); }
+        }
+      }
+    }
+    let area = 0;
+    const centroid = new THREE.Vector3();
+    for (const t of group) { area += triAreas[t]; centroid.addScaledVector(new THREE.Vector3((pos.getX(vi(t,0))+pos.getX(vi(t,1))+pos.getX(vi(t,2)))/3,(pos.getY(vi(t,0))+pos.getY(vi(t,1))+pos.getY(vi(t,2)))/3,(pos.getZ(vi(t,0))+pos.getZ(vi(t,1))+pos.getZ(vi(t,2)))/3), triAreas[t]); }
+    if (area > 0) centroid.divideScalar(area);
+    const key = `f_${N.x.toFixed(2)}_${N.y.toFixed(2)}_${N.z.toFixed(2)}_${centroid.x.toFixed(2)}_${centroid.y.toFixed(2)}_${centroid.z.toFixed(2)}`;
+    groups.push({ tris: group, normal: N.clone(), centroid, area, key });
+  }
+  return groups.filter(g => g.area >= minArea && g.tris.length <= maxTris)
+               .sort((a, b) => b.area - a.area);
+}
+
+// Build a THREE.Mesh overlay in scene-world space for the given triangle set of a mesh
+function _buildFaceOverlayMesh(mesh, tris, color, opacity) {
+  const geo    = mesh.geometry;
+  const posAttr = geo.attributes.position;
+  const idxArr  = geo.index ? geo.index.array : null;
+  const vi = (ti, c) => idxArr ? idxArr[ti * 3 + c] : ti * 3 + c;
+
+  const positions = [];
+  for (const t of tris) {
+    for (let c = 0; c < 3; c++) {
+      const i = vi(t, c);
+      positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+    }
+  }
+  const overlayGeo = new THREE.BufferGeometry();
+  overlayGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  overlayGeo.computeVertexNormals();
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
+  const overlayMesh = new THREE.Mesh(overlayGeo, mat);
+  overlayMesh.renderOrder = 6;
+  overlayMesh.userData.isEditorHelper = true;
+  // Copy world transform from base mesh
+  mesh.updateMatrixWorld(true);
+  overlayMesh.applyMatrix4(mesh.matrixWorld);
+  return overlayMesh;
+}
+
+// ─── Face Mode ────────────────────────────────────────────────────────────────
+function enterFaceMode() {
+  const obj = E.selected;
+  if (!obj) { setStatus('Select an object first to enter face mode'); return; }
+  // Find the first actual mesh child (or the object itself)
+  let targetMesh = null;
+  if (obj.isMesh) { targetMesh = obj; }
+  else { obj.traverse(c => { if (c.isMesh && !c.userData.isEditorHelper && !targetMesh) targetMesh = c; }); }
+  if (!targetMesh) { setStatus('Selected object has no geometry for face mode'); return; }
+
+  E.faceModeActive  = true;
+  E.faceModeGroups  = computeFaceGroups(targetMesh);
+  E.faceModeHovered = -1;
+  E.faceModeSelected = -1;
+  if (E.faceModeGroups.length === 0) { exitFaceMode(); setStatus('No selectable faces found (faces may be too small or too complex)'); return; }
+
+  document.getElementById('right-panel')?.classList.add('face-mode-active');
+  document.getElementById('face-mode-badge').style.display = '';
+  setStatus(`Face mode — ${E.faceModeGroups.length} faces found. Hover to highlight, click to select.`);
+}
+
+function exitFaceMode() {
+  E.faceModeActive   = false;
+  E.faceModeGroups   = [];
+  E.faceModeHovered  = -1;
+  E.faceModeSelected = -1;
+  _clearFaceOverlay('hover');
+  _clearFaceOverlay('select');
+  document.getElementById('right-panel')?.classList.remove('face-mode-active');
+  document.getElementById('face-mode-badge').style.display = 'none';
+  setStatus('Face mode exited');
+}
+
+function _clearFaceOverlay(which) {
+  const key = which === 'hover' ? 'faceHoverMesh' : 'faceSelectMesh';
+  if (E[key]) { E.scene.remove(E[key]); E[key].geometry?.dispose(); E[key].material?.dispose(); E[key] = null; }
+}
+
+function _faceModeHover(e) {
+  if (!E.faceModeActive || !E.selected) return;
+  let targetMesh = null;
+  if (E.selected.isMesh) { targetMesh = E.selected; }
+  else { E.selected.traverse(c => { if (c.isMesh && !c.userData.isEditorHelper && !targetMesh) targetMesh = c; }); }
+  if (!targetMesh) return;
+
+  mouseToNDC(e);
+  _ray.setFromCamera(_ndcM, E.camera);
+  const hits = _ray.intersectObject(targetMesh, false);
+  if (!hits.length) {
+    if (E.faceModeHovered !== -1) { E.faceModeHovered = -1; _clearFaceOverlay('hover'); }
+    return;
+  }
+  // Determine which group contains the hit triangle
+  const hitFaceIdx = hits[0].faceIndex;
+  const groupIdx = E.faceModeGroups.findIndex(g => g.tris.includes(hitFaceIdx));
+  if (groupIdx === E.faceModeHovered) return;
+  E.faceModeHovered = groupIdx;
+  _clearFaceOverlay('hover');
+  if (groupIdx >= 0) {
+    E.faceHoverMesh = _buildFaceOverlayMesh(targetMesh, E.faceModeGroups[groupIdx].tris, 0xffaa44, 0.25);
+    E.scene.add(E.faceHoverMesh);
+  }
+}
+
+function _faceModeClick() {
+  if (!E.faceModeActive) return;
+  if (E.faceModeHovered < 0) return;
+  const groupIdx = E.faceModeHovered;
+  E.faceModeSelected = groupIdx;
+
+  let targetMesh = null;
+  if (E.selected.isMesh) { targetMesh = E.selected; }
+  else { E.selected.traverse(c => { if (c.isMesh && !c.userData.isEditorHelper && !targetMesh) targetMesh = c; }); }
+
+  _clearFaceOverlay('select');
+  E.faceSelectMesh = _buildFaceOverlayMesh(targetMesh, E.faceModeGroups[groupIdx].tris, 0x44aaff, 0.35);
+  E.scene.add(E.faceSelectMesh);
+
+  const g = E.faceModeGroups[groupIdx];
+  setStatus(`Face selected — area: ${g.area.toFixed(3)}, key: ${g.key}`);
+  // Sync the texture panel to show this face's config
+  E.selectedFace = null; // not a box face index
+  refreshTexPanel(E.selected);
+}
+
 // Build a texture config object (stored in userData.faceTextures[key])
-function makeFaceTexConfig(name, rx = 1, ry = 1, ox = 0, oy = 0, wrap = 'repeat', tilingMode = 'repeat', worldScale = 1) {
-  return { name, rx, ry, ox, oy, wrap, tilingMode, worldScale };
+function makeFaceTexConfig(name, rx = 1, ry = 1, ox = 0, oy = 0, wrap = 'repeat', tilingMode = 'repeat', worldScale = 1, normalMap = null, roughnessMap = null, bumpMap = null, bumpScale = 1.0) {
+  return { name, rx, ry, ox, oy, wrap, tilingMode, worldScale, normalMap, roughnessMap, bumpMap, bumpScale };
 }
 
 // Create a MeshStandardMaterial from a faceTexConfig and a base color
 function makeFaceTexMat(hexColor, config) {
   const mat = new THREE.MeshStandardMaterial({ color: hexColor ?? 0xaaaacc, roughness: 0.8, metalness: 0.0 });
-  if (config?.name) {
-    const loader = new THREE.TextureLoader();
+  if (!config) return mat;
+  const loader = new THREE.TextureLoader();
+  const wrapMap = { clamp: THREE.ClampToEdgeWrapping, mirror: THREE.MirroredRepeatWrapping };
+
+  const applyUVSettings = tex => {
+    tex.wrapS = tex.wrapT = wrapMap[config.wrap] ?? THREE.RepeatWrapping;
+    tex.repeat.set(config.rx ?? 1, config.ry ?? 1);
+    tex.offset.set(config.ox ?? 0, config.oy ?? 0);
+    tex.needsUpdate = true;
+  };
+
+  if (config.name) {
     const applyTex = tex => {
-      const wrapMap = { clamp: THREE.ClampToEdgeWrapping, mirror: THREE.MirroredRepeatWrapping };
-      tex.wrapS = tex.wrapT = wrapMap[config.wrap] ?? THREE.RepeatWrapping;
-      tex.repeat.set(config.rx ?? 1, config.ry ?? 1);
-      tex.offset.set(config.ox ?? 0, config.oy ?? 0);
-      tex.needsUpdate = true;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      applyUVSettings(tex);
       mat.map = tex;
       mat.color.set(0xffffff);
       mat.needsUpdate = true;
     };
-    // Try .png first, fall back to .jpg
     loader.load(`${ASSET_ROOT}textures/${config.name}.png`, applyTex, undefined,
       () => loader.load(`${ASSET_ROOT}textures/${config.name}.jpg`, applyTex)
     );
   }
+
+  if (config.normalMap) {
+    const applyNormal = tex => {
+      applyUVSettings(tex);
+      mat.normalMap = tex;
+      mat.needsUpdate = true;
+    };
+    loader.load(`${ASSET_ROOT}textures/${config.normalMap}.png`, applyNormal, undefined,
+      () => loader.load(`${ASSET_ROOT}textures/${config.normalMap}.jpg`, applyNormal)
+    );
+  }
+
+  if (config.roughnessMap) {
+    const applyRoughness = tex => {
+      applyUVSettings(tex);
+      mat.roughnessMap = tex;
+      mat.roughness = 1.0;
+      mat.needsUpdate = true;
+    };
+    loader.load(`${ASSET_ROOT}textures/${config.roughnessMap}.png`, applyRoughness, undefined,
+      () => loader.load(`${ASSET_ROOT}textures/${config.roughnessMap}.jpg`, applyRoughness)
+    );
+  }
+
+  if (config.bumpMap) {
+    const applyBump = tex => {
+      applyUVSettings(tex);
+      mat.bumpMap = tex;
+      mat.bumpScale = config.bumpScale ?? 1.0;
+      mat.needsUpdate = true;
+    };
+    loader.load(`${ASSET_ROOT}textures/${config.bumpMap}.png`, applyBump, undefined,
+      () => loader.load(`${ASSET_ROOT}textures/${config.bumpMap}.jpg`, applyBump)
+    );
+  }
+
   return mat;
 }
 
-// Get effective config for a face key ('all' or '0'-'5'), with 'all' as fallback
+// Get effective config for a face key ('all', '0'-'5', or 'f_...' face mode key)
+// For face mode, also tries the selected face's key if in face mode.
 function getFaceConfig(mesh, faceKey) {
   const ft = mesh.userData.faceTextures;
   if (!ft) return null;
+  if (faceKey === null || faceKey === undefined) {
+    // In face mode, use the selected group key
+    if (E.faceModeActive && E.faceModeSelected >= 0) {
+      const k = E.faceModeGroups[E.faceModeSelected]?.key;
+      if (k) return ft[k] ?? ft['all'] ?? null;
+    }
+    return ft['all'] ?? null;
+  }
   return ft[String(faceKey)] ?? ft['all'] ?? null;
 }
 
 // Set or clear the config for a face key, then rebuild materials
 function setFaceConfig(mesh, faceKey, config) {
   if (!mesh.userData.faceTextures) mesh.userData.faceTextures = {};
-  const key = String(faceKey);
+  // Resolve the key: in face mode with no explicit key, use the selected group key
+  let key = faceKey !== null && faceKey !== undefined ? String(faceKey) : 'all';
+  if ((key === 'all' || key === 'null') && E.faceModeActive && E.faceModeSelected >= 0) {
+    key = E.faceModeGroups[E.faceModeSelected]?.key ?? 'all';
+  }
+
+  // Mutual exclusivity between root ('all') texture and per-face ('f_...') textures
+  if (config !== null && config !== undefined && config.name) {
+    const ft = mesh.userData.faceTextures;
+    const hasFaceModeKeys = Object.keys(ft).some(k => k.startsWith('f_'));
+    const hasAll = ft['all'] && ft['all'].name;
+    if (key === 'all' && hasFaceModeKeys) {
+      setStatus('Cannot set a root texture: this object has per-face textures. Clear them first.');
+      return;
+    }
+    if (key.startsWith('f_') && hasAll) {
+      setStatus('Cannot set a per-face texture: this object has a root texture. Clear it first (set texture to none).');
+      return;
+    }
+  }
+
   if (config === null || config === undefined) {
     delete mesh.userData.faceTextures[key];
   } else {
@@ -1085,17 +1427,27 @@ function applyFaceTextures(mesh) {
   if (!ft) return;
   const baseColor = mesh.userData._baseColor ?? '#aaaacc';
   const isBox = mesh.userData.primType === 'box';
-  const hasPerFace = isBox && Object.keys(ft).some(k => k !== 'all' && /^\d$/.test(k));
+  const hasBoxPerFace = isBox && Object.keys(ft).some(k => k !== 'all' && /^\d$/.test(k));
+  const hasFaceMode   = Object.keys(ft).some(k => k.startsWith('f_'));
 
-  // Dispose old materials
+  // Remove old face overlay children (from previous applyFaceTextures call)
+  const oldOverlays = [];
+  mesh.children?.forEach(c => { if (c.userData.isFaceOverlay) oldOverlays.push(c); });
+  oldOverlays.forEach(c => {
+    mesh.remove(c);
+    c.geometry?.dispose();
+    if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+    else c.material?.dispose();
+  });
+
+  // Dispose old base material(s)
   if (Array.isArray(mesh.material)) {
     mesh.material.forEach(m => m.dispose());
   } else if (mesh.material) {
     mesh.material.dispose();
   }
 
-  if (hasPerFace) {
-    // Multi-material array for box (6 faces)
+  if (hasBoxPerFace) {
     mesh.material = Array.from({ length: 6 }, (_, i) => {
       const cfg = ft[String(i)] ?? ft['all'] ?? null;
       return makeFaceTexMat(baseColor, cfg);
@@ -1103,12 +1455,60 @@ function applyFaceTextures(mesh) {
   } else {
     mesh.material = makeFaceTexMat(baseColor, ft['all'] ?? null);
   }
-  mesh.material.needsUpdate = true; // may be array; Three.js handles it
+  mesh.material.needsUpdate = true;
+
+  // Build per-face overlay child meshes for f_... keys.
+  // Each overlay is a child of this mesh so it inherits the transform automatically.
+  // Tagged isEditorHelper so it's excluded from raycasting / level serialization.
+  if (hasFaceMode && mesh.geometry) {
+    const groups = computeFaceGroups(mesh);
+    const geo     = mesh.geometry;
+    const posAttr = geo.attributes.position;
+    const uvAttr  = geo.attributes.uv;
+    const normAttr = geo.attributes.normal;
+    const idxArr  = geo.index ? geo.index.array : null;
+    const vi = (ti, c) => idxArr ? idxArr[ti * 3 + c] : ti * 3 + c;
+
+    for (const [key, cfg] of Object.entries(ft)) {
+      if (!key.startsWith('f_') || !cfg?.name) continue;
+      const group = groups.find(g => g.key === key);
+      if (!group) continue;
+
+      const positions = [], uvCoords = [], normals = [];
+      for (const ti of group.tris) {
+        for (let c = 0; c < 3; c++) {
+          const i = vi(ti, c);
+          positions.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+          if (uvAttr)   uvCoords.push(uvAttr.getX(i),   uvAttr.getY(i));
+          if (normAttr) normals.push(normAttr.getX(i),  normAttr.getY(i),  normAttr.getZ(i));
+        }
+      }
+
+      const overlayGeo = new THREE.BufferGeometry();
+      overlayGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      if (uvCoords.length) overlayGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvCoords, 2));
+      if (normals.length)  overlayGeo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      else                 overlayGeo.computeVertexNormals();
+
+      const mat = makeFaceTexMat(baseColor, cfg);
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = -1;
+      mat.polygonOffsetUnits  = -1;
+
+      const overlayMesh = new THREE.Mesh(overlayGeo, mat);
+      overlayMesh.renderOrder = 1;
+      overlayMesh.userData.isFaceOverlay = true;
+      overlayMesh.userData.isEditorHelper = true;
+      mesh.add(overlayMesh);
+    }
+  }
+
   if (mesh.userData._opacity !== undefined && mesh.userData._opacity < 1) {
     const v = mesh.userData._opacity;
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     mats.forEach(m => { m.transparent = true; m.opacity = v; m.needsUpdate = true; });
   }
+  syncOpacityWireframe(mesh);
 }
 
 // Compute repeat values for world-based tiling on a box face
@@ -1253,6 +1653,7 @@ function spawnPrimFromEntry(entry) {
       mesh.userData.triggerVar      = entry.triggerVar      || '';
       mesh.userData.triggerVarOp    = entry.triggerVarOp    || 'set';
       mesh.userData.triggerVarValue = entry.triggerVarValue ?? 'true';
+      mesh.userData.presenceVar     = entry.presenceVar     || '';
     } else {
       mesh.userData.saveSlot    = entry.saveSlot || 'autosave';
       mesh.userData.onceOnly    = entry.onceOnly !== false;
@@ -1309,13 +1710,32 @@ function commitPlace(worldPos) {
     const loader = ext === 'fbx' ? new FBXLoader() : new GLTFLoader();
     loader.load(ASSET_ROOT + modelPath, result => {
       const root = result.scene || result;
-      root.traverse(c => { if (c.isMesh) { c.castShadow = c.receiveShadow = true; } });
+      root.traverse(c => {
+        if (c.isMesh) {
+          c.castShadow = c.receiveShadow = true;
+          const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
+          mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+        }
+      });
       root.position.copy(worldPos);
-      root.userData = { primType: 'model', modelPath, editorId: id, label: '', collidable: true };
+      root.userData = { primType: 'model', modelPath, editorId: id, label: '', collidable: true, doubleSide: true };
       root.name = 'Model_' + id;
       pushUndo();
       E.placedGroup.add(root);
       selectObj(root); updateSceneList(); markDirty();
+    });
+  } else if (E.placingType.startsWith('image-model:')) {
+    const imagePath = E.placingType.slice('image-model:'.length);
+    _buildImageModelMesh(imagePath, (group, aspect) => {
+      if (!group) { setStatus('Failed to load image'); return; }
+      group.position.copy(worldPos);
+      group.position.y += (aspect * 0.5);
+      group.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
+      group.userData = { primType: 'image-model', imagePath, editorId: id, label: '', collidable: true, _aspect: aspect, wallColor: group.userData._autoWallColor };
+      group.name = 'Image_' + id;
+      pushUndo();
+      E.placedGroup.add(group);
+      selectObj(group); updateSceneList(); markDirty();
     });
   } else if (isLightType(E.placingType)) {
     const group = makeLightGroup(E.placingType);
@@ -1341,6 +1761,8 @@ function commitPlace(worldPos) {
         : { saveSlot: 'autosave', onceOnly: true }),
     };
     mesh.name = E.placingType + '_' + id;
+    const trigVis = document.getElementById('toggle-triggers-visible');
+    if (trigVis && !trigVis.checked) mesh.visible = false;
     pushUndo();
     E.placedGroup.add(mesh);
     selectObj(mesh); updateSceneList(); markDirty();
@@ -1423,6 +1845,7 @@ function deselect() {
   E.selectedFace = null;
   if (E.facePickMode) cancelFacePick();
   updateFaceHighlight(null, null);
+  if (E.faceModeActive) exitFaceMode();
 }
 
 // â”€â”€â”€ Properties panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1448,7 +1871,133 @@ function setRotInputs(euler) {
   }
 }
 
+function _buildImageModelMesh(imagePath, onDone, wallColor) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  const exts = ['png', 'jpg', 'jpeg', 'webp'];
+  const hasExt = /\.[^./\\]+$/.test(imagePath);
+  let extIdx = 0;
+  const tryNext = () => {
+    if (hasExt) { img.src = ASSET_ROOT + imagePath; return; }
+    if (extIdx >= exts.length) { onDone(null, 1); return; }
+    img.src = ASSET_ROOT + imagePath + '.' + exts[extIdx++];
+  };
+  img.onerror = () => { if (hasExt) onDone(null, 1); else tryNext(); };
+  img.onload = () => {
+    const W = img.naturalWidth || 1;
+    const H = img.naturalHeight || 1;
+    const aspect = H / W;
+    const COLS = Math.min(W, 256);
+    const ROWS = Math.max(1, Math.round(COLS * aspect));
+    const canvas = document.createElement('canvas');
+    canvas.width = COLS; canvas.height = ROWS;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, COLS, ROWS);
+    const d = ctx.getImageData(0, 0, COLS, ROWS).data;
+    const getA = (c, r) => (c < 0 || c >= COLS || r < 0 || r >= ROWS) ? 0 : d[(r * COLS + c) * 4 + 3];
+    const THR = 127;
+    const D = 0.1;
+    const verts = [], norms = [];
+    const ecrss = (a1, x1, y1, a2, x2, y2) => {
+      const t = (a1 === a2) ? 0.5 : Math.max(0, Math.min(1, (THR - a1) / (a2 - a1)));
+      return [x1 + t * (x2 - x1), y1 + t * (y2 - y1)];
+    };
+    const p3 = (px, py) => [(px + 0.5) / COLS - 0.5, aspect * (0.5 - (py + 0.5) / ROWS)];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const aTL = getA(c,r), aTR = getA(c+1,r), aBL = getA(c,r+1), aBR = getA(c+1,r+1);
+        const abv = a => a >= THR;
+        const idx = (abv(aTL)?8:0)|(abv(aTR)?4:0)|(abv(aBR)?2:0)|(abv(aBL)?1:0);
+        if (idx === 0 || idx === 15) continue;
+        const tp = () => ecrss(aTL,c,r,   aTR,c+1,r);
+        const rt = () => ecrss(aTR,c+1,r, aBR,c+1,r+1);
+        const bt = () => ecrss(aBL,c,r+1, aBR,c+1,r+1);
+        const lt = () => ecrss(aTL,c,r,   aBL,c,r+1);
+        let segs;
+        switch (idx) {
+          case 1:  segs = [[lt(),bt()]]; break;
+          case 2:  segs = [[bt(),rt()]]; break;
+          case 3:  segs = [[lt(),rt()]]; break;
+          case 4:  segs = [[rt(),tp()]]; break;
+          case 5:  segs = [[rt(),bt()],[lt(),tp()]]; break;
+          case 6:  segs = [[bt(),tp()]]; break;
+          case 7:  segs = [[lt(),tp()]]; break;
+          case 8:  segs = [[tp(),lt()]]; break;
+          case 9:  segs = [[tp(),bt()]]; break;
+          case 10: segs = [[tp(),rt()],[bt(),lt()]]; break;
+          case 11: segs = [[tp(),rt()]]; break;
+          case 12: segs = [[rt(),lt()]]; break;
+          case 13: segs = [[rt(),bt()]]; break;
+          case 14: segs = [[bt(),lt()]]; break;
+          default: segs = [];
+        }
+        for (const [[x1,y1],[x2,y2]] of segs) {
+          const [ax,ay] = p3(x1,y1), [bx,by] = p3(x2,y2);
+          const dx = bx-ax, dy = by-ay, len = Math.sqrt(dx*dx+dy*dy)||1;
+          const nx = dy/len, ny = -dx/len;
+          const OV = 0.005;
+          verts.push(ax,ay,OV, bx,by,OV, bx,by,-D, ax,ay,OV, bx,by,-D, ax,ay,-D);
+          for (let i = 0; i < 6; i++) norms.push(nx, ny, 0);
+        }
+      }
+    }
+    let sr = 0, sg = 0, sb = 0, sn = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i+3] > 10) { sr += d[i]; sg += d[i+1]; sb += d[i+2]; sn++; }
+    }
+    const sideColor = wallColor || (sn ? '#' + [sr,sg,sb].map(c => Math.round(c/sn).toString(16).padStart(2,'0')).join('') : '#888888');
+    const tex = new THREE.Texture(img);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    const faceMat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.5, roughness: 1, metalness: 0, side: THREE.FrontSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+    const sideMat  = new THREE.MeshStandardMaterial({ color: sideColor, roughness: 1, metalness: 0, side: THREE.DoubleSide });
+    const frontMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, aspect), faceMat);
+    const backFaceMat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.1, roughness: 1, metalness: 0, side: THREE.BackSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+    const backMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, aspect), backFaceMat);
+    backMesh.position.z = -D;
+    const sideGeo = new THREE.BufferGeometry();
+    sideGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    sideGeo.setAttribute('normal',   new THREE.Float32BufferAttribute(norms, 3));
+    const sideMesh = new THREE.Mesh(sideGeo, sideMat);
+    const group = new THREE.Group();
+    group.add(frontMesh, backMesh, sideMesh);
+    group.userData._autoWallColor = '#' + [sr,sg,sb].map(c => Math.round(c/sn||0).toString(16).padStart(2,'0')).join('');
+    onDone(group, aspect);
+  };
+  tryNext();
+}
+
+function _flipGeometryNormals(geo) {
+  const normals = geo.getAttribute('normal');
+  if (normals) {
+    for (let i = 0; i < normals.count; i++) {
+      normals.setXYZ(i, -normals.getX(i), -normals.getY(i), -normals.getZ(i));
+    }
+    normals.needsUpdate = true;
+  }
+  const index = geo.index;
+  if (index) {
+    for (let i = 0; i < index.count; i += 3) {
+      const b = index.getX(i + 1);
+      index.setX(i + 1, index.getX(i + 2));
+      index.setX(i + 2, b);
+    }
+    index.needsUpdate = true;
+  }
+}
+
 function _applyColor(obj, hex) {
+  if (obj.userData.primType === 'image-model') {
+    obj.userData.wallColor = hex;
+    obj.traverse(c => {
+      if (c.isMesh && c.material && !c.material.map) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { if (m.color) m.color.set(hex); });
+      }
+    });
+    markDirty();
+    return;
+  }
   if (isLightType(obj.userData.primType)) {
     obj.userData.lightColor = hex;
     const col = new THREE.Color(hex);
@@ -1458,8 +2007,16 @@ function _applyColor(obj, hex) {
       if ((c.isLine || c.isLineSegments) && c.material) c.material.color.set(col);
     });
   } else {
-    const mats = Array.isArray(obj.material) ? obj.material : (obj.material ? [obj.material] : []);
-    mats.forEach(m => { if (m.color) m.color.set(hex); });
+    obj.userData._baseColor = hex;
+    if (obj.userData.faceTextures) {
+      applyFaceTextures(obj);
+    } else {
+      const mats = Array.isArray(obj.material) ? obj.material : (obj.material ? [obj.material] : []);
+      mats.forEach(m => { if (m.color) m.color.set(hex); });
+      obj.traverse(c => {
+        if (c !== obj && c.isMesh && c.material && !Array.isArray(c.material) && c.material.color) c.material.color.set(hex);
+      });
+    }
   }
   markDirty();
 }
@@ -1512,7 +2069,8 @@ function updateProps(obj) {
   const isCsgResult = obj.userData.primType === 'csg-result';
   const isMerged    = obj.userData.primType === 'merged-model';
   const isActorSpawn = obj.userData.primType === 'actor-spawn';
-  const isPrimitive = !isLight && !isTrigger && obj.userData.primType !== 'model' && !isCsgResult && !isMerged && !isActorSpawn;
+  const isImageModel = obj.userData.primType === 'image-model';
+  const isPrimitive = !isLight && !isTrigger && obj.userData.primType !== 'model' && !isCsgResult && !isMerged && !isActorSpawn && !isImageModel;
   const hasTexture  = isPrimitive || isCsgResult;
   const isModel     = obj.userData.primType === 'model' || isMerged;
 
@@ -1549,12 +2107,20 @@ function updateProps(obj) {
       colEl.disabled = false;
       colEl.value = obj.userData.lightColor || '#ffffff';
       if (hexEl && document.activeElement !== hexEl) hexEl.value = obj.userData.lightColor || '#ffffff';
+    } else if (isTrigger) {
+      colEl.disabled = true;
+    } else if (isImageModel) {
+      colEl.disabled = false;
+      const wc = obj.userData.wallColor || '#888888';
+      colEl.value = wc;
+      if (hexEl && document.activeElement !== hexEl) hexEl.value = wc;
     } else {
-      colEl.disabled = !matColor || isTrigger;
-      if (matColor && !isTrigger) {
-        const hex = '#' + matColor.getHexString();
-        colEl.value = hex;
-        if (hexEl && document.activeElement !== hexEl) hexEl.value = hex;
+      const displayColor = obj.userData._baseColor
+        ?? (Array.isArray(obj.material) ? ('#' + (obj.material[0]?.color?.getHexString() ?? 'aaaacc')) : (obj.material?.color ? '#' + obj.material.color.getHexString() : null));
+      colEl.disabled = !displayColor;
+      if (displayColor) {
+        colEl.value = displayColor;
+        if (hexEl && document.activeElement !== hexEl) hexEl.value = displayColor;
       }
     }
   }
@@ -1590,6 +2156,10 @@ function updateProps(obj) {
       if (roughnessEl) roughnessEl.value = +(obj.userData.roughness ?? 1).toFixed(2);
       if (metalnessEl) metalnessEl.value = +(obj.userData.metalness ?? 0).toFixed(2);
     }
+    const doubleSideEl = document.getElementById('chk-double-side');
+    const invertNormEl = document.getElementById('chk-invert-normals');
+    if (doubleSideEl) doubleSideEl.checked = obj.userData.doubleSide === true;
+    if (invertNormEl) invertNormEl.checked = obj.userData.invertNormals === true;
   }
 
   // Geometry params — only for editable primitives
@@ -1603,9 +2173,22 @@ function updateProps(obj) {
   if (textureSection) {
     textureSection.style.display = hasTexture ? '' : 'none';
     if (hasTexture) {
-      // Face selector only for boxes — csg-result is a merged mesh, not a box
-      const faceSelectRow = document.getElementById('face-select-row');
-      if (faceSelectRow) faceSelectRow.style.display = obj.userData.primType === 'box' ? '' : 'none';
+      const faceSelectRow    = document.getElementById('face-select-row');
+      const faceModeTexRow   = document.getElementById('face-mode-tex-row');
+      const isBox = obj.userData.primType === 'box';
+      if (E.faceModeActive) {
+        if (faceSelectRow)  faceSelectRow.style.display  = 'none';
+        if (faceModeTexRow) faceModeTexRow.style.display = '';
+        const lbl = document.getElementById('face-mode-tex-label');
+        if (lbl) {
+          lbl.textContent = E.faceModeSelected >= 0
+            ? `Editing face ${E.faceModeSelected + 1} of ${E.faceModeGroups.length} — texture applies to highlighted region`
+            : 'No face selected — click a face in the viewport';
+        }
+      } else {
+        if (faceSelectRow)  faceSelectRow.style.display  = isBox ? '' : 'none';
+        if (faceModeTexRow) faceModeTexRow.style.display = 'none';
+      }
       refreshTexPanel(obj);
     }
   }
@@ -1654,6 +2237,8 @@ function updateProps(obj) {
         if (slotEl    && document.activeElement !== slotEl)    slotEl.value  = obj.userData.saveSlot || 'autosave';
         if (onceEl)                                             onceEl.checked = obj.userData.onceOnly !== false;
       } else {
+        const presenceSel = document.getElementById('trigger-presence-var');
+        _populateVarSelect(presenceSel, obj.userData.presenceVar || '');
         const varSel = document.getElementById('trigger-var-name');
         _populateVarSelect(varSel, obj.userData.triggerVar || '');
         const opEl  = document.getElementById('trigger-var-op');
@@ -1768,6 +2353,7 @@ function updateGroupsPanel() {
 // â”€â”€â”€ Group transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function beginGroupTransform(gid) {
   if (!gid || !E.groups[gid]) return;
+  pushUndo();
   E.activeGroupGid = gid;
   const members = [...E.groups[gid].ids]
     .map(id => E.placedGroup.children.find(o => o.userData.editorId === id))
@@ -1843,6 +2429,7 @@ function cloneSelected() {
   clone.userData = {
     ...srcUD,
     editorId: E.nextId++,
+    label: (srcUD.label || '') + '_copy',
     states: srcUD.states ? JSON.parse(JSON.stringify(srcUD.states)) : undefined,
   };
   clone.position.x += 1;
@@ -1905,7 +2492,12 @@ function deleteSelected() {
 // ─── Texture panel refresh ────────────────────────────────────────────────────
 function refreshTexPanel(obj) {
   if (!obj) return;
-  const faceKey  = E.selectedFace !== null ? String(E.selectedFace) : 'all';
+  let faceKey;
+  if (E.faceModeActive && E.faceModeSelected >= 0) {
+    faceKey = E.faceModeGroups[E.faceModeSelected]?.key ?? 'all';
+  } else {
+    faceKey = E.selectedFace !== null ? String(E.selectedFace) : 'all';
+  }
   const cfg      = getFaceConfig(obj, faceKey) ?? { rx: 1, ry: 1, ox: 0, oy: 0, wrap: 'repeat', tilingMode: 'repeat', worldScale: 1 };
 
   const set = (id, val) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = val; };
@@ -1915,6 +2507,10 @@ function refreshTexPanel(obj) {
   set('tex-offset-x',   cfg.ox     ?? 0);
   set('tex-offset-y',   cfg.oy     ?? 0);
   set('tex-world-scale', cfg.worldScale ?? 1);
+  set('tex-normal-map',    cfg.normalMap    || '');
+  set('tex-roughness-map', cfg.roughnessMap || '');
+  set('tex-bump-map',      cfg.bumpMap      || '');
+  set('tex-bump-scale',    cfg.bumpScale    ?? 1.0);
 
   const tilingEl = document.getElementById('tex-tiling-mode');
   if (tilingEl) tilingEl.value = cfg.tilingMode || 'repeat';
@@ -1924,7 +2520,23 @@ function refreshTexPanel(obj) {
   if (wrapEl) wrapEl.value = cfg.wrap || 'repeat';
 
   const faceEl = document.getElementById('tex-face');
-  if (faceEl) faceEl.value = E.selectedFace !== null ? String(E.selectedFace) : 'all';
+  if (faceEl) {
+    if (E.faceModeActive && E.faceModeSelected >= 0) {
+      faceEl.value = 'all';
+    } else {
+      faceEl.value = E.selectedFace !== null ? String(E.selectedFace) : 'all';
+    }
+  }
+  // Update face mode indicator label if visible
+  const lbl = document.getElementById('face-mode-tex-label');
+  if (lbl && E.faceModeActive) {
+    if (E.faceModeSelected >= 0) {
+      const gKey = E.faceModeGroups[E.faceModeSelected]?.key ?? '?';
+      lbl.textContent = `Face ${E.faceModeSelected + 1}/${E.faceModeGroups.length}  key: ${gKey}`;
+    } else {
+      lbl.textContent = 'No face selected — click a face in the viewport';
+    }
+  }
 }
 
 function _syncTilingModeUI(mode) {
@@ -1945,14 +2557,23 @@ function _panelToFaceConfig() {
     Math.max(0.01, parseFloat(g('tex-repeat-y')) || 1),
     gf('tex-offset-x'), gf('tex-offset-y'),
     g('tex-wrap') || 'repeat', tilingMode,
-    Math.max(0.01, parseFloat(g('tex-world-scale')) || 1)
+    Math.max(0.01, parseFloat(g('tex-world-scale')) || 1),
+    g('tex-normal-map').trim() || null,
+    g('tex-roughness-map').trim() || null,
+    g('tex-bump-map').trim() || null,
+    Math.max(0, parseFloat(g('tex-bump-scale')) || 1.0)
   );
 }
 
 function applyCurrentFaceConfig() {
   const obj = E.selected;
   if (!obj) return;
-  const faceKey = E.selectedFace !== null ? String(E.selectedFace) : 'all';
+  let faceKey;
+  if (E.faceModeActive && E.faceModeSelected >= 0) {
+    faceKey = E.faceModeGroups[E.faceModeSelected]?.key ?? 'all';
+  } else {
+    faceKey = E.selectedFace !== null ? String(E.selectedFace) : 'all';
+  }
   const cfg = _panelToFaceConfig();
   // World mode: recompute repeat from object scale
   if (cfg.tilingMode === 'world') {
@@ -2057,21 +2678,231 @@ function makeDraggable(modalId, handleId) {
   });
 }
 
+// Compute planar projection of a face group into 2D canvas coordinates.
+// Returns { triUVs: [[[x,y],[x,y],[x,y]],...], W, H } where x/y are already in canvas pixels.
+// The projection uses world-space tangent frame of the face, preserves physical aspect ratio,
+// and always produces a consistently-oriented (non-mirrored) result.
+function _computeFacePlanarProj(mesh, faceGroup) {
+  const N   = faceGroup.normal.clone().normalize();
+  const ref = Math.abs(N.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const T   = ref.clone().sub(N.clone().multiplyScalar(N.dot(ref))).normalize();
+  const B   = new THREE.Vector3().crossVectors(N, T).normalize();
+
+  const geo    = mesh.geometry;
+  const posAttr = geo.attributes.position;
+  const idxArr  = geo.index ? geo.index.array : null;
+  const vi = (ti, c) => idxArr ? idxArr[ti * 3 + c] : ti * 3 + c;
+
+  mesh.updateMatrixWorld(true);
+  const mw = mesh.matrixWorld;
+
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  const rawProj = faceGroup.tris.map(ti => {
+    const pts = [];
+    for (let c = 0; c < 3; c++) {
+      const i = vi(ti, c);
+      const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(mw);
+      const u = T.dot(wp), v = B.dot(wp);
+      pts.push([u, v]);
+      if (u < minU) minU = u; if (u > maxU) maxU = u;
+      if (v < minV) minV = v; if (v > maxV) maxV = v;
+    }
+    return pts;
+  });
+
+  const rangeU = maxU - minU || 1;
+  const rangeV = maxV - minV || 1;
+  const aspect  = rangeU / rangeV;
+  const MAX = 2048;
+  const W = aspect >= 1 ? MAX : Math.round(MAX * aspect);
+  const H = aspect >= 1 ? Math.round(MAX / aspect) : MAX;
+
+  const triUVs = rawProj.map(pts => pts.map(([u, v]) => [
+    ((u - minU) / rangeU) * W,
+    ((v - minV) / rangeV) * H,
+  ]));
+
+  return { triUVs, W, H };
+}
+
+function exportUVMap() {
+  const obj = E.selected;
+  if (!obj) { setStatus('No object selected'); return; }
+
+  const canvas = document.createElement('canvas');
+  const ctx    = canvas.getContext('2d');
+  const label  = (obj.userData.label || ('obj_' + obj.userData.editorId)).replace(/[^a-z0-9_\-]/gi, '_');
+
+  // ── Face mode: export planar projection (correct orientation + physical aspect ratio) ──
+  if (E.faceModeActive && E.faceModeSelected >= 0) {
+    let targetMesh = null;
+    if (obj.isMesh) targetMesh = obj;
+    else obj.traverse(c => { if (c.isMesh && !c.userData.isEditorHelper && !targetMesh) targetMesh = c; });
+    if (!targetMesh) { setStatus('No mesh geometry found on selected object'); return; }
+
+    const faceGroup = E.faceModeGroups[E.faceModeSelected];
+    const { triUVs, W, H } = _computeFacePlanarProj(targetMesh, faceGroup);
+
+    canvas.width = W; canvas.height = H;
+
+    const bgColor = obj.userData._baseColor ?? '#1a1a1a';
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, W, H);
+
+    const edgeCounts = new Map();
+    const ekFmt = (x1, y1, x2, y2) => {
+      const a = `${x1.toFixed(2)},${y1.toFixed(2)}`, b = `${x2.toFixed(2)},${y2.toFixed(2)}`;
+      return a < b ? `${a}|${b}` : `${b}|${a}`;
+    };
+    for (const [[x1,y1],[x2,y2],[x3,y3]] of triUVs) {
+      for (const [xa,ya,xb,yb] of [[x1,y1,x2,y2],[x2,y2,x3,y3],[x3,y3,x1,y1]]) {
+        const k = ekFmt(xa, ya, xb, yb);
+        edgeCounts.set(k, (edgeCounts.get(k) || 0) + 1);
+      }
+    }
+
+    ctx.fillStyle = 'rgba(255,255,255,0.07)';
+    for (const [[x1,y1],[x2,y2],[x3,y3]] of triUVs) {
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.lineTo(x3,y3);
+      ctx.closePath(); ctx.fill();
+    }
+
+    ctx.strokeStyle = 'rgba(0,255,100,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (const [[x1,y1],[x2,y2],[x3,y3]] of triUVs) {
+      for (const [xa,ya,xb,yb] of [[x1,y1,x2,y2],[x2,y2,x3,y3],[x3,y3,x1,y1]]) {
+        if (edgeCounts.get(ekFmt(xa,ya,xb,yb)) === 1) { ctx.moveTo(xa,ya); ctx.lineTo(xb,yb); }
+      }
+    }
+    ctx.stroke();
+
+    canvas.toBlob(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = label + `_face${E.faceModeSelected + 1}_template.png`; a.click();
+      URL.revokeObjectURL(url);
+    }, 'image/png');
+    setStatus(`Face template exported (${W}×${H}) — paint on this and import as the face texture`);
+    return;
+  }
+
+  // ── Standard mode: full UV map ──
+  const SIZE = 2048;
+  canvas.width = canvas.height = SIZE;
+
+  const meshes = [];
+  if (obj.isMesh) meshes.push(obj);
+  else obj.traverse(c => { if (c.isMesh) meshes.push(c); });
+  if (meshes.length === 0) { setStatus('No mesh geometry found on selected object'); return; }
+
+  let bgDrawn = false;
+  for (const mesh of meshes) {
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const mat of mats) {
+      if (mat?.map?.image) {
+        try {
+          ctx.save();
+          if (mat.map.flipY !== false) { ctx.translate(0, SIZE); ctx.scale(1, -1); }
+          ctx.drawImage(mat.map.image, 0, 0, SIZE, SIZE);
+          ctx.restore();
+          bgDrawn = true;
+        } catch (_) {}
+        if (bgDrawn) break;
+      }
+    }
+    if (bgDrawn) break;
+  }
+  if (!bgDrawn) {
+    let bgColor = '#1a1a1a';
+    if (obj.userData._baseColor) bgColor = obj.userData._baseColor;
+    else if (!Array.isArray(obj.material) && obj.material?.color) bgColor = '#' + obj.material.color.getHexString();
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+
+  const edgeCounts = new Map();
+  const allTriUVs  = [];
+  const uvKey  = (u, v) => `${u.toFixed(5)},${v.toFixed(5)}`;
+  const edgeKey = (u1, v1, u2, v2) => {
+    const a = uvKey(u1, v1), b = uvKey(u2, v2);
+    return a < b ? `${a}|${b}` : `${b}|${a}`;
+  };
+
+  for (const mesh of meshes) {
+    const geo = mesh.geometry;
+    if (!geo?.attributes?.uv) continue;
+    const uvAttr = geo.attributes.uv;
+    const processTri = (ai, bi, ci) => {
+      const tri = [
+        [uvAttr.getX(ai), uvAttr.getY(ai)],
+        [uvAttr.getX(bi), uvAttr.getY(bi)],
+        [uvAttr.getX(ci), uvAttr.getY(ci)],
+      ];
+      allTriUVs.push(tri);
+      for (let e = 0; e < 3; e++) {
+        const [u1, v1] = tri[e], [u2, v2] = tri[(e + 1) % 3];
+        const k = edgeKey(u1, v1, u2, v2);
+        edgeCounts.set(k, (edgeCounts.get(k) || 0) + 1);
+      }
+    };
+    if (geo.index) {
+      const idx = geo.index.array;
+      for (let i = 0; i < idx.length; i += 3) processTri(idx[i], idx[i + 1], idx[i + 2]);
+    } else {
+      for (let i = 0; i < uvAttr.count; i += 3) processTri(i, i + 1, i + 2);
+    }
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  for (const [[u1, v1], [u2, v2], [u3, v3]] of allTriUVs) {
+    ctx.beginPath();
+    ctx.moveTo(u1 * SIZE, (1 - v1) * SIZE);
+    ctx.lineTo(u2 * SIZE, (1 - v2) * SIZE);
+    ctx.lineTo(u3 * SIZE, (1 - v3) * SIZE);
+    ctx.closePath(); ctx.fill();
+  }
+
+  ctx.strokeStyle = 'rgba(0,255,100,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (const [[u1, v1], [u2, v2], [u3, v3]] of allTriUVs) {
+    const edges = [[u1, v1, u2, v2], [u2, v2, u3, v3], [u3, v3, u1, v1]];
+    for (const [eu1, ev1, eu2, ev2] of edges) {
+      if (edgeCounts.get(edgeKey(eu1, ev1, eu2, ev2)) === 1) {
+        ctx.moveTo(eu1 * SIZE, (1 - ev1) * SIZE);
+        ctx.lineTo(eu2 * SIZE, (1 - ev2) * SIZE);
+      }
+    }
+  }
+  ctx.stroke();
+
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = label + '_uvmap.png';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+  setStatus(`UV map exported for "${obj.userData.label || obj.userData.editorId}"`);
+}
+
 function openMergeDialog() {
+  const gid = E.selected ? findGroupOfObj(E.selected) : null;
+  const groupIds = gid ? E.groups[gid].ids : null;
+
   const candidates = [];
-  E.placedGroup.children.forEach(obj => {
+  const _mergePool = [...E.placedGroup.children];
+  if (E.groupPivot) E.groupPivot.children.forEach(c => _mergePool.push(c));
+  _mergePool.forEach(obj => {
     if (obj.userData.isEditorHelper) return;
     const t = obj.userData.primType;
     if (isLightType(t) || isTriggerType(t)) return;
+    if (groupIds && !groupIds.has(obj.userData.editorId)) return;
     candidates.push(obj);
   });
   if (!candidates.length) { setStatus('No mergeable objects in scene'); return; }
 
   const preSelected = new Set();
-  const gid = E.selected ? findGroupOfObj(E.selected) : null;
   if (gid) {
-    const g = E.groups[gid];
-    candidates.forEach(obj => { if (g.ids.has(obj.userData.editorId)) preSelected.add(obj.userData.editorId); });
+    candidates.forEach(obj => preSelected.add(obj.userData.editorId));
   } else if (E.selected) {
     preSelected.add(E.selected.userData.editorId);
   } else {
@@ -2123,7 +2954,8 @@ function executeMerge() {
     const num = row.querySelector('input[type=number]');
     if (!chk || !num || !chk.checked) return;
     const eid = parseInt(chk.dataset.eid);
-    const obj = E.placedGroup.children.find(o => o.userData.editorId === eid);
+    const _pool = [...E.placedGroup.children, ...(E.groupPivot ? E.groupPivot.children : [])];
+    const obj = _pool.find(o => o.userData.editorId === eid);
     if (!obj) return;
     plan.push({ obj, meshGroup: parseInt(num.value) || 1 });
   });
@@ -2131,6 +2963,7 @@ function executeMerge() {
   if (!plan.length) { setStatus('Select at least one object to merge'); return; }
 
   pushUndo();
+  if (E.groupPivot) finalizeGroupTransform();
   closeMergeDialog();
 
   const groups = {};
@@ -2230,21 +3063,22 @@ function spawnMergedModel(entry) {
     if (md.normals) geo.setAttribute('normal', new THREE.Float32BufferAttribute(md.normals, 3));
     if (md.uvs)     geo.setAttribute('uv',     new THREE.Float32BufferAttribute(md.uvs, 2));
     if (md.indices) geo.setIndex(new THREE.BufferAttribute(new Uint32Array(md.indices), 1));
-    const mat = new THREE.MeshStandardMaterial({ color: '#aaaacc', roughness: 1, metalness: 0, side: THREE.DoubleSide });
+    const mat = new THREE.MeshStandardMaterial({ color: entry.color ?? '#aaaacc', roughness: 1, metalness: 0, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = md.name;
-    mesh.castShadow = true;
+    mesh.castShadow = entry.castShadow !== false;
     mesh.receiveShadow = true;
     root.add(mesh);
   });
   applyEntryTransform(root, entry);
-  root.castShadow = true;
+  root.castShadow = entry.castShadow !== false;
   root.receiveShadow = true;
   root.userData = {
     primType:   'merged-model',
     editorId:   entry.id,
     label:      entry.label || '',
     collidable: entry.collidable !== false,
+    _baseColor: entry.color ?? '#aaaacc',
   };
   root.name = entry.label || ('Merged_' + entry.id);
   if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
@@ -2260,8 +3094,46 @@ function spawnMergedModel(entry) {
       if (ovr.texture) _applyMeshEditorTexture(c, ovr.texture);
     });
   }
+  if (entry.doubleSide) {
+    root.userData.doubleSide = true;
+    root.traverse(c => {
+      if (c.isMesh && c.material) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+      }
+    });
+  }
+  if (entry.invertNormals) {
+    root.userData.invertNormals = true;
+    root.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
+  }
   E.placedGroup.add(root);
   return root;
+}
+
+function spawnImageModel(entry) {
+  return new Promise(resolve => {
+    _buildImageModelMesh(entry.imagePath, (group, aspect) => {
+      if (!group) { resolve(); return; }
+      const castShadow = entry.castShadow !== false;
+      group.traverse(c => { if (c.isMesh) { c.castShadow = castShadow; c.receiveShadow = true; } });
+      applyEntryTransform(group, entry);
+      group.userData = {
+        primType:   'image-model',
+        imagePath:  entry.imagePath,
+        editorId:   entry.id,
+        label:      entry.label || '',
+        collidable: entry.collidable !== false,
+        wallColor:  entry.wallColor || group.userData._autoWallColor,
+        _aspect:    aspect,
+      };
+      group.name = entry.label || ('Image_' + entry.id);
+      if (entry.states?.length) { group.userData.states = entry.states; group.userData.currentState = 0; }
+      if (entry.links?.length)  group.userData.links = entry.links;
+      E.placedGroup.add(group);
+      resolve(group);
+    }, entry.wallColor);
+  });
 }
 
 function openMeshEditor() {
@@ -3081,8 +3953,9 @@ async function performCut(targetObj) {
         cutters: [ _entryFromObj(cutter) ],
       },
     };
-    // Carry forward any existing cutters (stacked cuts)
-    if (targetObj.userData.csgRecipe) {
+    // Carry forward any existing cutters only if base is a plain prim (not itself a csg-result).
+    // If targetObj is already a csg-result its full recipe is embedded in base via _entryFromObj.
+    if (targetObj.userData.csgRecipe && targetObj.userData.primType !== 'csg-result') {
       result.userData.csgRecipe.cutters.push(...targetObj.userData.csgRecipe.cutters);
     }
     result.name = targetObj.name;
@@ -3211,7 +4084,7 @@ function mergeGeometriesWorldSpace(meshes) {
 // Serialize an object to a level-entry-style record (for csgRecipe storage)
 function _entryFromObj(obj) {
   const matColor = Array.isArray(obj.material) ? obj.material[0]?.color : obj.material?.color;
-  return {
+  const entry = {
     type:      obj.userData.primType || 'box',
     modelPath: obj.userData.modelPath || null,
     pos:       [+obj.position.x.toFixed(4), +obj.position.y.toFixed(4), +obj.position.z.toFixed(4)],
@@ -3219,11 +4092,18 @@ function _entryFromObj(obj) {
     size:      [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
     color:     matColor ? '#' + matColor.getHexString() : '#aaaacc',
   };
+  if (obj.userData.primType === 'csg-result' && obj.userData.csgRecipe) {
+    entry.csgRecipe = obj.userData.csgRecipe;
+  }
+  if (obj.userData.primType === 'merged-model') {
+    entry.mergedMeshes = _serializeMergedMeshes(obj);
+  }
+  return entry;
 }
 
 // Rebuild a CSG result from a saved recipe (used in loadLevel)
 async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
-  if (!E.csgEvaluator) E.csgEvaluator = new Evaluator();
+  const evaluator = new Evaluator();
 
   const recipe = entry.csgRecipe;
 
@@ -3243,7 +4123,8 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
     brushA.updateMatrixWorld(true);
     brushB.updateMatrixWorld(true);
     try {
-      brushA = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
+      brushA = evaluator.evaluate(brushA, brushB, SUBTRACTION);
+      brushA.updateMatrixWorld(true);
     } catch (err) {
       console.warn('CSG evaluate failed for cutter, skipping:', err);
     }
@@ -3255,8 +4136,16 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
   const _csgCenter = new THREE.Vector3();
   result.geometry.boundingBox.getCenter(_csgCenter);
   result.geometry.translate(-_csgCenter.x, -_csgCenter.y, -_csgCenter.z);
-  result.position.copy(_csgCenter);
-  result.rotation.set(0, 0, 0);
+  if (entry.pos && (entry.pos[0] !== 0 || entry.pos[1] !== 0 || entry.pos[2] !== 0)) {
+    result.position.set(entry.pos[0], entry.pos[1], entry.pos[2]);
+  } else {
+    result.position.copy(_csgCenter);
+  }
+  if (entry.rot && (entry.rot[0] !== 0 || entry.rot[1] !== 0 || entry.rot[2] !== 0)) {
+    result.rotation.set(entry.rot[0]*RAD, entry.rot[1]*RAD, entry.rot[2]*RAD);
+  } else {
+    result.rotation.set(0, 0, 0);
+  }
   result.scale.setScalar(1);
   result.castShadow = entry.castShadow !== false;
   result.receiveShadow = true;
@@ -3278,6 +4167,21 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
     const mats = Array.isArray(result.material) ? result.material : [result.material];
     mats.forEach(m => { if (m && 'emissive' in m) { m.emissive.copy(col); m.emissiveIntensity = entry.emissiveIntensity; } });
   }
+  // Apply saved color to all material slots (CSG result can have array material)
+  const _savedColor = entry.color ?? entry.csgRecipe?.base?.color;
+  if (_savedColor) {
+    result.userData._baseColor = _savedColor;
+    const col = new THREE.Color(_savedColor);
+    const mats = Array.isArray(result.material) ? result.material : [result.material];
+    mats.forEach(m => { if (m?.color) m.color.set(col); });
+  }
+  if (entry.roughness !== undefined || entry.metalness !== undefined) {
+    const mats = Array.isArray(result.material) ? result.material : [result.material];
+    mats.forEach(m => {
+      if (entry.roughness !== undefined && 'roughness' in m) m.roughness = entry.roughness;
+      if (entry.metalness !== undefined && 'metalness' in m) m.metalness = entry.metalness;
+    });
+  }
   // Restore texture if saved
   if (entry.faceTextures) {
     result.userData.faceTextures = entry.faceTextures;
@@ -3289,6 +4193,16 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
 
 // Build a temporary mesh from a recipe entry (for CSG source geometry)
 async function _buildEntryObj(e, gltfLoader, fbxLoader) {
+  if (e.type === 'csg-result' && e.csgRecipe) {
+    const mesh = await spawnCsgResult({ ...e, id: e.id ?? -1 }, gltfLoader, fbxLoader);
+    if (mesh) E.placedGroup.remove(mesh);
+    return mesh;
+  }
+  if (e.type === 'merged-model' && e.mergedMeshes?.length) {
+    const root = spawnMergedModel({ ...e, id: e.id ?? -1 });
+    if (root) { E.placedGroup.remove(root); root.updateMatrixWorld(true); }
+    return root;
+  }
   if (e.type === 'model' && e.modelPath) {
     return new Promise(resolve => {
       const ext = e.modelPath.split('.').pop().toLowerCase();
@@ -3340,11 +4254,14 @@ async function restoreSnapshot(json) {
       E.groups[gid] = { name: g.name, ids: new Set(g.ids) };
     }
   }
+  E.levelVars = data.vars ? { ...data.vars } : {};
+  renderVarsPanel();
   const gltfLoader = new GLTFLoader(), fbxLoader = new FBXLoader();
   for (const entry of (data.objects || [])) {
     if (entry.type === 'csg-result')          await spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
     else if (entry.type === 'model')           await loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
     else if (entry.type === 'merged-model')    spawnMergedModel(entry);
+    else if (entry.type === 'image-model')     await spawnImageModel(entry);
     else spawnPrimFromEntry(entry);
   }
   updateSceneList(); updateGroupsPanel(); markDirty();
@@ -3382,6 +4299,8 @@ async function refreshModelList() {
   if (!window.electron) return;
   try { E.importedModels = await window.electron.listModels(); } catch { E.importedModels = []; }
   renderModelList();
+  try { E.importedImages = await window.electron.listImageModels(); } catch { E.importedImages = []; }
+  renderImageModelList();
   await refreshTextureList();
   await refreshSoundList();
 }
@@ -3460,6 +4379,28 @@ function renderModelList() {
       beginPlace('model:' + m.path);
     });
     palette.appendChild(div);
+  });
+}
+
+function renderImageModelList() {
+  const empty = document.getElementById('image-model-empty');
+  const list  = document.getElementById('image-model-list');
+  if (!list) return;
+  list.querySelectorAll('.image-model-item').forEach(el => el.remove());
+  if (!(E.importedImages || []).length) { if (empty) empty.style.display = ''; return; }
+  if (empty) empty.style.display = 'none';
+  (E.importedImages || []).forEach(img => {
+    const div = document.createElement('div');
+    div.className = 'image-model-item model-item';
+    div.textContent = img.name;
+    div.title = img.path;
+    div.addEventListener('click', () => {
+      if (!E.levelName) { setStatus('Open or create a level first'); return; }
+      document.querySelectorAll('.prim-btn, .model-item, .image-model-item').forEach(b => b.classList.remove('active'));
+      div.classList.add('active');
+      beginPlace('image-model:' + img.path);
+    });
+    list.appendChild(div);
   });
 }
 
@@ -3554,12 +4495,20 @@ function applyStateToEditorObj(obj, state) {
     }
   }
   if (rotOn && state.rot) {
+    const pivot = (!posOn && obj.userData.pivotOffset)
+      ? new THREE.Vector3().fromArray(obj.userData.pivotOffset).applyMatrix4(obj.matrixWorld)
+      : null;
     if (state.rotRelative) {
       obj.rotation.x += state.rot[0] * RAD;
       obj.rotation.y += state.rot[1] * RAD;
       obj.rotation.z += state.rot[2] * RAD;
     } else {
       obj.rotation.set(state.rot[0] * RAD, state.rot[1] * RAD, state.rot[2] * RAD);
+    }
+    if (pivot) {
+      obj.updateMatrixWorld(true);
+      const newPivotWorld = new THREE.Vector3().fromArray(obj.userData.pivotOffset).applyMatrix4(obj.matrixWorld);
+      obj.position.add(pivot.sub(newPivotWorld));
     }
   }
   if (scaleOn && state.scale) {
@@ -3834,20 +4783,9 @@ function renderStatesPanel(obj) {
       <div class="state-field-row${conditionEnabled ? '' : ' sf-disabled'}" data-field="condition">
         <div class="state-field-head" style="gap:3px">
           <label><input type="checkbox" data-si="condEn" ${conditionEnabled ? 'checked' : ''}> If var</label>
-          <select class="prop-input" data-si="condVar" style="flex:1;font-size:10px;padding:2px 2px">
-            <option value="">(none)</option>
-            ${Object.keys(E.levelVars).map(k => `<option value="${escHtml(k)}" ${state.condition?.var === k ? 'selected' : ''}>${escHtml(k)}</option>`).join('')}
-          </select>
-          <select class="prop-input" data-si="condOp" style="width:44px;font-size:10px;padding:2px 2px">
-            <option value="eq" ${state.condition?.op === 'eq' ? 'selected' : ''}>=</option>
-            <option value="ne" ${state.condition?.op === 'ne' ? 'selected' : ''}>&ne;</option>
-            <option value="lt" ${state.condition?.op === 'lt' ? 'selected' : ''}>&lt;</option>
-            <option value="le" ${state.condition?.op === 'le' ? 'selected' : ''}>&le;</option>
-            <option value="gt" ${state.condition?.op === 'gt' ? 'selected' : ''}>&gt;</option>
-            <option value="ge" ${state.condition?.op === 'ge' ? 'selected' : ''}>&ge;</option>
-          </select>
-          <input class="prop-input" data-si="condVal" type="text" value="${escHtml(String(state.condition?.value ?? ''))}" style="width:44px" placeholder="value">
+          <button data-si="condAdd" style="font-size:10px;padding:1px 6px;margin-left:auto">+ Add</button>
         </div>
+        <div data-si="condList" style="display:flex;flex-direction:column;gap:3px;margin-top:3px"></div>
       </div>
       <div class="state-item-row">
         <label style="white-space:nowrap">Active var</label>
@@ -4002,21 +4940,60 @@ function renderStatesPanel(obj) {
       item.querySelector('[data-field="condition"]').classList.toggle('sf-disabled', !e.target.checked);
       markDirty();
     });
-    g('condVar').addEventListener('change', e => {
-      if (!st.condition) st.condition = { var: '', op: 'eq', value: '' };
-      st.condition.var = e.target.value;
+
+    const _condVarOptions = () => Object.keys(E.levelVars).map(k => `<option value="${escHtml(k)}">${escHtml(k)}</option>`).join('');
+    const _condOpOptions  = () => `<option value="eq">=</option><option value="ne">&ne;</option><option value="lt">&lt;</option><option value="le">&le;</option><option value="gt">&gt;</option><option value="ge">&ge;</option>`;
+
+    const _renderCondList = () => {
+      if (!st.conditions?.length && st.condition) {
+        st.conditions = [st.condition];
+        delete st.condition;
+      }
+      if (!st.conditions) st.conditions = [];
+      const list = g('condList');
+      list.innerHTML = '';
+      st.conditions.forEach((cond, ci) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:3px;align-items:center;';
+        row.innerHTML = `
+          <select class="prop-input" style="flex:1;font-size:10px;padding:2px 2px">
+            <option value="">(none)</option>${_condVarOptions()}
+          </select>
+          <select class="prop-input" style="width:44px;font-size:10px;padding:2px 2px">${_condOpOptions()}</select>
+          <input class="prop-input" type="text" value="${escHtml(String(cond.value ?? ''))}" style="width:44px" placeholder="value">
+          <button style="font-size:10px;padding:1px 5px;flex-shrink:0">&times;</button>
+        `;
+        const varSel = row.children[0];
+        const opSel  = row.children[1];
+        const valIn  = row.children[2];
+        const delBtn = row.children[3];
+        varSel.value = cond.var || '';
+        opSel.value  = cond.op  || 'eq';
+        varSel.addEventListener('change', e => { cond.var = e.target.value; markDirty(); });
+        opSel.addEventListener('change',  e => { cond.op  = e.target.value; markDirty(); });
+        valIn.addEventListener('change',  e => { cond.value = e.target.value; markDirty(); });
+        delBtn.addEventListener('click', () => {
+          st.conditions.splice(ci, 1);
+          _renderCondList();
+          markDirty();
+        });
+        list.appendChild(row);
+      });
+    };
+
+    g('condAdd').addEventListener('click', () => {
+      if (!st.conditions) st.conditions = [];
+      if (!st.conditionEnabled) {
+        st.conditionEnabled = true;
+        item.querySelector('[data-field="condition"]').classList.remove('sf-disabled');
+        g('condEn').checked = true;
+      }
+      st.conditions.push({ var: '', op: 'eq', value: '' });
+      _renderCondList();
       markDirty();
     });
-    g('condOp').addEventListener('change', e => {
-      if (!st.condition) st.condition = { var: '', op: 'eq', value: '' };
-      st.condition.op = e.target.value;
-      markDirty();
-    });
-    g('condVal').addEventListener('change', e => {
-      if (!st.condition) st.condition = { var: '', op: 'eq', value: '' };
-      st.condition.value = e.target.value;
-      markDirty();
-    });
+
+    _renderCondList();
 
     g('activeVar').addEventListener('change', e => {
       const v = e.target.value.trim();
@@ -4298,6 +5275,7 @@ function renderVarsPanel() {
 
 function refreshVarDropdowns() {
   // Update all trigger-var-name dropdowns (there's one in the trigger props panel)
+  _populateVarSelect(document.getElementById('trigger-presence-var'), null);
   _populateVarSelect(document.getElementById('trigger-var-name'), null);
   // Re-render states panel to update condition var dropdowns (if obj selected)
   if (E.selected) renderStatesPanel(E.selected);
@@ -4440,14 +5418,30 @@ function setupUI() {
     const p = await window.electron.importModel();
     if (p) {
       await refreshModelList();
-      // Auto-activate placement for the newly imported model
       if (E.levelName) {
         document.querySelectorAll('.prim-btn, .model-item').forEach(b => b.classList.remove('active'));
-        // Find and highlight the matching model-item
         document.querySelectorAll('.model-item').forEach(el => {
           if (el.title === p) el.classList.add('active');
         });
         beginPlace('model:' + p);
+        setStatus(`Imported "${p.split(/[\\/]/).pop()}" — click in viewport to place`);
+      } else {
+        setStatus(`Imported: ${p.split(/[\\/]/).pop()} — open a level to place it`);
+      }
+    }
+  });
+
+  document.getElementById('btn-import-image-model')?.addEventListener('click', async () => {
+    if (!window.electron) { setStatus('Image import requires Electron'); return; }
+    const p = await window.electron.importImageModel();
+    if (p) {
+      await refreshModelList();
+      if (E.levelName) {
+        document.querySelectorAll('.prim-btn, .model-item, .image-model-item').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.image-model-item').forEach(el => {
+          if (el.title === p) el.classList.add('active');
+        });
+        beginPlace('image-model:' + p);
         setStatus(`Imported "${p.split(/[\\/]/).pop()}" — click in viewport to place`);
       } else {
         setStatus(`Imported: ${p.split(/[\\/]/).pop()} — open a level to place it`);
@@ -4560,6 +5554,26 @@ function setupUI() {
     });
     markDirty();
   });
+  document.getElementById('chk-double-side')?.addEventListener('mousedown', () => { if (E.selected) pushUndo(); });
+  document.getElementById('chk-double-side')?.addEventListener('change', e => {
+    if (!E.selected) return;
+    const v = e.target.checked;
+    E.selected.userData.doubleSide = v || undefined;
+    E.selected.traverse(c => {
+      if (c.isMesh && c.material) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { m.side = v ? THREE.DoubleSide : THREE.FrontSide; m.needsUpdate = true; });
+      }
+    });
+    markDirty();
+  });
+  document.getElementById('chk-invert-normals')?.addEventListener('mousedown', () => { if (E.selected) pushUndo(); });
+  document.getElementById('chk-invert-normals')?.addEventListener('change', e => {
+    if (!E.selected) return;
+    E.selected.userData.invertNormals = e.target.checked || undefined;
+    E.selected.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
+    markDirty();
+  });
   document.getElementById('obj-opacity')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('obj-opacity')?.addEventListener('input', e => {
     if (!E.selected || !E.selected.material) return;
@@ -4615,6 +5629,11 @@ function setupUI() {
   document.getElementById('trigger-once')?.addEventListener('change', e => {
     if (E.selected && E.selected.userData.primType === 'save-trigger') {
       E.selected.userData.onceOnly = e.target.checked; markDirty();
+    }
+  });
+  document.getElementById('trigger-presence-var')?.addEventListener('change', e => {
+    if (E.selected && E.selected.userData.primType === 'custom-trigger') {
+      E.selected.userData.presenceVar = e.target.value; markDirty();
     }
   });
   document.getElementById('trigger-var-name')?.addEventListener('change', e => {
@@ -4679,6 +5698,28 @@ function setupUI() {
     setStatus(`Texture "${name}" imported`);
   });
 
+  document.getElementById('btn-import-normal')?.addEventListener('click', async () => {
+    if (!window.electron?.importTexture) return;
+    const name = await window.electron.importTexture();
+    if (!name) return;
+    await refreshTextureList();
+    const el = document.getElementById('tex-normal-map');
+    if (el) el.value = name;
+    applyCurrentFaceConfig();
+    setStatus(`Normal map "${name}" imported`);
+  });
+
+  document.getElementById('btn-import-roughness')?.addEventListener('click', async () => {
+    if (!window.electron?.importTexture) return;
+    const name = await window.electron.importTexture();
+    if (!name) return;
+    await refreshTextureList();
+    const el = document.getElementById('tex-roughness-map');
+    if (el) el.value = name;
+    applyCurrentFaceConfig();
+    setStatus(`Roughness map "${name}" imported`);
+  });
+
   // Face dropdown
   document.getElementById('tex-face')?.addEventListener('change', e => {
     const val = e.target.value;
@@ -4718,6 +5759,38 @@ function setupUI() {
     if (el) el.value = '';
     applyCurrentFaceConfig();
   });
+  document.getElementById('btn-clear-normal')?.addEventListener('click', () => {
+    const el = document.getElementById('tex-normal-map');
+    if (el) el.value = '';
+    applyCurrentFaceConfig();
+  });
+  document.getElementById('btn-clear-roughness')?.addEventListener('click', () => {
+    const el = document.getElementById('tex-roughness-map');
+    if (el) el.value = '';
+    applyCurrentFaceConfig();
+  });
+
+  document.getElementById('btn-import-bump')?.addEventListener('click', async () => {
+    if (!window.electron?.importTexture) return;
+    const name = await window.electron.importTexture();
+    if (!name) return;
+    await refreshTextureList();
+    const el = document.getElementById('tex-bump-map');
+    if (el) el.value = name;
+    applyCurrentFaceConfig();
+    setStatus(`Bump map "${name}" imported`);
+  });
+  document.getElementById('btn-clear-bump')?.addEventListener('click', () => {
+    const el = document.getElementById('tex-bump-map');
+    if (el) el.value = '';
+    applyCurrentFaceConfig();
+  });
+
+  // Normal/roughness/bump map inputs trigger applyCurrentFaceConfig on change
+  document.getElementById('tex-normal-map')?.addEventListener('change', applyCurrentFaceConfig);
+  document.getElementById('tex-roughness-map')?.addEventListener('change', applyCurrentFaceConfig);
+  document.getElementById('tex-bump-map')?.addEventListener('change', applyCurrentFaceConfig);
+  document.getElementById('tex-bump-scale')?.addEventListener('change', applyCurrentFaceConfig);
 
   // Edit UV button
   document.getElementById('btn-uv-edit')?.addEventListener('click', openUVEditor);
@@ -4856,6 +5929,9 @@ function setupUI() {
     document.getElementById('btn-toggle-groups-panel').textContent = open ? '>' : 'v';
   });
 
+  document.getElementById('btn-new-group-lp')?.addEventListener('click', () => document.getElementById('btn-new-group').click());
+  document.getElementById('btn-add-to-group-lp')?.addEventListener('click', () => document.getElementById('btn-add-to-group').click());
+
   // Actions
   document.getElementById('btn-clone').addEventListener('click', cloneSelected);
   document.getElementById('btn-del').addEventListener('click', deleteSelected);
@@ -4869,6 +5945,8 @@ function setupUI() {
   });
   document.getElementById('btn-reset-pivot').addEventListener('click', resetPivot);
   document.getElementById('btn-merge').addEventListener('click', openMergeDialog);
+  document.getElementById('btn-export-uv').addEventListener('click', exportUVMap);
+  document.getElementById('btn-face-mode').addEventListener('click', () => { if (E.faceModeActive) exitFaceMode(); else enterFaceMode(); });
   document.getElementById('btn-merge-confirm').addEventListener('click', executeMerge);
   document.getElementById('btn-merge-modal-close').addEventListener('click', closeMergeDialog);
 
@@ -4878,6 +5956,13 @@ function setupUI() {
     const open = wrap.style.display !== 'none';
     wrap.style.display = open ? 'none' : '';
     document.getElementById('btn-toggle-scene-list').textContent = open ? '>' : 'v';
+  });
+
+  document.getElementById('toggle-triggers-visible')?.addEventListener('change', e => {
+    const visible = e.target.checked;
+    E.placedGroup.traverse(o => {
+      if (isTriggerType(o.userData.primType)) o.visible = visible;
+    });
   });
 
   // Actor import
@@ -5035,7 +6120,14 @@ function setupKeys() {
 
     if (e.code === 'Delete' || e.code === 'Backspace') deleteSelected();
 
+    if (e.code === 'KeyF') {
+      if (E.faceModeActive) exitFaceMode();
+      else enterFaceMode();
+      return;
+    }
+
     if (e.code === 'Escape') {
+      if (E.faceModeActive)  { exitFaceMode(); return; }
       if (E.facePickMode){ cancelFacePick(); return; }
       if (E.pivotMode)   { cancelPivot(); return; }
       if (E.linkMode)    { cancelLink(); return; }
@@ -5048,6 +6140,10 @@ function setupKeys() {
   });
   window.addEventListener('keyup', e => {
     delete E.keys[e.code];
+    updateTransformSnap();
+  });
+  window.addEventListener('blur', () => {
+    E.keys = {};
     updateTransformSnap();
   });
 }
@@ -5078,6 +6174,7 @@ function setupMouse() {
   const vp = document.getElementById('viewport');
 
   vp.addEventListener('mousemove', e => {
+    if (E.faceModeActive) { _faceModeHover(e); }
     if (!E.ghostMesh) return;
     const pos = worldFromMouse(e);
     if (pos) {
@@ -5088,6 +6185,30 @@ function setupMouse() {
       );
     }
   });
+
+  let _speedHudTimer = null;
+  function _showSpeedHud() {
+    let hud = document.getElementById('__pan-speed-hud__');
+    if (!hud) {
+      hud = document.createElement('div');
+      hud.id = '__pan-speed-hud__';
+      hud.style.cssText = 'position:fixed;bottom:48px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;font-size:13px;padding:5px 14px;border-radius:6px;pointer-events:none;z-index:9999;transition:opacity 0.3s';
+      document.body.appendChild(hud);
+    }
+    hud.textContent = `Camera speed: ${E.panSpeed.toFixed(1)}`;
+    hud.style.opacity = '1';
+    clearTimeout(_speedHudTimer);
+    _speedHudTimer = setTimeout(() => { hud.style.opacity = '0'; }, 1200);
+  }
+
+  vp.addEventListener('wheel', e => {
+    if (!(e.ctrlKey || E.keys['ControlLeft'] || E.keys['ControlRight'])) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+    E.panSpeed = Math.max(0.5, Math.min(200, E.panSpeed * factor));
+    _showSpeedHud();
+  }, { passive: false, capture: true });
 
   vp.addEventListener('click', e => {
     if (e.button !== 0) return;
@@ -5104,13 +6225,19 @@ function setupMouse() {
 
     if (E.wasDragging) return;
 
+    // Face mode click — intercept before normal selection
+    if (E.faceModeActive) {
+      _faceModeClick();
+      return;
+    }
+
     // Selection - only placed objects, not ref
     mouseToNDC(e);
     _ray.setFromCamera(_ndcM, E.camera);
     const candidates = [];
-    E.placedGroup.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper) candidates.push(o); });
+    E.placedGroup.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper && o.visible) candidates.push(o); });
     // When group pivot is active its members live under E.groupPivot, not E.placedGroup.
-    if (E.groupPivot) E.groupPivot.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper) candidates.push(o); });
+    if (E.groupPivot) E.groupPivot.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper && o.visible) candidates.push(o); });
     const hits = _ray.intersectObjects(candidates, false);
 
     // Link mode — click target to wire to link source
@@ -5197,6 +6324,8 @@ function setupMouse() {
 function updateCameraPan(delta) {
   // Don't pan while typing in inputs
   if (document.activeElement?.tagName === 'INPUT') return;
+  // Don't pan while Ctrl is held (avoid Ctrl+W/D/S/E triggering movement)
+  if (E.keys['ControlLeft'] || E.keys['ControlRight']) return;
   const speed = E.panSpeed;  // Space/Shift handle up/down; no sprint modifier needed
   const fwd = new THREE.Vector3();
   E.camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
@@ -5223,10 +6352,13 @@ function animate(now = 0) {
   const originDot   = E.scene.getObjectByName('__playerOrigin__');
   const originCross = E.scene.getObjectByName('__playerOriginCross__');
   if (originDot || originCross) {
-    const cx = E.camera.position.x;
-    const cz = E.camera.position.z;
-    if (originDot)   originDot.position.set(cx, 0, cz);
-    if (originCross) originCross.position.set(cx, 0, cz);
+    const t = E.orbit.target;
+    if (originDot)   originDot.position.copy(t);
+    if (originCross) originCross.position.copy(t);
+    const dist = E.camera.position.distanceTo(t);
+    const s = dist * 0.04;
+    if (originDot)   originDot.scale.setScalar(s);
+    if (originCross) originCross.scale.setScalar(s);
   }
   E.orbit.update();
   E.colHelpers.forEach(h => h.update());

@@ -7,6 +7,26 @@ import { isFreecamActive as isFreecamActiveMobile } from './mobileControls.js';
 import { isFreecamActive as isFreecamActiveDesktop } from './input.js';
 import { advanceObjectState, fireButtonTrigger } from './stateManager.js';
 
+let _knobSaveHook = null;
+export function setKnobSaveHook(fn) { _knobSaveHook = fn; }
+let _channelChangeHook = null;
+export function setChannelChangeHook(fn) { _channelChangeHook = fn; }
+
+let _volNotch = -1;
+function _playVolClick(value) {
+  const n = Math.floor(Math.random() * 6) + 1;
+  const a = new Audio(`./sounds/vol${n}.wav`);
+  a.volume = Math.max(0.01, value) * 0.3;
+  a.play().catch(() => {});
+}
+function _updateVolNotch(value) {
+  const notch = Math.round(value * 30);
+  if (notch !== _volNotch) {
+    _volNotch = notch;
+    _playVolClick(value);
+  }
+}
+
 // Split a combined mesh into its disconnected vertex islands (e.g. two knobs sharing one mesh)
 export function splitMeshIntoIslands(mesh) {
   const geometry = mesh.geometry;
@@ -104,6 +124,7 @@ export function initScene() {
 
   gameState.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
   gameState.renderer.sortObjects = true;
+  gameState.renderer.outputColorSpace = THREE.SRGBColorSpace;
   const { w: rw, h: rh } = platformConfig.getRendererSize(window.innerWidth, window.innerHeight);
   gameState.renderer.setSize(rw, rh);
   gameState.renderer.domElement.style.width  = '100vw';
@@ -169,10 +190,10 @@ export function initScene() {
     let _mouseClientX = 0, _mouseClientY = 0;
     document.addEventListener('mousemove', (ev) => { _mouseClientX = ev.clientX; _mouseClientY = ev.clientY; }, { passive: true });
 
-    // Scroll wheel — knob interaction takes priority, then third-person zoom
+    // Scroll wheel — knob interaction takes priority, then interactObj buttons, then third-person zoom
     document.addEventListener('wheel', (event) => {
-      const knobHovered = (() => {
-        if (!gameState.isPaused || !gameState.tvKnobMesh) return false;
+      const _knobScrollRaycaster = (() => {
+        if (!gameState.isPaused) return null;
         const rect = gameState.renderer.domElement.getBoundingClientRect();
         const mouse = new THREE.Vector2(
           ((_mouseClientX - rect.left) / rect.width)  *  2 - 1,
@@ -180,9 +201,15 @@ export function initScene() {
         );
         const r = new THREE.Raycaster();
         r.setFromCamera(mouse, gameState.camera);
-        return r.intersectObject(gameState.tvKnobMesh, true).length > 0;
+        return r;
       })();
-      if (knobHovered && gameState.tvKnobMesh) {
+      const knobHovered = _knobScrollRaycaster && gameState.tvKnobMesh
+        ? _knobScrollRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true).length > 0
+        : false;
+      const chKnobHovered = _knobScrollRaycaster && gameState.tvChannelKnobMesh
+        ? _knobScrollRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true).length > 0
+        : false;
+      if ((gameState.tvKnobInteractable || knobHovered) && gameState.tvKnobMesh) {
         event.preventDefault();
         const step = THREE.MathUtils.degToRad(3);
         const direction = event.deltaY > 0 ? 1 : -1;
@@ -191,6 +218,21 @@ export function initScene() {
         const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x + direction * step, min, max);
         gameState.tvKnobMesh.rotation.x = newX;
         gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+        gameState.masterVolume = gameState.tvKnobValue;
+        _updateVolNotch(gameState.tvKnobValue);
+        if (_knobSaveHook) _knobSaveHook();
+      } else if (chKnobHovered && gameState.tvChannelKnobMesh) {
+        event.preventDefault();
+        const direction = event.deltaY > 0 ? 1 : -1;
+        const newNotch = THREE.MathUtils.clamp((gameState.tvChannelKnobValue ?? 0) + direction, 0, 4);
+        if (newNotch !== gameState.tvChannelKnobValue) {
+          gameState.tvChannelKnobValue = newNotch;
+          const chMin = gameState.tvChannelKnobRotationMin;
+          const chStep = (gameState.tvChannelKnobRotationMax - chMin) / 4;
+          gameState.tvChannelKnobMesh.rotation.x = chMin + newNotch * chStep;
+          if (_knobSaveHook) _knobSaveHook();
+          if (_channelChangeHook) _channelChangeHook(newNotch);
+        }
       } else if (!gameState.isPaused && gameState.interactObj) {
         const _st = gameState.interactObj.userData.states?.[gameState.interactObj.userData.currentState ?? 0];
         if (_st?.buttons?.length) {
@@ -207,40 +249,69 @@ export function initScene() {
 
     // Knob drag in pause menu — tangential mouse motion relative to knob screen-center
     const _knobRaycaster = new THREE.Raycaster();
-    let _knobDragging = false, _knobCX = 0, _knobCY = 0, _knobMouseX = 0, _knobMouseY = 0;
+    let _knobDragging = null, _knobCX = 0, _knobCY = 0, _knobMouseX = 0, _knobMouseY = 0;
+    let _chKnobRawX = 0;
     gameState.renderer.domElement.addEventListener('mousedown', (e) => {
-      if (!gameState.isPaused || !gameState.tvKnobMesh) return;
+      if (!gameState.isPaused) return;
       const rect = gameState.renderer.domElement.getBoundingClientRect();
       const mouse = new THREE.Vector2(
         ((e.clientX - rect.left) / rect.width)  *  2 - 1,
        -((e.clientY - rect.top)  / rect.height) *  2 + 1
       );
       _knobRaycaster.setFromCamera(mouse, gameState.camera);
-      if (_knobRaycaster.intersectObject(gameState.tvKnobMesh, true).length === 0) return;
-      const knobWorld = new THREE.Vector3();
-      gameState.tvKnobMesh.getWorldPosition(knobWorld);
-      const proj = knobWorld.clone().project(gameState.camera);
-      _knobCX = (proj.x  + 1) / 2 * rect.width  + rect.left;
-      _knobCY = (-proj.y + 1) / 2 * rect.height + rect.top;
-      _knobMouseX = e.clientX; _knobMouseY = e.clientY;
-      _knobDragging = true;
-      e.stopPropagation();
+      if (gameState.tvKnobMesh && _knobRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true).length > 0) {
+        const knobWorld = new THREE.Vector3();
+        gameState.tvKnobMesh.getWorldPosition(knobWorld);
+        const proj = knobWorld.clone().project(gameState.camera);
+        _knobCX = (proj.x  + 1) / 2 * rect.width  + rect.left;
+        _knobCY = (-proj.y + 1) / 2 * rect.height + rect.top;
+        _knobMouseX = e.clientX; _knobMouseY = e.clientY;
+        _knobDragging = 'vol';
+        e.stopPropagation();
+      } else if (gameState.tvChannelKnobMesh && _knobRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true).length > 0) {
+        const chWorld = new THREE.Vector3();
+        gameState.tvChannelKnobMesh.getWorldPosition(chWorld);
+        const proj = chWorld.clone().project(gameState.camera);
+        _knobCX = (proj.x  + 1) / 2 * rect.width  + rect.left;
+        _knobCY = (-proj.y + 1) / 2 * rect.height + rect.top;
+        _knobMouseX = e.clientX; _knobMouseY = e.clientY;
+        _chKnobRawX = gameState.tvChannelKnobMesh.rotation.x;
+        _knobDragging = 'ch';
+        e.stopPropagation();
+      }
     });
     document.addEventListener('mousemove', (e) => {
-      if (!_knobDragging || !gameState.tvKnobMesh) return;
+      if (!_knobDragging) return;
       const rx = _knobMouseX - _knobCX, ry = _knobMouseY - _knobCY;
       const len = Math.sqrt(rx * rx + ry * ry) || 1;
       const tx = ry / len, ty = -rx / len;
       const dx = e.clientX - _knobMouseX, dy = e.clientY - _knobMouseY;
       _knobMouseX = e.clientX; _knobMouseY = e.clientY;
       const tangential = dx * tx + dy * ty;
-      const min = Math.min(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
-      const max = Math.max(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
-      const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x - tangential * 0.025, min, max);
-      gameState.tvKnobMesh.rotation.x = newX;
-      gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+      if (_knobDragging === 'vol' && gameState.tvKnobMesh) {
+        const min = Math.min(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+        const max = Math.max(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+        const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x - tangential * 0.025, min, max);
+        gameState.tvKnobMesh.rotation.x = newX;
+        gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+        gameState.masterVolume = gameState.tvKnobValue;
+        _updateVolNotch(gameState.tvKnobValue);
+        if (_knobSaveHook) _knobSaveHook();
+      } else if (_knobDragging === 'ch' && gameState.tvChannelKnobMesh) {
+        const chMin = gameState.tvChannelKnobRotationMin;
+        const chMax = gameState.tvChannelKnobRotationMax;
+        _chKnobRawX = THREE.MathUtils.clamp(_chKnobRawX - tangential * 0.025, chMin, chMax);
+        const chStep = (chMax - chMin) / 4;
+        const newNotch = THREE.MathUtils.clamp(Math.round((_chKnobRawX - chMin) / chStep), 0, 4);
+        if (newNotch !== gameState.tvChannelKnobValue) {
+          gameState.tvChannelKnobValue = newNotch;
+          gameState.tvChannelKnobMesh.rotation.x = chMin + newNotch * chStep;
+          if (_knobSaveHook) _knobSaveHook();
+          if (_channelChangeHook) _channelChangeHook(newNotch);
+        }
+      }
     });
-    document.addEventListener('mouseup', () => { _knobDragging = false; });
+    document.addEventListener('mouseup', () => { _knobDragging = null; });
 
     // Right-click = interact with highlighted object
     document.addEventListener('mousedown', (e) => {
@@ -328,11 +399,11 @@ export function updateCamera() {
       gameState.smoothedCameraPos = headPos.clone();
     }
     
-    // Smoothly interpolate camera position — tight on XZ, heavy damping on Y to kill run bob
+    // Smoothly interpolate camera position — tight on XZ, light damping on Y
     const dampingFactor = 0.25;
     gameState.smoothedCameraPos.x += (headPos.x - gameState.smoothedCameraPos.x) * dampingFactor;
     gameState.smoothedCameraPos.z += (headPos.z - gameState.smoothedCameraPos.z) * dampingFactor;
-    gameState.smoothedCameraPos.y += (headPos.y - gameState.smoothedCameraPos.y) * 0.03;
+    gameState.smoothedCameraPos.y += (headPos.y - gameState.smoothedCameraPos.y) * 0.35;
     
     // Calculate intended camera position (head + backward offset)
     const intendedCameraPos = gameState.smoothedCameraPos.clone();

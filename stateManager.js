@@ -4,6 +4,7 @@ import { gameState } from './globals.js';
 
 // ─── Level variables (set by levelLoader, mutated by custom triggers) ─────────
 export const levelVars = {};
+window.__lv = levelVars;
 
 export function setLevelVar(name, value) {
   levelVars[name] = value;
@@ -24,37 +25,74 @@ function _getAudioCtx() {
   return _audioCtx;
 }
 
+const _activeSounds = [];
+
+function _listenerPos() {
+  if (gameState.player) {
+    const p = gameState.player.position;
+    return new THREE.Vector3(p.x, p.y + 1, p.z);
+  }
+  if (gameState.camera) {
+    const v = new THREE.Vector3();
+    gameState.camera.getWorldPosition(v);
+    return v;
+  }
+  return null;
+}
+
+function _volPanForPos(worldPos) {
+  const lp = _listenerPos();
+  if (!lp || !gameState.camera) return { vol: 1, pan: 0 };
+  const dist = lp.distanceTo(worldPos);
+  const vol = Math.pow(Math.max(0, 1 - dist / 20), 2);
+  const right = new THREE.Vector3().setFromMatrixColumn(gameState.camera.matrixWorld, 0).normalize();
+  const toSound = new THREE.Vector3().subVectors(worldPos, lp).normalize();
+  const pan = THREE.MathUtils.clamp(right.dot(toSound), -1, 1);
+  return { vol, pan };
+}
+
+export function updateStateSounds() {
+  if (!_activeSounds.length) return;
+  const mv = gameState.masterVolume ?? 1;
+  for (let i = _activeSounds.length - 1; i >= 0; i--) {
+    const s = _activeSounds[i];
+    if (s.audioEl.ended || s.audioEl.paused) { _activeSounds.splice(i, 1); continue; }
+    const { vol, pan } = _volPanForPos(s.worldPos);
+    s.gainNode.gain.value = vol * mv;
+    s.pannerNode.pan.value = pan;
+  }
+}
+
 function _playSound(name, worldPos) {
   if (!name) return;
-  let vol = 1, pan = 0;
-  if (worldPos && gameState.camera) {
-    const camPos = new THREE.Vector3();
-    gameState.camera.getWorldPosition(camPos);
-    const dist = camPos.distanceTo(worldPos);
-    vol = Math.max(0, 1 - dist / 40);
-    if (vol <= 0) return;
-    const right = new THREE.Vector3();
-    gameState.camera.getWorldDirection(new THREE.Vector3());
-    right.setFromMatrixColumn(gameState.camera.matrixWorld, 0).normalize();
-    const toSound = new THREE.Vector3().subVectors(worldPos, camPos).normalize();
-    pan = THREE.MathUtils.clamp(right.dot(toSound), -1, 1);
-  }
   const exts = ['ogg', 'mp3', 'wav'];
   const tryNext = i => {
     if (i >= exts.length) return;
     const audio = new Audio(`./sounds/${name}.${exts[i]}`);
-    audio.volume = vol;
     audio.onerror = () => tryNext(i + 1);
-    audio.play().then(() => {
+    audio.addEventListener('canplaythrough', () => {
       try {
         const ctx = _getAudioCtx();
         const src = ctx.createMediaElementSource(audio);
-        const panner = ctx.createStereoPanner();
-        panner.pan.value = pan;
-        src.connect(panner);
-        panner.connect(ctx.destination);
+        const gainNode = ctx.createGain();
+        const pannerNode = ctx.createStereoPanner();
+        const wp = worldPos ? worldPos.clone() : null;
+        if (wp) {
+          const { vol, pan } = _volPanForPos(wp);
+          const mv = gameState.masterVolume ?? 1;
+          if (vol <= 0) { audio.pause(); return; }
+          gainNode.gain.value = vol * mv;
+          pannerNode.pan.value = pan;
+          _activeSounds.push({ audioEl: audio, gainNode, pannerNode, worldPos: wp });
+        } else {
+          gainNode.gain.value = gameState.masterVolume ?? 1;
+        }
+        src.connect(gainNode);
+        gainNode.connect(pannerNode);
+        pannerNode.connect(ctx.destination);
       } catch (e) {}
-    }).catch(() => {});
+    }, { once: true });
+    audio.play().catch(() => {});
   };
   tryNext(0);
 }
@@ -122,8 +160,8 @@ export function checkVarConditions() {
     if (!obj.userData.states?.length) continue;
     for (let idx = 0; idx < obj.userData.states.length; idx++) {
       const state = obj.userData.states[idx];
-      if (!state.conditionEnabled || !state.condition) continue;
-      if (_evalCondition(state.condition) && obj.userData.currentState !== idx) {
+      if (!state.conditionEnabled) continue;
+      if (_evalConditions(state) && obj.userData.currentState !== idx) {
         const prevIdx = obj.userData.currentState ?? 0;
         obj.userData.currentState = idx;
         _fireActiveVars(obj, idx);
@@ -135,6 +173,13 @@ export function checkVarConditions() {
       }
     }
   }
+}
+
+function _evalConditions(state) {
+  const conds = state.conditions?.length ? state.conditions
+              : state.condition ? [state.condition] : [];
+  if (!conds.length) return false;
+  return conds.every(c => _evalCondition(c));
 }
 
 function _evalCondition(cond) {
@@ -214,7 +259,17 @@ export function updateStateAnimations(delta) {
     const t = _easeInOut(a.elapsed / a.duration);
 
     if (a.fromPos && a.toPos) a.obj.position.lerpVectors(a.fromPos, a.toPos, t);
-    if (a.fromQ   && a.toQ)   a.obj.quaternion.slerpQuaternions(a.fromQ, a.toQ, t);
+    if (a.fromQ && a.toQ) {
+      if (!a.fromPos && a.obj.userData.pivotOffset) {
+        const pivotBefore = new THREE.Vector3().fromArray(a.obj.userData.pivotOffset).applyMatrix4(a.obj.matrixWorld);
+        a.obj.quaternion.slerpQuaternions(a.fromQ, a.toQ, t);
+        a.obj.updateMatrixWorld(true);
+        const pivotAfter = new THREE.Vector3().fromArray(a.obj.userData.pivotOffset).applyMatrix4(a.obj.matrixWorld);
+        a.obj.position.add(pivotBefore.sub(pivotAfter));
+      } else {
+        a.obj.quaternion.slerpQuaternions(a.fromQ, a.toQ, t);
+      }
+    }
     if (a.fromScale && a.toScale) a.obj.scale.lerpVectors(a.fromScale, a.toScale, t);
     if (a.toIntensity !== null && a.fromIntensity !== null) {
       const intensity = a.fromIntensity + (a.toIntensity - a.fromIntensity) * t;
@@ -315,6 +370,9 @@ function _applyStateImmediate(obj, state) {
     }
   }
   if (rotOn && state.rot) {
+    const pivot = (!posOn && obj.userData.pivotOffset)
+      ? new THREE.Vector3().fromArray(obj.userData.pivotOffset).applyMatrix4(obj.matrixWorld)
+      : null;
     if (state.rotRelative) {
       obj.rotation.x += THREE.MathUtils.degToRad(state.rot[0]);
       obj.rotation.y += THREE.MathUtils.degToRad(state.rot[1]);
@@ -325,6 +383,11 @@ function _applyStateImmediate(obj, state) {
         THREE.MathUtils.degToRad(state.rot[1]),
         THREE.MathUtils.degToRad(state.rot[2])
       );
+    }
+    if (pivot) {
+      obj.updateMatrixWorld(true);
+      const newPivotWorld = new THREE.Vector3().fromArray(obj.userData.pivotOffset).applyMatrix4(obj.matrixWorld);
+      obj.position.add(pivot.sub(newPivotWorld));
     }
   }
   if (scaleOn && state.scale) {

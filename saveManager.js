@@ -122,16 +122,22 @@ export function checkCustomTriggers() {
   const p = gameState.player.position;
 
   for (const t of gameState.customTriggers) {
-    const { triggerVar, triggerVarOp, triggerVarValue, _worldPos: pos, _halfW, _halfH, _halfD } = t.userData;
-    if (!triggerVar) continue;
+    const { triggerVar, triggerVarOp, triggerVarValue, presenceVar, _worldPos: pos, _halfW, _halfH, _halfD } = t.userData;
 
     const inside = Math.abs(p.x - pos.x) <= _halfW
                 && Math.abs(p.y + 1 - pos.y) <= _halfH
                 && Math.abs(p.z - pos.z) <= _halfD;
 
+    if (presenceVar && presenceVar in levelVars) {
+      const wasInside = t.userData._inside;
+      if (inside !== wasInside) setLevelVar(presenceVar, inside);
+    }
+
     if (!inside)  { t.userData._inside = false; continue; }
-    if (t.userData._inside) continue;   // already inside — don't re-fire
+    if (t.userData._inside) continue;
     t.userData._inside = true;
+
+    if (!triggerVar) continue;
 
     const cur = levelVars[triggerVar];
     if (triggerVarOp === 'toggle') {
