@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls }    from 'three/examples/jsm/controls/OrbitControls';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls';
 import { GLTFLoader }        from 'three/examples/jsm/loaders/GLTFLoader';
+import { GLTFExporter }      from 'three/examples/jsm/exporters/GLTFExporter';
 import { FBXLoader }         from 'three/examples/jsm/loaders/FBXLoader';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry';
@@ -2723,6 +2724,33 @@ function _computeFacePlanarProj(mesh, faceGroup) {
   ]));
 
   return { triUVs, W, H };
+}
+
+function exportGroupGLB() {
+  if (!E.selected) { setStatus('Select an object in a group first'); return; }
+  const gid = findGroupOfObj(E.selected);
+  if (!gid || !E.groups[gid]) { setStatus('Selected object is not in a group'); return; }
+  const g = E.groups[gid];
+  const members = [...g.ids]
+    .map(id => E.placedGroup.children.find(o => o.userData.editorId === id))
+    .filter(Boolean);
+  if (!members.length) { setStatus('Group has no members'); return; }
+
+  const exportGroup = new THREE.Group();
+  exportGroup.name = g.name;
+  members.forEach(obj => {
+    const clone = obj.clone();
+    clone.name = obj.userData.label || obj.userData.editorId || obj.name;
+    exportGroup.add(clone);
+  });
+
+  const defaultName = (g.name.replace(/[^a-z0-9_-]/gi, '_') || 'group') + '.glb';
+  const exporter = new GLTFExporter();
+  exporter.parse(exportGroup, async result => {
+    if (!window.electron?.saveGlb) { setStatus('GLB export not available outside Electron'); return; }
+    const res = await window.electron.saveGlb(defaultName, result);
+    if (res?.ok) setStatus(`Exported group "${g.name}" as GLB`);
+  }, err => { setStatus('GLB export failed: ' + err); }, { binary: true });
 }
 
 function exportUVMap() {
@@ -5915,12 +5943,7 @@ function setupUI() {
     setGroupDisplay(null); updateGroupsPanel(); markDirty();
   });
 
-  document.getElementById('btn-clone-group').addEventListener('click', () => {
-    if (!E.selected) { setStatus('Select a member of the group to clone'); return; }
-    const gid = findGroupOfObj(E.selected);
-    if (!gid) { setStatus('Selected object is not in a group'); return; }
-    cloneGroup(gid);
-  });
+  document.getElementById('btn-export-group-glb').addEventListener('click', exportGroupGLB);
 
   document.getElementById('btn-toggle-groups-panel').addEventListener('click', () => {
     const p = document.getElementById('groups-panel');
@@ -5928,9 +5951,6 @@ function setupUI() {
     p.style.display = open ? 'none' : '';
     document.getElementById('btn-toggle-groups-panel').textContent = open ? '>' : 'v';
   });
-
-  document.getElementById('btn-new-group-lp')?.addEventListener('click', () => document.getElementById('btn-new-group').click());
-  document.getElementById('btn-add-to-group-lp')?.addEventListener('click', () => document.getElementById('btn-add-to-group').click());
 
   // Actions
   document.getElementById('btn-clone').addEventListener('click', cloneSelected);
