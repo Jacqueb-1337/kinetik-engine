@@ -309,6 +309,71 @@ export function initScene() {
     });
     document.addEventListener('mouseup', () => { _knobDragging = null; });
 
+    gameState.renderer.domElement.addEventListener('touchstart', (e) => {
+      if (!gameState.isPaused) return;
+      const t = e.touches[0];
+      const rect = gameState.renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((t.clientX - rect.left) / rect.width)  *  2 - 1,
+       -((t.clientY - rect.top)  / rect.height) *  2 + 1
+      );
+      _knobRaycaster.setFromCamera(mouse, gameState.camera);
+      if (gameState.tvKnobMesh && _knobRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true).length > 0) {
+        const knobWorld = new THREE.Vector3();
+        gameState.tvKnobMesh.getWorldPosition(knobWorld);
+        const proj = knobWorld.clone().project(gameState.camera);
+        _knobCX = (proj.x  + 1) / 2 * rect.width  + rect.left;
+        _knobCY = (-proj.y + 1) / 2 * rect.height + rect.top;
+        _knobMouseX = t.clientX; _knobMouseY = t.clientY;
+        _knobDragging = 'vol';
+        e.stopPropagation();
+      } else if (gameState.tvChannelKnobMesh && _knobRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true).length > 0) {
+        const chWorld = new THREE.Vector3();
+        gameState.tvChannelKnobMesh.getWorldPosition(chWorld);
+        const proj = chWorld.clone().project(gameState.camera);
+        _knobCX = (proj.x  + 1) / 2 * rect.width  + rect.left;
+        _knobCY = (-proj.y + 1) / 2 * rect.height + rect.top;
+        _knobMouseX = t.clientX; _knobMouseY = t.clientY;
+        _chKnobRawX = gameState.tvChannelKnobMesh.rotation.x;
+        _knobDragging = 'ch';
+        e.stopPropagation();
+      }
+    }, { passive: false });
+    document.addEventListener('touchmove', (e) => {
+      if (!_knobDragging) return;
+      e.preventDefault();
+      const t = e.touches[0];
+      const rx = _knobMouseX - _knobCX, ry = _knobMouseY - _knobCY;
+      const len = Math.sqrt(rx * rx + ry * ry) || 1;
+      const tx = ry / len, ty = -rx / len;
+      const dx = t.clientX - _knobMouseX, dy = t.clientY - _knobMouseY;
+      _knobMouseX = t.clientX; _knobMouseY = t.clientY;
+      const tangential = dx * tx + dy * ty;
+      if (_knobDragging === 'vol' && gameState.tvKnobMesh) {
+        const min = Math.min(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+        const max = Math.max(gameState.tvKnobRotationMin, gameState.tvKnobRotationMax);
+        const newX = THREE.MathUtils.clamp(gameState.tvKnobMesh.rotation.x - tangential * 0.025, min, max);
+        gameState.tvKnobMesh.rotation.x = newX;
+        gameState.tvKnobValue = (newX - gameState.tvKnobRotationMin) / (gameState.tvKnobRotationMax - gameState.tvKnobRotationMin);
+        gameState.masterVolume = gameState.tvKnobValue;
+        _updateVolNotch(gameState.tvKnobValue);
+        if (_knobSaveHook) _knobSaveHook();
+      } else if (_knobDragging === 'ch' && gameState.tvChannelKnobMesh) {
+        const chMin = gameState.tvChannelKnobRotationMin;
+        const chMax = gameState.tvChannelKnobRotationMax;
+        _chKnobRawX = THREE.MathUtils.clamp(_chKnobRawX - tangential * 0.025, chMin, chMax);
+        const chStep = (chMax - chMin) / 4;
+        const newNotch = THREE.MathUtils.clamp(Math.round((_chKnobRawX - chMin) / chStep), 0, 4);
+        if (newNotch !== gameState.tvChannelKnobValue) {
+          gameState.tvChannelKnobValue = newNotch;
+          gameState.tvChannelKnobMesh.rotation.x = chMin + newNotch * chStep;
+          if (_knobSaveHook) _knobSaveHook();
+          if (_channelChangeHook) _channelChangeHook(newNotch);
+        }
+      }
+    }, { passive: false });
+    document.addEventListener('touchend', () => { _knobDragging = null; });
+
     // Right-click = interact with highlighted object
     document.addEventListener('mousedown', (e) => {
       if (e.button !== 2) return; // right button only
