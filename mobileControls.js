@@ -11,6 +11,10 @@ export function setPauseToggleCallback(fn) { _pauseToggle = fn; }
 const HUD_SETTINGS_KEY = 'hud_config';
 
 function _migrateLayout(layout) {
+  const W = window.innerWidth;
+  if (!layout.f3)  layout.f3  = { x: 20,  y: 20, size: 44, opacity: 1.0 };
+  if (!layout.cam) layout.cam = { x: 74,  y: 20, size: 44, opacity: 1.0 };
+  if (!layout.f5)  layout.f5  = { x: 128, y: 20, size: 44, opacity: 1.0 };
   for (const k of Object.keys(layout)) {
     if (layout[k].opacity === undefined) layout[k].opacity = 1.0;
   }
@@ -47,6 +51,9 @@ function getDefaultLayout() {
     jump:     { x: W - 110, y: H - 280, size: 70, opacity: 1.0 },
     interact: { x: W - 110, y: H - 370, size: 70, opacity: 1.0 },
     pause:    { x: W - 70,  y: 20,      size: 50, opacity: 1.0 },
+    f3:       { x: 20,      y: 20,      size: 44, opacity: 1.0 },
+    cam:      { x: 74,      y: 20,      size: 44, opacity: 1.0 },
+    f5:       { x: 128,     y: 20,      size: 44, opacity: 1.0 },
   };
 }
 
@@ -228,15 +235,16 @@ function createControlElements() {
 
   makeHudButton('interact-button', 'interact', btnBase + `transition: border 0.15s, box-shadow 0.15s, background 0.15s;`, svgInteract);
 
-  function makeDebugButton(id, right, top, bg, label) {
+  function makeDebugButton(id, key, label) {
+    const cfg = L[key];
     const btn = document.createElement('div');
     btn.id = id;
     btn.style.cssText = `
       position: absolute;
-      top: ${top}px;
-      right: ${right}px;
-      width: 44px;
-      height: 44px;
+      top: ${cfg.y}px;
+      left: ${cfg.x}px;
+      width: ${cfg.size}px;
+      height: ${cfg.size}px;
       background: rgba(20, 20, 20, 0.75);
       border: 2px solid rgba(200, 200, 200, 0.3);
       border-radius: 8px;
@@ -250,15 +258,17 @@ function createControlElements() {
       font-weight: bold;
       user-select: none;
       box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+      opacity: ${cfg.opacity ?? 1};
     `;
     btn.innerHTML = label;
     container.appendChild(btn);
+    touchState[key + 'Button'] = btn;
     return btn;
   }
 
-  touchState.f3Button  = makeDebugButton('f3-button',  80,  20, 'rgba(80, 80, 200, 0.6)',  'F3');
-  touchState.camButton = makeDebugButton('cam-button', 140, 20, 'rgba(100, 200, 100, 0.6)', 'CAM');
-  touchState.f5Button  = makeDebugButton('f5-button',  200, 20, 'rgba(200, 80, 80, 0.6)',   'F5');
+  touchState.f3Button  = makeDebugButton('f3-button',  'f3',  'F3');
+  touchState.camButton = makeDebugButton('cam-button', 'cam', 'CAM');
+  touchState.f5Button  = makeDebugButton('f5-button',  'f5',  'F5');
 }
 
 function setupTouchHandlers() {
@@ -669,7 +679,7 @@ export function startHudEditor() {
   hudEditorActive = true;
   gameState.hudEditorActive = true;
 
-  for (const key of ['sprint', 'jump', 'interact', 'pause']) {
+  for (const key of ['sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5']) {
     const el = touchState[key + 'Button'];
     if (!el) continue;
     el.style.outline = '2px dashed rgba(255,255,255,0.7)';
@@ -781,6 +791,12 @@ function stopHudEditor() {
     el.style.outline = '';
     el.querySelectorAll('.hud-resize-handle').forEach(h => h.remove());
   }
+  for (const key of ['f3', 'cam', 'f5']) {
+    const el = touchState[key + 'Button'];
+    if (!el) continue;
+    el.style.outline = '';
+    el.querySelectorAll('.hud-resize-handle').forEach(h => h.remove());
+  }
 
   if (editorOverlay) { editorOverlay.remove(); editorOverlay = null; }
   saveHudConfig();
@@ -809,7 +825,7 @@ function editorTouchStart(e) {
     const r = editorOpacityPanel.getBoundingClientRect();
     if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
   }
-  for (const key of ['sprint', 'jump', 'interact', 'pause']) {
+  for (const key of ['sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5']) {
     const el = touchState[key + 'Button'];
     if (!el) continue;
     const rect = el.getBoundingClientRect();
