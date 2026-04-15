@@ -201,6 +201,9 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
 
 <div id="main">
   <div class="panel" id="left-panel">
+    <div class="panel-section" style="flex-shrink:0;padding:6px 8px">
+      <input id="left-search" type="text" placeholder="Search models, actors..." style="width:100%;box-sizing:border-box;background:#0d0d20;color:#aaaacc;border:1px solid #333360;border-radius:4px;padding:4px 7px;font-size:11px;outline:none">
+    </div>
     <div class="panel-section">
       <h3>Primitives</h3>
       <div class="prim-grid">
@@ -234,7 +237,10 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
       <div class="panel-section" style="flex-shrink:0">
         <h3 style="display:flex;align-items:center;justify-content:space-between">
           Models
-          <button class="btn" id="btn-import-model" style="padding:2px 7px;font-size:10px">+ Import</button>
+          <span style="display:flex;gap:4px">
+            <button class="btn" id="btn-import-model" style="padding:2px 7px;font-size:10px">+ Import</button>
+            <button class="btn" id="btn-import-mtl" style="padding:2px 7px;font-size:10px">+ MTL</button>
+          </span>
         </h3>
       </div>
       <div id="palette-list">
@@ -332,6 +338,10 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <div class="toggle-row">
           <input type="checkbox" id="chk-invert-normals">
           <label for="chk-invert-normals">Invert Normals</label>
+        </div>
+        <div id="convert-pbr-row" style="display:none;margin-top:5px">
+          <button class="btn" id="btn-convert-pbr" style="width:100%;font-size:10px">Convert to PBR Material</button>
+          <div id="convert-pbr-label" style="font-size:9px;color:#555577;margin-top:2px">Phong — roughness/metalness inactive</div>
         </div>
       </div>
       <div id="emissive-row" style="display:none;margin-top:4px">
@@ -438,6 +448,13 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <div class="vec3-label">Model</div>
         <div id="model-path-text" class="info-text"></div>
       </div>
+      <div id="model-colorspace-row" style="display:none;margin-top:4px">
+        <div class="vec3-label" style="margin-bottom:3px">Texture Color Space</div>
+        <select class="prop-input" id="model-colorspace" style="width:100%">
+          <option value="srgb">sRGB (most textures)</option>
+          <option value="linear">Linear</option>
+        </select>
+      </div>
       <div id="texture-section" style="display:none;margin-top:6px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
           <div class="vec3-label" style="margin:0">Texture</div>
@@ -519,6 +536,36 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <button class="btn" id="btn-uv-edit" style="width:100%;font-size:11px;margin-top:2px">Edit UV...</button>
       </div>
     </div>
+    <div class="panel-section" id="model-maps-section" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+        <div class="vec3-label" style="margin:0">Model Maps</div>
+      </div>
+      <datalist id="model-maps-datalist"></datalist>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <label style="font-size:10px;color:#666688;min-width:44px">Diffuse</label>
+        <input class="prop-input" id="mmap-diffuse" type="text" list="model-maps-datalist" placeholder="none" style="flex:1;font-size:11px">
+        <button class="btn" id="btn-mmap-import-diffuse" style="font-size:10px;padding:2px 6px">+</button>
+        <button class="btn" id="btn-mmap-clear-diffuse" style="padding:2px 5px;font-size:10px">X</button>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <label style="font-size:10px;color:#666688;min-width:44px">Normal</label>
+        <input class="prop-input" id="mmap-normal" type="text" list="model-maps-datalist" placeholder="none" style="flex:1;font-size:11px">
+        <button class="btn" id="btn-mmap-import-normal" style="font-size:10px;padding:2px 6px">+</button>
+        <button class="btn" id="btn-mmap-clear-normal" style="padding:2px 5px;font-size:10px">X</button>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <label style="font-size:10px;color:#666688;min-width:44px">Rough</label>
+        <input class="prop-input" id="mmap-roughness" type="text" list="model-maps-datalist" placeholder="none" style="flex:1;font-size:11px">
+        <button class="btn" id="btn-mmap-import-roughness" style="font-size:10px;padding:2px 6px">+</button>
+        <button class="btn" id="btn-mmap-clear-roughness" style="padding:2px 5px;font-size:10px">X</button>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <label style="font-size:10px;color:#666688;min-width:44px">Metal</label>
+        <input class="prop-input" id="mmap-metalness" type="text" list="model-maps-datalist" placeholder="none" style="flex:1;font-size:11px">
+        <button class="btn" id="btn-mmap-import-metalness" style="font-size:10px;padding:2px 6px">+</button>
+        <button class="btn" id="btn-mmap-clear-metalness" style="padding:2px 5px;font-size:10px">X</button>
+      </div>
+    </div>
     <div class="panel-section" id="mesh-edit-section" style="display:none">
       <button class="btn" id="btn-mesh-edit" style="width:100%;font-size:11px">Edit Meshes...</button>
     </div>
@@ -590,7 +637,18 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <button class="btn" id="btn-set-pivot" title="Click a point on another object to set this object's rotation/scale pivot"> Set Pivot</button>
       </div>
       <div class="action-btns" style="margin-top:4px">
-        <button class="btn" id="btn-export-uv" title="Export UV layout as PNG for use in a photo editor">Export UV Map</button>
+        <button class="btn" id="btn-export-uv" title="Export texture maps or UV layout">Export Maps...</button>
+      </div>
+      <div id="export-maps-menu" style="display:none;margin-top:2px;display:none">
+        <button class="btn" data-maptype="uv"         style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">UV Layout (wireframe)</button>
+        <button class="btn" data-maptype="uv-clean"   style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">UV Layout (clean)</button>
+        <button class="btn" data-maptype="map"        style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">Diffuse (map_Kd)</button>
+        <button class="btn" data-maptype="specularMap" style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">Specular (map_Ks)</button>
+        <button class="btn" data-maptype="normalMap"  style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">Normal / Bump</button>
+        <button class="btn" data-maptype="emissiveMap" style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">Emissive</button>
+        <button class="btn" data-maptype="aoMap"        style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">AO</button>
+        <button class="btn" data-maptype="roughnessMap" style="width:100%;text-align:left;margin-bottom:2px;font-size:10px">Roughness</button>
+        <button class="btn" data-maptype="metalnessMap" style="width:100%;text-align:left;font-size:10px">Metalness</button>
       </div>
       <div class="action-btns" style="margin-top:4px">
         <button class="btn" id="btn-model-editor" title="Open the model / bone editor for the selected object">Model Editor...</button>
@@ -630,6 +688,9 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
       </h3>
     </div>
     <div id="scene-list-wrap" style="display:none"><div id="scene-list"></div></div>
+    <div class="panel-section" style="flex-shrink:0">
+      <input id="scene-search" type="text" placeholder="Filter scene..." style="width:100%;box-sizing:border-box;background:#0d0d20;color:#aaaacc;border:1px solid #333360;border-radius:4px;padding:4px 7px;font-size:11px;margin-top:4px;outline:none;display:none">
+    </div>
     <div class="panel-section" style="flex-shrink:0">
       <h3 style="display:flex;align-items:center">
         <button class="section-collapse-btn" id="btn-toggle-groups-panel">&gt;</button>
@@ -752,7 +813,7 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
       <div style="font-size:10px;color:#555577">Drag the blue rect to offset. Drag corners to tile.</div>
-      <button class="btn" id="btn-export-uv" style="font-size:11px;padding:3px 10px" title="Export UV layout as PNG">Export UV...</button>
+      <button class="btn" id="btn-export-uv" style="font-size:11px;padding:3px 10px" title="Export texture maps or UV layout">Export Maps...</button>
     </div>
 </div>
 <!-- Mesh Editor Modal -->

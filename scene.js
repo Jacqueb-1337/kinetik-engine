@@ -382,7 +382,6 @@ export function initScene() {
       if (!isRight && !isLeft) return;
       if (gameState.isPaused) return;
       if (isRight) {
-        if (!gameState.isPointerLocked && !gameState.mobileInteractPending) return;
         gameState.mobileInteractPending = false;
       } else {
         if (!gameState.isPointerLocked) return;
@@ -420,7 +419,7 @@ export function initScene() {
     });
     // Prevent context menu appearing on right-click in game
     document.addEventListener('contextmenu', (e) => {
-      if (gameState.isPointerLocked) e.preventDefault();
+      if (gameState.isPointerLocked || (!gameState.isPaused && !gameState.mainMenuActive)) e.preventDefault();
     });
     // ---- end knob drag ----
   }

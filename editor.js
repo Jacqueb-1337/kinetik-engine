@@ -143,6 +143,7 @@ const E = {
   _boneMarkerGroup: null,   // THREE.Group in scene containing bone marker spheres
   _boneMarkers:     new Map(), // boneId → THREE.Mesh (world-space bone gizmo target)
   _stateExpanded:   new Set(), // keys 'edId_idx' of states that are explicitly expanded
+  fogDensity:       null,      // number or null (null = use game default)
 };
 
 // â”€â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -296,8 +297,14 @@ async function init() {
   // Disable props until a level is open
   updateProps(null);
 
-  // Open level picker immediately
-  openLevelModal();
+  // Open level picker, or auto-load if --level arg was provided
+  const startupLevel = window.electron?.getStartupLevel ? await window.electron.getStartupLevel() : null;
+  if (startupLevel) {
+    const levelName = startupLevel.replace(/\.json$/i, '');
+    await loadLevel(levelName);
+  } else {
+    openLevelModal();
+  }
 
   setStatus('Ready - create or open a level to start building');
   animate();
@@ -606,10 +613,21 @@ function levelToJSON() {
       entry.spawnRadius     = obj.userData.spawnRadius ?? 0;
       entry.persistent      = obj.userData.persistent !== false;
       entry.singleInstance  = obj.userData.singleInstance === true;
+      if (obj.userData.actorSourceId)              entry.actorSourceId      = obj.userData.actorSourceId;
+      if (obj.userData.actorSpawnInterval != null) entry.actorSpawnInterval = obj.userData.actorSpawnInterval;
+      if (obj.userData.actorSpawnMax      != null) entry.actorSpawnMax      = obj.userData.actorSpawnMax;
+      if (obj.userData.actorHealth        != null) entry.actorHealth        = obj.userData.actorHealth;
+      if (obj.userData.actorSpeed         != null) entry.actorSpeed         = obj.userData.actorSpeed;
+      if (obj.userData.actorDamage        != null) entry.actorDamage        = obj.userData.actorDamage;
+      if (obj.userData.actorCrit          != null) entry.actorCrit          = obj.userData.actorCrit;
       if (obj.userData.meshOverrides && Object.keys(obj.userData.meshOverrides).length)
         entry.meshOverrides = obj.userData.meshOverrides;
       if (obj.userData.animations?.length)
         entry.animations = obj.userData.animations;
+      if (obj.userData.actorRoles && Object.keys(obj.userData.actorRoles).length)
+        entry.actorRoles = obj.userData.actorRoles;
+      if (obj.userData.actorVariants?.length)
+        entry.actorVariants = obj.userData.actorVariants;
     }
     if (obj.userData.faceTextures)   entry.faceTextures   = obj.userData.faceTextures;
     if (obj.userData.meshOverrides)  entry.meshOverrides  = obj.userData.meshOverrides;
@@ -618,6 +636,9 @@ function levelToJSON() {
     if (obj.userData.metalness !== undefined) entry.metalness = obj.userData.metalness;
     if (obj.userData.doubleSide) entry.doubleSide = true;
     if (obj.userData.invertNormals) entry.invertNormals = true;
+    if (obj.userData.colorSpace) entry.colorSpace = obj.userData.colorSpace;
+    if (obj.userData.pbrConverted) entry.pbrConverted = true;
+    if (obj.userData.modelMaps)    entry.modelMaps = obj.userData.modelMaps;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -667,7 +688,7 @@ function levelToJSON() {
     E.groupPivot.add(m);
   });
 
-  return { levelName: E.levelName, nextId: E.nextId, objects, groups, vars: E.levelVars };
+  return { levelName: E.levelName, nextId: E.nextId, objects, groups, vars: E.levelVars, fogDensity: E.fogDensity ?? undefined };
 }
 
 async function saveLevel() {
@@ -704,6 +725,8 @@ async function loadLevel(name) {
     }
   }
   E.levelVars = data?.vars ? { ...data.vars } : {};
+  E.fogDensity = (data?.fogDensity != null) ? data.fogDensity : null;
+  _updateFogInput();
   renderVarsPanel();
 
   if (data?.objects?.length) {
@@ -737,6 +760,8 @@ function clearPlaced() {
   E.groups = {};
   E.groupCollapsed = {};
   E.levelVars = {};
+  E.fogDensity = null;
+  _updateFogInput();
   updateSceneList();
   updateGroupsPanel();
   renderVarsPanel();
@@ -768,6 +793,9 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         if (entry.noSelfInteract) root.userData.noSelfInteract = true;
         if (entry.pivotOffset)    root.userData.pivotOffset = entry.pivotOffset;
         if (entry.bones?.length)  { root.userData.bones = entry.bones; root.userData.boneMode = entry.boneMode || 'rigid'; }
+        if (entry.colorSpace)     root.userData.colorSpace = entry.colorSpace;
+        if (entry.pbrConverted)   root.userData.pbrConverted = true;
+        if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
         E.placedGroup.add(root);
         resolve(root);
       };
@@ -781,14 +809,9 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         });
       };
 
-      fetch(mtlUrl, { method: 'HEAD' })
-        .then(r => {
-          if (!r.ok) { loadWithMtl(null); return; }
-          const mtlLoader = new MTLLoader();
-          mtlLoader.setPath(dir);
-          mtlLoader.load(baseName + '.mtl', loadWithMtl, undefined, () => loadWithMtl(null));
-        })
-        .catch(() => loadWithMtl(null));
+      const mtlLoader = new MTLLoader();
+      mtlLoader.setPath(dir);
+      mtlLoader.load(baseName + '.mtl', loadWithMtl, undefined, () => loadWithMtl(null));
       return;
     }
 
@@ -796,7 +819,42 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
     loader.load(ASSET_ROOT + entry.modelPath, result => {
       const root = result.scene || result;
       root.castShadow = entry.castShadow !== false;
-      root.traverse(c => { if (c.isMesh) { c.castShadow = entry.castShadow !== false; c.receiveShadow = true; } });
+      root.traverse(c => {
+        if (c.isMesh) {
+          c.castShadow = entry.castShadow !== false;
+          c.receiveShadow = true;
+          if (ext === 'fbx') {
+            const threeCS = entry.colorSpace === 'linear' ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+            const roughness = entry.roughness ?? 1;
+            const metalness = entry.metalness ?? 0;
+            const mats = Array.isArray(c.material) ? c.material : [c.material];
+            const newMats = mats.map(m => {
+              if (!m) return m;
+              if (entry.pbrConverted && !('roughness' in m)) {
+                const pbr = new THREE.MeshStandardMaterial({
+                  color: m.color?.clone() ?? new THREE.Color(0xffffff),
+                  map: m.map ?? null, normalMap: m.normalMap ?? null,
+                  emissiveMap: m.emissiveMap ?? null, aoMap: m.aoMap ?? null,
+                  emissive: m.emissive?.clone() ?? new THREE.Color(0x000000),
+                  emissiveIntensity: m.emissiveIntensity ?? 1,
+                  roughness, metalness, side: m.side,
+                  transparent: m.transparent, opacity: m.opacity,
+                });
+                ['map','emissiveMap','normalMap','roughnessMap','metalnessMap','aoMap'].forEach(k => {
+                  if (pbr[k]) { pbr[k].colorSpace = threeCS; pbr[k].needsUpdate = true; }
+                });
+                return pbr;
+              }
+              ['map','emissiveMap','normalMap','roughnessMap','metalnessMap','aoMap'].forEach(k => {
+                if (m[k]) { m[k].colorSpace = threeCS; m[k].needsUpdate = true; }
+              });
+              m.needsUpdate = true;
+              return m;
+            });
+            c.material = Array.isArray(c.material) ? newMats : newMats[0];
+          }
+        }
+      });
       applyEntryTransform(root, entry);
       root.userData.primType   = 'model';
       root.userData.modelPath  = entry.modelPath;
@@ -808,6 +866,9 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
       if (entry.links?.length)  root.userData.links  = _normalizeLinks(entry.links);
       if (entry.noSelfInteract) root.userData.noSelfInteract = true;
       if (entry.pivotOffset)    root.userData.pivotOffset = entry.pivotOffset;
+      if (entry.colorSpace)     root.userData.colorSpace = entry.colorSpace;
+      if (entry.pbrConverted)   root.userData.pbrConverted = true;
+      if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
       if (entry.emissiveIntensity > 0) {
         root.userData.emissiveIntensity = entry.emissiveIntensity;
         root.userData.emissiveColor     = entry.emissiveColor ?? '#ffffff';
@@ -880,6 +941,25 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         root.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
       }
       E.placedGroup.add(root);
+      // FBXLoader loads textures asynchronously internally — re-apply colorSpace at increasing
+      // delays to catch late-loading textures regardless of disk/decode speed
+      const _applyCS = () => {
+        const threeCS2 = entry.colorSpace === 'linear' ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+        root.traverse(c => {
+          if (!c.isMesh) return;
+          const mats2 = Array.isArray(c.material) ? c.material : [c.material];
+          mats2.forEach(m => {
+            if (!m) return;
+            ['map','emissiveMap','normalMap','roughnessMap','metalnessMap','aoMap'].forEach(k => {
+              if (m[k]) { m[k].colorSpace = threeCS2; m[k].needsUpdate = true; }
+            });
+            m.needsUpdate = true;
+          });
+        });
+      };
+      setTimeout(_applyCS, 0);
+      setTimeout(_applyCS, 300);
+      setTimeout(_applyCS, 1500);
       resolve();
     }, undefined, () => resolve());
   });
@@ -903,6 +983,7 @@ const PRIM_GEOS = {
   // save-trigger and custom-trigger use a box geometry but are rendered as a wireframe-only volume
   'save-trigger':   () => new THREE.BoxGeometry(2, 2, 2),
   'custom-trigger': () => new THREE.BoxGeometry(2, 2, 2),
+  'player-spawn':   () => { const g = new THREE.ConeGeometry(0.3, 1.0, 8); g.translate(0, 0.5, 0); return g; },
 };
 
 function isLightType(t) {
@@ -911,6 +992,10 @@ function isLightType(t) {
 
 function isTriggerType(t) {
   return t === 'save-trigger' || t === 'custom-trigger';
+}
+
+function isPlayerSpawnType(t) {
+  return t === 'player-spawn';
 }
 
 const LIGHT_DEFAULTS = {
@@ -1161,12 +1246,15 @@ function makePrimMesh(type, color = 0xaaaacc) {
   const geo = PRIM_GEOS[type]?.();
   if (!geo) return null;
   const isTrigger = isTriggerType(type);
+  const isSpawn   = isPlayerSpawnType(type);
   const trigColor = type === 'custom-trigger' ? 0xffaa44 : 0x44ffcc;
   const mat = isTrigger
     ? new THREE.MeshBasicMaterial({ color: trigColor, wireframe: true, opacity: 0.6, transparent: true })
+    : isSpawn
+    ? new THREE.MeshBasicMaterial({ color: 0x00ff88, wireframe: true })
     : new THREE.MeshStandardMaterial({ color });
   const mesh = new THREE.Mesh(geo, mat);
-  if (!isTrigger) { mesh.castShadow = mesh.receiveShadow = true; }
+  if (!isTrigger && !isSpawn) { mesh.castShadow = mesh.receiveShadow = true; }
   return mesh;
 }
 
@@ -1647,16 +1735,25 @@ function spawnPrimFromEntry(entry) {
     );
     applyEntryTransform(mesh, entry);
     mesh.userData = {
-      primType:       'actor-spawn',
-      actorModel:     entry.actorModel || '',
-      editorId:       entry.id,
-      label:          entry.label || '',
-      collidable:     false,
-      spawnRadius:    entry.spawnRadius ?? 0,
-      persistent:     entry.persistent !== false,
-      singleInstance: entry.singleInstance === true,
-      meshOverrides:  entry.meshOverrides ? { ...entry.meshOverrides } : {},
-      animations:     entry.animations ? [...entry.animations] : [],
+      primType:           'actor-spawn',
+      actorModel:         entry.actorModel || '',
+      actorSourceId:      entry.actorSourceId || '',
+      editorId:           entry.id,
+      label:              entry.label || '',
+      collidable:         false,
+      spawnRadius:        entry.spawnRadius ?? 0,
+      actorSpawnInterval: entry.actorSpawnInterval ?? null,
+      actorSpawnMax:      entry.actorSpawnMax ?? null,
+      actorHealth:        entry.actorHealth ?? null,
+      actorSpeed:         entry.actorSpeed ?? null,
+      actorDamage:        entry.actorDamage ?? null,
+      actorCrit:          entry.actorCrit ?? null,
+      persistent:         entry.persistent !== false,
+      singleInstance:     entry.singleInstance === true,
+      meshOverrides:      entry.meshOverrides ? { ...entry.meshOverrides } : {},
+      animations:         entry.animations ? [...entry.animations] : [],
+      actorRoles:         entry.actorRoles ? { ...entry.actorRoles } : {},
+      actorVariants:      entry.actorVariants ? entry.actorVariants.map(v => ({ ...v })) : [],
     };
     mesh.name = entry.label || ('ActorSpawn_' + entry.id);
     if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
@@ -1742,6 +1839,9 @@ function spawnPrimFromEntry(entry) {
     }
     mesh.userData.collidable = false;
   }
+  if (isPlayerSpawnType(entry.type)) {
+    mesh.userData.collidable = false;
+  }
   mesh.name = entry.label || (entry.type + '_' + entry.id);
   E.placedGroup.add(mesh);
   return mesh;
@@ -1808,14 +1908,9 @@ function commitPlace(worldPos) {
         if (materials) { materials.preload(); objLoader.setMaterials(materials); }
         objLoader.load(objBase, _placeObjRoot, undefined, err => { console.warn('OBJ load error:', err); });
       };
-      fetch(dir + baseName + '.mtl', { method: 'HEAD' })
-        .then(r => {
-          if (!r.ok) { loadObjWithMtl(null); return; }
-          const mtlLoader = new MTLLoader();
-          mtlLoader.setPath(dir);
-          mtlLoader.load(baseName + '.mtl', loadObjWithMtl, undefined, () => loadObjWithMtl(null));
-        })
-        .catch(() => loadObjWithMtl(null));
+      const mtlLoader = new MTLLoader();
+      mtlLoader.setPath(dir);
+      mtlLoader.load(baseName + '.mtl', loadObjWithMtl, undefined, () => loadObjWithMtl(null));
     } else {
       const loader = ext === 'fbx' ? new FBXLoader() : new GLTFLoader();
       loader.load(ASSET_ROOT + modelPath, result => {
@@ -1824,7 +1919,15 @@ function commitPlace(worldPos) {
           if (c.isMesh) {
             c.castShadow = c.receiveShadow = true;
             const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
-            mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+            mats.forEach(m => {
+              m.side = THREE.DoubleSide;
+              if (ext === 'fbx') {
+                ['map','emissiveMap','normalMap','roughnessMap','metalnessMap','aoMap'].forEach(k => {
+                  if (m[k]) m[k].colorSpace = THREE.SRGBColorSpace;
+                });
+              }
+              m.needsUpdate = true;
+            });
           }
         });
         root.position.copy(worldPos);
@@ -1885,16 +1988,25 @@ function commitPlace(worldPos) {
     );
     mesh.position.copy(worldPos);
     mesh.userData = {
-      primType:       'actor-spawn',
-      actorModel:     actorPath,
-      editorId:       id,
-      label:          '',
-      collidable:     false,
-      spawnRadius:    0,
-      persistent:     true,
-      singleInstance: false,
-      meshOverrides:  {},
-      animations:     [],
+      primType:           'actor-spawn',
+      actorModel:         actorPath,
+      actorSourceId:      '',
+      editorId:           id,
+      label:              '',
+      collidable:         false,
+      spawnRadius:        0,
+      actorSpawnInterval: null,
+      actorSpawnMax:      null,
+      actorHealth:        null,
+      actorSpeed:         null,
+      actorDamage:        null,
+      actorCrit:          null,
+      persistent:         true,
+      singleInstance:     false,
+      meshOverrides:      {},
+      animations:         [],
+      actorRoles:         {},
+      actorVariants:      [],
     };
     mesh.name = 'ActorSpawn_' + id;
     pushUndo();
@@ -2188,6 +2300,12 @@ function updateProps(obj) {
   const meshEditSection = document.getElementById('mesh-edit-section');
   if (meshEditSection) meshEditSection.style.display = isModel ? '' : 'none';
 
+  const modelMapsSection = document.getElementById('model-maps-section');
+  if (modelMapsSection) {
+    modelMapsSection.style.display = isModel ? '' : 'none';
+    if (isModel) refreshModelMapsPanel(obj);
+  }
+
   const actorSpawnSection = document.getElementById('actor-spawn-section');
   if (actorSpawnSection) {
     actorSpawnSection.style.display = isActorSpawn ? '' : 'none';
@@ -2196,6 +2314,18 @@ function updateProps(obj) {
       if (modelNameEl) modelNameEl.textContent = (obj.userData.actorModel || '').split('/').pop() || '-';
       const radiusEl = document.getElementById('actor-spawn-radius');
       if (radiusEl && document.activeElement !== radiusEl) radiusEl.value = obj.userData.spawnRadius ?? 0;
+      const intervalEl = document.getElementById('actor-spawn-interval');
+      if (intervalEl && document.activeElement !== intervalEl) intervalEl.value = obj.userData.actorSpawnInterval ?? '';
+      const maxEl = document.getElementById('actor-spawn-max');
+      if (maxEl && document.activeElement !== maxEl) maxEl.value = obj.userData.actorSpawnMax ?? '';
+      const healthEl = document.getElementById('actor-health');
+      if (healthEl && document.activeElement !== healthEl) healthEl.value = obj.userData.actorHealth ?? '';
+      const speedEl = document.getElementById('actor-speed');
+      if (speedEl && document.activeElement !== speedEl) speedEl.value = obj.userData.actorSpeed ?? '';
+      const damageEl = document.getElementById('actor-damage');
+      if (damageEl && document.activeElement !== damageEl) damageEl.value = obj.userData.actorDamage ?? '';
+      const critEl = document.getElementById('actor-crit');
+      if (critEl && document.activeElement !== critEl) critEl.value = obj.userData.actorCrit ?? '';
       const persistEl = document.getElementById('actor-persistent');
       if (persistEl) persistEl.checked = obj.userData.persistent !== false;
       const singleEl = document.getElementById('actor-single-instance');
@@ -2249,6 +2379,14 @@ function updateProps(obj) {
     if (isModel) pathText.textContent = obj.userData.modelPath;
   }
 
+  const colorSpaceRow = document.getElementById('model-colorspace-row');
+  const colorSpaceEl  = document.getElementById('model-colorspace');
+  if (colorSpaceRow && colorSpaceEl) {
+    const isModelType = obj.userData.primType === 'model' && obj.userData.modelPath;
+    colorSpaceRow.style.display = isModelType ? '' : 'none';
+    if (isModelType) colorSpaceEl.value = obj.userData.colorSpace || 'srgb';
+  }
+
   // Emissive row — shown for non-light, non-trigger objects
   if (emissiveRow) {
     const showEmissive = !isLight && !isTrigger;
@@ -2271,6 +2409,14 @@ function updateProps(obj) {
     const invertNormEl = document.getElementById('chk-invert-normals');
     if (doubleSideEl) doubleSideEl.checked = obj.userData.doubleSide === true;
     if (invertNormEl) invertNormEl.checked = obj.userData.invertNormals === true;
+    const pbrRow   = document.getElementById('convert-pbr-row');
+    const pbrLabel = document.getElementById('convert-pbr-label');
+    if (pbrRow) {
+      const isModelObj = obj.userData.primType === 'model' && obj.userData.modelPath;
+      const alreadyPbr = obj.userData.pbrConverted === true;
+      pbrRow.style.display = (isModelObj && !alreadyPbr) ? '' : 'none';
+      if (pbrLabel) pbrLabel.textContent = alreadyPbr ? '' : 'Non-PBR material \u2014 roughness/metalness may be inactive';
+    }
   }
 
   // Geometry params — only for editable primitives
@@ -2930,6 +3076,21 @@ function closeModelEditor() {
   if (ov) ov.classList.remove('me-open');
 }
 
+function _updateSpawnCoords() {
+  const el = document.getElementById('spawn-coords');
+  if (!el) return;
+  const obj = E.placedGroup?.children.find(o => o.userData.primType === 'player-spawn');
+  if (!obj) { el.textContent = 'Not set'; return; }
+  const p = obj.position;
+  el.textContent = `X ${p.x.toFixed(2)}  Y ${p.y.toFixed(2)}  Z ${p.z.toFixed(2)}`;
+}
+
+function _updateFogInput() {
+  const el = document.getElementById('fog-density');
+  if (!el) return;
+  el.value = E.fogDensity != null ? E.fogDensity : '';
+}
+
 function selectBone(boneId) {
   const obj = E._modelEditorObj;
   if (!obj) return;
@@ -3287,7 +3448,59 @@ function exportGroupGLB() {
   }, err => { setStatus('GLB export failed: ' + err); }, { binary: true });
 }
 
-function exportUVMap() {
+function exportRawMap(mapKey) {
+  const obj = E.selected;
+  if (!obj) { setStatus('No object selected'); return; }
+  const label = (obj.userData.label || ('obj_' + obj.userData.editorId)).replace(/[^a-z0-9_\-]/gi, '_');
+
+  const scalarFallbackKeys = { roughnessMap: 'roughness', metalnessMap: 'metalness' };
+
+  let tex = null;
+  let scalarValue = null;
+  obj.traverse(c => {
+    if (!c.isMesh) return;
+    const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
+    for (const m of mats) {
+      if (m?.[mapKey]?.image) { tex = m[mapKey]; break; }
+      if (!tex && scalarFallbackKeys[mapKey] !== undefined && m) {
+        const v = m[scalarFallbackKeys[mapKey]];
+        if (typeof v === 'number' && scalarValue === null) scalarValue = v;
+        else if (mapKey === 'roughnessMap' && m.shininess !== undefined && scalarValue === null) {
+          scalarValue = 1.0 - Math.min(m.shininess, 100) / 100;
+        }
+      }
+    }
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 64; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+
+  if (tex?.image) {
+    const img = tex.image;
+    canvas.width  = img.naturalWidth  || img.width  || 1024;
+    canvas.height = img.naturalHeight || img.height || 1024;
+    if (tex.flipY !== false) { ctx.translate(0, canvas.height); ctx.scale(1, -1); }
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  } else if (scalarValue !== null) {
+    const grey = Math.round(scalarValue * 255);
+    ctx.fillStyle = `rgb(${grey},${grey},${grey})`;
+    ctx.fillRect(0, 0, 64, 64);
+  } else {
+    setStatus(`No ${mapKey} found on selected object`);
+    return;
+  }
+
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = `${label}_${mapKey}.png`; a.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+  setStatus(`Exported ${mapKey} for "${obj.userData.label || obj.userData.editorId}"`);
+}
+
+function exportUVMap(clean = false) {
   const obj = E.selected;
   if (!obj) { setStatus('No object selected'); return; }
 
@@ -3329,13 +3542,15 @@ function exportUVMap() {
       ctx.closePath(); ctx.fill();
     }
 
-    ctx.strokeStyle = 'rgba(0,255,100,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath();
-    for (const [[x1,y1],[x2,y2],[x3,y3]] of triUVs) {
-      for (const [xa,ya,xb,yb] of [[x1,y1,x2,y2],[x2,y2,x3,y3],[x3,y3,x1,y1]]) {
-        if (edgeCounts.get(ekFmt(xa,ya,xb,yb)) === 1) { ctx.moveTo(xa,ya); ctx.lineTo(xb,yb); }
+    if (!clean) {
+      ctx.strokeStyle = 'rgba(0,255,100,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath();
+      for (const [[x1,y1],[x2,y2],[x3,y3]] of triUVs) {
+        for (const [xa,ya,xb,yb] of [[x1,y1,x2,y2],[x2,y2,x3,y3],[x3,y3,x1,y1]]) {
+          if (edgeCounts.get(ekFmt(xa,ya,xb,yb)) === 1) { ctx.moveTo(xa,ya); ctx.lineTo(xb,yb); }
+        }
       }
+      ctx.stroke();
     }
-    ctx.stroke();
 
     canvas.toBlob(blob => {
       const url = URL.createObjectURL(blob);
@@ -3423,17 +3638,19 @@ function exportUVMap() {
     ctx.closePath(); ctx.fill();
   }
 
-  ctx.strokeStyle = 'rgba(0,255,100,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath();
-  for (const [[u1, v1], [u2, v2], [u3, v3]] of allTriUVs) {
-    const edges = [[u1, v1, u2, v2], [u2, v2, u3, v3], [u3, v3, u1, v1]];
-    for (const [eu1, ev1, eu2, ev2] of edges) {
-      if (edgeCounts.get(edgeKey(eu1, ev1, eu2, ev2)) === 1) {
-        ctx.moveTo(eu1 * SIZE, (1 - ev1) * SIZE);
-        ctx.lineTo(eu2 * SIZE, (1 - ev2) * SIZE);
+  if (!clean) {
+    ctx.strokeStyle = 'rgba(0,255,100,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (const [[u1, v1], [u2, v2], [u3, v3]] of allTriUVs) {
+      const edges = [[u1, v1, u2, v2], [u2, v2, u3, v3], [u3, v3, u1, v1]];
+      for (const [eu1, ev1, eu2, ev2] of edges) {
+        if (edgeCounts.get(edgeKey(eu1, ev1, eu2, ev2)) === 1) {
+          ctx.moveTo(eu1 * SIZE, (1 - ev1) * SIZE);
+          ctx.lineTo(eu2 * SIZE, (1 - ev2) * SIZE);
+        }
       }
     }
+    ctx.stroke();
   }
-  ctx.stroke();
 
   canvas.toBlob(blob => {
     const url = URL.createObjectURL(blob);
@@ -3923,13 +4140,75 @@ function closeActorMeshEditor() {
   document.getElementById('actor-mesh-modal').style.display = 'none';
 }
 
+const ACTOR_ANIM_ROLES = ['idle', 'walk', 'run', 'jump', 'vault', 'attack', 'hurt', 'death'];
+
 async function openActorAnimsModal() {
   const obj = E.selected;
   if (!obj || obj.userData.primType !== 'actor-spawn') return;
   document.getElementById('actor-anims-model-name').textContent = (obj.userData.actorModel || '').split('/').pop() || 'Actor';
   if (!obj.userData.animations) obj.userData.animations = [];
+  if (!obj.userData.actorRoles) obj.userData.actorRoles = {};
+  _refreshActorRolesList(obj);
   _refreshActorAnimsList(obj);
   document.getElementById('actor-anims-modal').style.display = 'flex';
+}
+
+function _refreshActorRolesList(obj) {
+  const container = document.getElementById('actor-anim-roles');
+  if (!container) return;
+  container.innerHTML = '';
+  const roles = obj.userData.actorRoles || {};
+  ACTOR_ANIM_ROLES.forEach(role => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;grid-template-columns:52px 1fr 26px 22px;gap:3px;align-items:center';
+
+    const lbl = document.createElement('span');
+    lbl.textContent = role;
+    lbl.style.cssText = 'font-size:11px;color:#8888aa;text-transform:capitalize';
+
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.className = 'prop-input';
+    inp.readOnly = true;
+    inp.value = (roles[role] || '').split('/').pop() || '';
+    inp.title = roles[role] || '';
+    inp.placeholder = 'none';
+    inp.style.cssText = 'font-size:11px;width:100%';
+
+    const impBtn = document.createElement('button');
+    impBtn.className = 'btn';
+    impBtn.textContent = '+';
+    impBtn.title = 'Import animation FBX for this role';
+    impBtn.style.cssText = 'padding:2px 4px;font-size:11px';
+    impBtn.addEventListener('click', async () => {
+      if (!window.electron?.importActorAnim) return;
+      const filePath = await window.electron.importActorAnim(obj.userData.actorModel);
+      if (!filePath) return;
+      if (!obj.userData.actorRoles) obj.userData.actorRoles = {};
+      obj.userData.actorRoles[role] = filePath;
+      inp.value = filePath.split('/').pop() || filePath;
+      inp.title = filePath;
+      markDirty();
+    });
+
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'btn';
+    clearBtn.textContent = '\u00d7';
+    clearBtn.title = 'Clear';
+    clearBtn.style.cssText = 'padding:2px 4px;font-size:12px';
+    clearBtn.addEventListener('click', () => {
+      if (obj.userData.actorRoles) delete obj.userData.actorRoles[role];
+      inp.value = '';
+      inp.title = '';
+      markDirty();
+    });
+
+    row.appendChild(lbl);
+    row.appendChild(inp);
+    row.appendChild(impBtn);
+    row.appendChild(clearBtn);
+    container.appendChild(row);
+  });
 }
 
 function _refreshActorAnimsList(obj) {
@@ -3938,7 +4217,7 @@ function _refreshActorAnimsList(obj) {
   listEl.innerHTML = '';
   const anims = obj.userData.animations || [];
   if (!anims.length) {
-    listEl.innerHTML = '<div style="color:#666688;font-size:11px;padding:8px">No animations imported yet.</div>';
+    listEl.innerHTML = '<div style="color:#666688;font-size:11px;padding:8px">No custom clips imported yet.</div>';
     return;
   }
   anims.forEach((anim, i) => {
@@ -3977,6 +4256,148 @@ function _refreshActorAnimsList(obj) {
 
 function closeActorAnimsModal() {
   document.getElementById('actor-anims-modal').style.display = 'none';
+}
+
+function openActorVariantsModal() {
+  const obj = E.selected;
+  if (!obj || obj.userData.primType !== 'actor-spawn') return;
+  document.getElementById('actor-variants-model-name').textContent = (obj.userData.actorModel || '').split('/').pop() || 'Actor';
+  if (!Array.isArray(obj.userData.actorVariants)) obj.userData.actorVariants = [];
+  _refreshActorVariantsList(obj);
+  document.getElementById('actor-variants-modal').style.display = 'flex';
+}
+
+function _refreshActorVariantsList(obj) {
+  const listEl = document.getElementById('actor-variants-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  const variants = obj.userData.actorVariants || [];
+  if (!variants.length) {
+    listEl.innerHTML = '<div style="color:#666688;font-size:11px;padding:8px">No variants. Base model used for all spawns.</div>';
+    return;
+  }
+  variants.forEach((v, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;grid-template-columns:48px 1fr 46px 46px 46px 46px 22px;gap:3px;align-items:center;padding:3px 4px;background:#0d0d20;border-radius:3px';
+
+    const makeNum = (val, ph, onChange) => {
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.className = 'prop-input';
+      inp.value = val ?? ''; inp.placeholder = ph;
+      inp.style.cssText = 'font-size:10px;width:100%;min-width:0';
+      inp.min = '0';
+      inp.addEventListener('change', () => { onChange(inp.value === '' ? null : parseFloat(inp.value)); markDirty(); });
+      return inp;
+    };
+
+    row.appendChild(makeNum(v.weight, '1', val => { v.weight = val; }));
+
+    const modelWrap = document.createElement('div');
+    modelWrap.style.cssText = 'display:flex;gap:2px;align-items:center;overflow:hidden';
+    const modelSpan = document.createElement('span');
+    modelSpan.textContent = (v.model || '-').split('/').pop();
+    modelSpan.title = v.model || '';
+    modelSpan.style.cssText = 'font-size:10px;color:#8888aa;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const pickBtn = document.createElement('button');
+    pickBtn.className = 'btn'; pickBtn.textContent = '...';
+    pickBtn.style.cssText = 'padding:1px 4px;font-size:10px;flex-shrink:0';
+    pickBtn.addEventListener('click', () => {
+      openActorModelPicker(result => {
+        v.model = result.model;
+        modelSpan.textContent = result.model.split('/').pop();
+        modelSpan.title = result.model;
+        markDirty();
+      });
+    });
+    modelWrap.appendChild(modelSpan); modelWrap.appendChild(pickBtn);
+    row.appendChild(modelWrap);
+
+    row.appendChild(makeNum(v.health, 'def', val => { v.health = val; }));
+    row.appendChild(makeNum(v.speed,  'def', val => { v.speed  = val; }));
+    row.appendChild(makeNum(v.damage, 'def', val => { v.damage = val; }));
+    row.appendChild(makeNum(v.crit,   'def', val => { v.crit   = val; }));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn'; delBtn.textContent = '\u00d7';
+    delBtn.style.cssText = 'padding:2px 4px;font-size:12px';
+    delBtn.addEventListener('click', () => { variants.splice(i, 1); _refreshActorVariantsList(obj); markDirty(); });
+    row.appendChild(delBtn);
+
+    listEl.appendChild(row);
+  });
+}
+
+function closeActorVariantsModal() {
+  document.getElementById('actor-variants-modal').style.display = 'none';
+}
+
+function openActorModelPicker(onPick) {
+  E._actorModelPickerCallback = onPick;
+  const listEl = document.getElementById('actor-model-picker-list');
+  listEl.innerHTML = '';
+
+  const makeHeader = text => {
+    const h = document.createElement('div');
+    h.style.cssText = 'font-size:9px;color:#444466;text-transform:uppercase;letter-spacing:1px;padding:8px 4px 3px 4px';
+    h.textContent = text;
+    return h;
+  };
+  const makeItem = (label, subLabel, model, sourceId) => {
+    const div = document.createElement('div');
+    div.className = 'picker-item';
+    div.style.cssText = 'padding:5px 8px;border-radius:3px;cursor:pointer;background:#0d0d20';
+    div.onmouseenter = () => { div.style.background = '#16163a'; };
+    div.onmouseleave = () => { div.style.background = '#0d0d20'; };
+    const nameSpan = document.createElement('span');
+    nameSpan.style.cssText = 'font-size:11px;color:#ccccee;display:block';
+    nameSpan.textContent = label;
+    div.appendChild(nameSpan);
+    if (subLabel) {
+      const sub = document.createElement('span');
+      sub.style.cssText = 'font-size:10px;color:#445566;display:block';
+      sub.textContent = subLabel;
+      div.appendChild(sub);
+    }
+    div.addEventListener('click', () => {
+      document.getElementById('actor-model-picker').style.display = 'none';
+      if (E._actorModelPickerCallback) { E._actorModelPickerCallback({ model, sourceId: sourceId || '' }); E._actorModelPickerCallback = null; }
+    });
+    return div;
+  };
+
+  if (E.importedActors?.length) {
+    listEl.appendChild(makeHeader('Actors'));
+    E.importedActors.forEach(a => listEl.appendChild(makeItem(a.name, a.path, a.path, '')));
+  }
+  if (E.importedModels?.length) {
+    listEl.appendChild(makeHeader('Models'));
+    E.importedModels.forEach(m => listEl.appendChild(makeItem(m.name, m.path, m.path, '')));
+  }
+  const sceneModels = E.placedGroup?.children.filter(o => o.userData.primType === 'model' && o.userData.modelPath) || [];
+  if (sceneModels.length) {
+    listEl.appendChild(makeHeader('From Scene'));
+    sceneModels.forEach(o => listEl.appendChild(makeItem(
+      o.userData.label || o.name,
+      o.userData.modelPath.split('/').pop(),
+      o.userData.modelPath,
+      o.userData.editorId || ''
+    )));
+  }
+  if (!listEl.children.length) {
+    listEl.innerHTML = '<div style="color:#555577;font-size:11px;padding:10px">No models imported yet.</div>';
+  }
+
+  const searchIn = document.getElementById('actor-model-picker-search');
+  if (searchIn) {
+    searchIn.value = '';
+    searchIn.oninput = () => {
+      const term = searchIn.value.toLowerCase();
+      listEl.querySelectorAll('.picker-item').forEach(el => {
+        el.style.display = !term || el.textContent.toLowerCase().includes(term) ? '' : 'none';
+      });
+    };
+  }
+  document.getElementById('actor-model-picker').style.display = 'flex';
 }
 
 function _renderSoundSection(container, soundDef, onUpdate) {
@@ -4109,8 +4530,100 @@ function _applyMeshEditorTexture(mesh, texName) {
   })();
 }
 
-function _applyMasterTexture(obj, texName) {
-  if (texName) {
+const MODEL_MAP_SLOTS = { diffuse: 'map', normal: 'normalMap', roughness: 'roughnessMap', metalness: 'metalnessMap' };
+
+function _ensureModelPbr(obj) {
+  let converted = false;
+  const roughness = obj.userData.roughness ?? 1;
+  const metalness = obj.userData.metalness ?? 0;
+  obj.traverse(c => {
+    if (!c.isMesh) return;
+    const mats = Array.isArray(c.material) ? c.material : [c.material];
+    const newMats = mats.map(m => {
+      if (!m || 'roughness' in m) return m;
+      converted = true;
+      return new THREE.MeshStandardMaterial({
+        color: m.color?.clone() ?? new THREE.Color(0xffffff),
+        map: m.map ?? null, normalMap: m.normalMap ?? null,
+        emissiveMap: m.emissiveMap ?? null, aoMap: m.aoMap ?? null,
+        emissive: m.emissive?.clone() ?? new THREE.Color(0x000000),
+        emissiveIntensity: m.emissiveIntensity ?? 1,
+        roughness, metalness, side: m.side,
+        transparent: m.transparent, opacity: m.opacity,
+      });
+    });
+    c.material = Array.isArray(c.material) ? newMats : newMats[0];
+  });
+  if (converted) {
+    obj.userData.pbrConverted = true;
+    setStatus('Auto-converted to PBR material to support map assignment', 3000);
+    markDirty();
+    updateProps(obj);
+  }
+}
+
+async function _applyModelMapsToObj(obj, maps) {
+  if (!maps) return;
+  const loader = new THREE.TextureLoader();
+  const tryLoad = url => new Promise(r => loader.load(url, r, undefined, () => r(null)));
+  for (const [slot, texName] of Object.entries(maps)) {
+    if (!texName) continue;
+    const matKey = MODEL_MAP_SLOTS[slot];
+    if (!matKey) continue;
+    let tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.png`);
+    if (!tex) tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.jpg`);
+    if (!tex) continue;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    obj.traverse(c => {
+      if (!c.isMesh) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => { if (m) { m[matKey] = tex; m.needsUpdate = true; } });
+    });
+  }
+}
+
+async function applyModelMapSlot(obj, slot, texName) {
+  if (!texName) {
+    const matKey = MODEL_MAP_SLOTS[slot]; if (!matKey) return;
+    obj.traverse(c => {
+      if (!c.isMesh) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => { if (m) { m[matKey] = null; m.needsUpdate = true; } });
+    });
+    if (obj.userData.modelMaps) { delete obj.userData.modelMaps[slot]; if (!Object.keys(obj.userData.modelMaps).length) delete obj.userData.modelMaps; }
+    markDirty(); return;
+  }
+  if (slot !== 'diffuse') _ensureModelPbr(obj);
+  const matKey = MODEL_MAP_SLOTS[slot]; if (!matKey) return;
+  const loader = new THREE.TextureLoader();
+  const tryLoad = url => new Promise(r => loader.load(url, r, undefined, () => r(null)));
+  let tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.png`);
+  if (!tex) tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.jpg`);
+  if (!tex) { setStatus(`Texture "${texName}" not found`); return; }
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  obj.traverse(c => {
+    if (!c.isMesh) return;
+    const mats = Array.isArray(c.material) ? c.material : [c.material];
+    mats.forEach(m => { if (m) { m[matKey] = tex; m.needsUpdate = true; } });
+  });
+  if (!obj.userData.modelMaps) obj.userData.modelMaps = {};
+  obj.userData.modelMaps[slot] = texName;
+  markDirty();
+}
+
+function refreshModelMapsPanel(obj) {
+  const maps = obj?.userData?.modelMaps || {};
+  const dl = document.getElementById('model-maps-datalist');
+  if (dl && E.availableTextures) {
+    dl.innerHTML = E.availableTextures.map(t => `<option value="${t}">`).join('');
+  }
+  ['diffuse','normal','roughness','metalness'].forEach(slot => {
+    const el = document.getElementById(`mmap-${slot}`);
+    if (el) el.value = maps[slot] || '';
+  });
+}
+
+function _applyMasterTexture(obj, texName) {  if (texName) {
     const loader = new THREE.TextureLoader();
     const tryLoad = url => new Promise(resolve => loader.load(url, resolve, undefined, () => resolve(null)));
     (async () => {
@@ -6157,6 +6670,12 @@ function setupUI() {
     }
   });
 
+  document.getElementById('btn-import-mtl')?.addEventListener('click', async () => {
+    if (!window.electron?.importMtl) { setStatus('MTL import requires Electron'); return; }
+    const name = await window.electron.importMtl();
+    if (name) setStatus(`Imported MTL: ${name} — re-place your OBJ to apply it`);
+  });
+
   document.getElementById('btn-import-image-model')?.addEventListener('click', async () => {
     if (!window.electron) { setStatus('Image import requires Electron'); return; }
     const p = await window.electron.importImageModel();
@@ -6300,6 +6819,57 @@ function setupUI() {
     E.selected.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
     markDirty();
   });
+  document.getElementById('btn-convert-pbr')?.addEventListener('click', () => {
+    if (!E.selected) return;
+    pushUndo();
+    const roughness = E.selected.userData.roughness ?? 1;
+    const metalness = E.selected.userData.metalness ?? 0;
+    E.selected.traverse(c => {
+      if (!c.isMesh) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      const newMats = mats.map(m => {
+        if (!m || 'roughness' in m) return m;
+        const pbr = new THREE.MeshStandardMaterial({
+          color:      m.color?.clone() ?? new THREE.Color(0xffffff),
+          map:        m.map        ?? null,
+          normalMap:  m.normalMap  ?? null,
+          emissiveMap: m.emissiveMap ?? null,
+          aoMap:      m.aoMap      ?? null,
+          emissive:   m.emissive?.clone() ?? new THREE.Color(0x000000),
+          emissiveIntensity: m.emissiveIntensity ?? 1,
+          roughness,
+          metalness,
+          side:       m.side,
+          transparent: m.transparent,
+          opacity:    m.opacity,
+        });
+        return pbr;
+      });
+      c.material = Array.isArray(c.material) ? newMats : newMats[0];
+    });
+    E.selected.userData.pbrConverted = true;
+    markDirty();
+    updateProps(E.selected);
+  });
+  document.getElementById('model-colorspace')?.addEventListener('change', e => {
+    if (!E.selected) return;
+    pushUndo();
+    const cs = e.target.value;
+    E.selected.userData.colorSpace = cs === 'srgb' ? undefined : cs;
+    const threeCS = cs === 'linear' ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+    E.selected.traverse(c => {
+      if (!c.isMesh) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => {
+        if (!m) return;
+        ['map','emissiveMap','normalMap','roughnessMap','metalnessMap','aoMap'].forEach(k => {
+          if (m[k]) { m[k].colorSpace = threeCS; m[k].needsUpdate = true; }
+        });
+        m.needsUpdate = true;
+      });
+    });
+    markDirty();
+  });
   document.getElementById('obj-opacity')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('obj-opacity')?.addEventListener('input', e => {
     if (!E.selected || !E.selected.material) return;
@@ -6410,6 +6980,27 @@ function setupUI() {
   bindLightProp('light-angle',     'angle');
   bindLightProp('light-penumbra',  'penumbra');
   bindLightProp('light-decay',     'decay');
+
+  // ─── Model maps panel wiring ──────────────────────────────────────────────
+  ['diffuse','normal','roughness','metalness'].forEach(slot => {
+    document.getElementById(`btn-mmap-import-${slot}`)?.addEventListener('click', async () => {
+      if (!window.electron?.importTexture) return;
+      const name = await window.electron.importTexture();
+      if (!name) return;
+      await refreshTextureList();
+      const el = document.getElementById(`mmap-${slot}`);
+      if (el) el.value = name;
+      if (E.selected) { pushUndo(); await applyModelMapSlot(E.selected, slot, name); }
+    });
+    document.getElementById(`btn-mmap-clear-${slot}`)?.addEventListener('click', async () => {
+      const el = document.getElementById(`mmap-${slot}`);
+      if (el) el.value = '';
+      if (E.selected) { pushUndo(); await applyModelMapSlot(E.selected, slot, ''); }
+    });
+    document.getElementById(`mmap-${slot}`)?.addEventListener('change', async e => {
+      if (E.selected) { pushUndo(); await applyModelMapSlot(E.selected, slot, e.target.value.trim()); }
+    });
+  });
 
   // ─── Texture panel wiring ──────────────────────────────────────────────────
   // Import texture
@@ -6664,7 +7255,25 @@ function setupUI() {
   });
   document.getElementById('btn-reset-pivot').addEventListener('click', resetPivot);
   document.getElementById('btn-merge').addEventListener('click', openMergeDialog);
-  document.getElementById('btn-export-uv').addEventListener('click', exportUVMap);
+  document.getElementById('btn-export-uv').addEventListener('click', e => {
+    e.stopPropagation();
+    const menu = document.getElementById('export-maps-menu');
+    if (!menu) { exportUVMap(); return; }
+    menu.style.display = menu.style.display === 'none' ? '' : 'none';
+  });
+  document.getElementById('export-maps-menu')?.querySelectorAll('[data-maptype]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = btn.dataset.maptype;
+      document.getElementById('export-maps-menu').style.display = 'none';
+      if (t === 'uv') exportUVMap(false);
+      else if (t === 'uv-clean') exportUVMap(true);
+      else exportRawMap(t);
+    });
+  });
+  document.addEventListener('click', () => {
+    const menu = document.getElementById('export-maps-menu');
+    if (menu) menu.style.display = 'none';
+  });
   document.getElementById('btn-face-mode').addEventListener('click', () => { if (E.faceModeActive) exitFaceMode(); else enterFaceMode(); });
   document.getElementById('btn-merge-confirm').addEventListener('click', executeMerge);
   document.getElementById('btn-merge-modal-close').addEventListener('click', closeMergeDialog);
@@ -6675,6 +7284,24 @@ function setupUI() {
     const open = wrap.style.display !== 'none';
     wrap.style.display = open ? 'none' : '';
     document.getElementById('btn-toggle-scene-list').textContent = open ? '>' : 'v';
+    const ss = document.getElementById('scene-search');
+    if (ss) ss.style.display = open ? 'none' : '';
+  });
+
+  // Left panel search — filters models, image models, actors
+  document.getElementById('left-search')?.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#palette-list .model-item, #image-model-list .image-model-item, #actor-list .actor-item').forEach(el => {
+      el.style.display = (!q || el.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    });
+  });
+
+  // Scene list search
+  document.getElementById('scene-search')?.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#scene-list .scene-list-item').forEach(el => {
+      el.style.display = (!q || el.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    });
   });
 
   document.getElementById('toggle-triggers-visible')?.addEventListener('change', e => {
@@ -6685,6 +7312,46 @@ function setupUI() {
   });
 
   // Actor import
+  document.getElementById('btn-set-spawn')?.addEventListener('click', () => {
+    const existing = E.placedGroup.children.find(o => o.userData.primType === 'player-spawn');
+    const p = E.camera.position;
+    if (existing) {
+      existing.position.set(p.x, p.y, p.z);
+      markDirty();
+    } else {
+      const id = E.nextId++;
+      spawnPrimFromEntry({
+        id, label: 'player_spawn', type: 'player-spawn',
+        pos: [+p.x.toFixed(3), +p.y.toFixed(3), +p.z.toFixed(3)],
+        rot: [0, 0, 0], size: [1, 1, 1], collidable: false,
+      });
+      markDirty();
+      pushUndo();
+    }
+    updateSceneList();
+  });
+  document.getElementById('btn-clear-spawn')?.addEventListener('click', () => {
+    const existing = E.placedGroup.children.find(o => o.userData.primType === 'player-spawn');
+    if (existing) {
+      E.placedGroup.remove(existing);
+      if (E.selected === existing) { E.transform.detach(); E.selected = null; updateProps(null); }
+      markDirty();
+      pushUndo();
+      updateSceneList();
+    }
+  });
+
+  document.getElementById('fog-density')?.addEventListener('change', (e) => {
+    const v = parseFloat(e.target.value);
+    E.fogDensity = isNaN(v) || e.target.value.trim() === '' ? null : Math.max(0, v);
+    markDirty();
+  });
+  document.getElementById('btn-fog-clear')?.addEventListener('click', () => {
+    E.fogDensity = null;
+    _updateFogInput();
+    markDirty();
+  });
+
   document.getElementById('btn-import-actor')?.addEventListener('click', async () => {
     if (!window.electron?.importActor) { setStatus('Actor import requires Electron'); return; }
     const p = await window.electron.importActor();
@@ -6732,6 +7399,31 @@ function setupUI() {
     _refreshActorAnimsList(obj);
     markDirty();
   });
+  document.getElementById('btn-actor-variants')?.addEventListener('click', openActorVariantsModal);
+  document.getElementById('btn-actor-variants-close')?.addEventListener('click', closeActorVariantsModal);
+  document.getElementById('btn-actor-add-variant')?.addEventListener('click', () => {
+    const obj = E.selected;
+    if (!obj || obj.userData.primType !== 'actor-spawn') return;
+    if (!Array.isArray(obj.userData.actorVariants)) obj.userData.actorVariants = [];
+    obj.userData.actorVariants.push({ model: obj.userData.actorModel || '', weight: 1 });
+    _refreshActorVariantsList(obj);
+    markDirty();
+  });
+  document.getElementById('btn-actor-pick-model')?.addEventListener('click', () => {
+    openActorModelPicker(result => {
+      const obj = E.selected;
+      if (!obj || obj.userData.primType !== 'actor-spawn') return;
+      obj.userData.actorModel   = result.model;
+      obj.userData.actorSourceId = result.sourceId;
+      const el = document.getElementById('actor-spawn-model-name');
+      if (el) el.textContent = result.model.split('/').pop() || '-';
+      markDirty();
+    });
+  });
+  document.getElementById('btn-actor-model-picker-close')?.addEventListener('click', () => {
+    document.getElementById('actor-model-picker').style.display = 'none';
+    E._actorModelPickerCallback = null;
+  });
   document.getElementById('btn-actor-ai')?.addEventListener('click', () => {
     document.getElementById('actor-ai-modal').style.display = '';
   });
@@ -6744,6 +7436,22 @@ function setupUI() {
   document.getElementById('btn-actor-pathfinding-close')?.addEventListener('click', () => {
     document.getElementById('actor-pathfinding-modal').style.display = 'none';
   });
+
+  const _actorNumProp = (id, prop) => {
+    document.getElementById(id)?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+    document.getElementById(id)?.addEventListener('input', e => {
+      if (E.selected?.userData.primType !== 'actor-spawn') return;
+      const v = e.target.value.trim();
+      E.selected.userData[prop] = v === '' ? null : parseFloat(v);
+      markDirty();
+    });
+  };
+  _actorNumProp('actor-spawn-interval', 'actorSpawnInterval');
+  _actorNumProp('actor-spawn-max',      'actorSpawnMax');
+  _actorNumProp('actor-health',         'actorHealth');
+  _actorNumProp('actor-speed',          'actorSpeed');
+  _actorNumProp('actor-damage',         'actorDamage');
+  _actorNumProp('actor-crit',           'actorCrit');
 
   window.addEventListener('resize', resizeRenderer);
 }
@@ -7208,6 +7916,7 @@ function animate(now = 0) {
     if (originCross) originCross.scale.setScalar(s);
   }
   if (E._modelEditorObj) _syncBoneMarkersToWorld();
+  _updateSpawnCoords();
   E.orbit.update();
   E.renderer.render(E.scene, E.camera);
 }

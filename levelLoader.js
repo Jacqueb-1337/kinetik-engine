@@ -892,6 +892,14 @@ export async function loadLevel(name = 'main') {
           }
         });
         continue;
+      } else if (entry.type === 'player-spawn') {
+        const marker = new THREE.Object3D();
+        applyTransform(marker, entry);
+        marker.userData.levelObj    = true;
+        marker.userData.editorId    = entry.id;
+        marker.userData.isPlayerSpawn = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        obj = marker;
       } else if (entry.type === 'csg-result') {
         obj = await spawnCsgResult(entry);
       } else if (entry.type === 'merged-model') {
@@ -925,6 +933,20 @@ export async function loadLevel(name = 'main') {
   }
 
   console.log(`[levelLoader] Spawned ${spawned.length} of ${data.objects.length} objects from level "${name}"`);
+
+  if (data.playerSpawn) {
+    gameState.playerSpawn = data.playerSpawn;
+  } else {
+    gameState.playerSpawn = null;
+  }
+
+  gameState.playerSpawnObj = spawned.find(o => o.userData.isPlayerSpawn) ?? null;
+
+  if (data.fogDensity != null && gameState.scene.fog) {
+    gameState.scene.fog.density = data.fogDensity;
+  } else if (gameState.scene.fog) {
+    gameState.scene.fog.density = 0.1;
+  }
 
   // Resolve object links into linkedObjects (keyless, auto-fired) and keyedLinks (per-key)
   const idMap = new Map(spawned.map(o => [o.userData.editorId, o]));

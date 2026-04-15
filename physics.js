@@ -441,26 +441,15 @@ export function update(delta) {
   // Ground collision using raycasting
   const rayOrigin = playerCylinder.center.clone();
   gameState.raycaster.set(rayOrigin, new THREE.Vector3(0, -1, 0));
-  let intersects = gameState.ground ? gameState.raycaster.intersectObject(gameState.ground) : [];
-  
-  // Also check adjacent floor if it exists
-  if (gameState.adjacentFloor) {
-    const adjIntersects = gameState.raycaster.intersectObject(gameState.adjacentFloor);
-    intersects = intersects.concat(adjIntersects);
-  }
-  
-  // Check for collidable objects that can be stood on (like tables)
-  const _gpx = gameState.player.position.x, _gpz = gameState.player.position.z;
+
+  // All collidable objects — no proximity cull here since it's a single vertical ray
   const standableObjects = gameState.scene.children.filter(obj => {
     const isCollidable = obj.userData?.collidable || gameState.collidableObjects?.includes(obj);
-    if (!isCollidable || obj === gameState.player) return false;
-    const dx = obj.position.x - _gpx, dz = obj.position.z - _gpz;
-    return (dx*dx + dz*dz) < 64;
+    return isCollidable && obj !== gameState.player;
   });
-  if (standableObjects.length > 0) {
-    const objIntersects = gameState.raycaster.intersectObjects(standableObjects, true);
-    intersects = intersects.concat(objIntersects);
-  }
+  let intersects = standableObjects.length > 0
+    ? gameState.raycaster.intersectObjects(standableObjects, true)
+    : [];
   
   // Sort by distance and get closest intersection
   if (intersects.length > 0) {
@@ -485,9 +474,7 @@ export function update(delta) {
     const ceilOrigin = playerCylinder.center.clone();
     gameState.raycaster.set(ceilOrigin, new THREE.Vector3(0, 1, 0));
     let ceilHits = [];
-    if (gameState.ground) ceilHits = ceilHits.concat(gameState.raycaster.intersectObject(gameState.ground));
-    if (gameState.adjacentFloor) ceilHits = ceilHits.concat(gameState.raycaster.intersectObject(gameState.adjacentFloor));
-    if (standableObjects.length > 0) ceilHits = ceilHits.concat(gameState.raycaster.intersectObjects(standableObjects, true));
+    if (standableObjects.length > 0) ceilHits = gameState.raycaster.intersectObjects(standableObjects, true);
     if (ceilHits.length > 0) {
       ceilHits.sort((a, b) => a.distance - b.distance);
       const hit = ceilHits[0];
@@ -551,7 +538,15 @@ export function resetGame() {
   setTimeout(() => gameState.resetCooldown = false, 500);
 
   // Reset player
-  gameState.player.position.set(0, 2, 0);
+  if (gameState.playerSpawnObj) {
+    const p = gameState.playerSpawnObj.position;
+    gameState.player.position.set(p.x, p.y, p.z);
+  } else if (gameState.playerSpawn) {
+    const sp = gameState.playerSpawn;
+    gameState.player.position.set(sp.x, sp.y, sp.z);
+  } else {
+    gameState.player.position.set(0, 2, 0);
+  }
   gameState.velocityY = 0;
   gameState.canJump = false;
 

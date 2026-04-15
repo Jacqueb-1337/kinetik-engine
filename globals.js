@@ -69,6 +69,7 @@ export const gameState = {
   currentAnimation: null,
   interactTarget: null,
   interactObj: null,
+  playerSpawnObj: null,  // Object3D placed via editor; position is the live respawn point
 };
 
 export const GRAVITY = -30;
