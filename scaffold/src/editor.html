@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Level Editor</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../node_modules/three/build/three.module.js",
+    "three/examples/jsm/controls/OrbitControls":    "../node_modules/three/examples/jsm/controls/OrbitControls.js",
+    "three/examples/jsm/controls/TransformControls": "../node_modules/three/examples/jsm/controls/TransformControls.js",
+    "three/examples/jsm/loaders/GLTFLoader":         "../node_modules/three/examples/jsm/loaders/GLTFLoader.js",
+    "three/examples/jsm/loaders/FBXLoader":          "../node_modules/three/examples/jsm/loaders/FBXLoader.js",
+    "three/examples/jsm/loaders/OBJLoader":          "../node_modules/three/examples/jsm/loaders/OBJLoader.js",
+    "three/examples/jsm/loaders/MTLLoader":          "../node_modules/three/examples/jsm/loaders/MTLLoader.js",
+    "three/examples/jsm/exporters/GLTFExporter":        "../node_modules/three/examples/jsm/exporters/GLTFExporter.js",
+    "three/examples/jsm/geometries/RoundedBoxGeometry": "../node_modules/three/examples/jsm/geometries/RoundedBoxGeometry.js",
+    "three-mesh-bvh":   "../node_modules/three-mesh-bvh/src/index.js",
+    "three-bvh-csg":    "../node_modules/three-bvh-csg/src/index.js"
+  }
+}
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; font-size: 13px;
+       display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; }
+#toolbar { display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+           background: #1a1a2e; border-bottom: 1px solid #252545; flex-shrink: 0; min-height: 38px; }
+#toolbar h1 { font-size: 13px; color: #e94560; margin-right: 4px; white-space: nowrap; }
+.sep { width: 1px; background: #252545; align-self: stretch; margin: 0 2px; }
+.btn { padding: 4px 10px; border: 1px solid #333360; background: #1a1a2e; color: #dde;
+       border-radius: 4px; cursor: pointer; font-size: 12px; white-space: nowrap; transition: background 0.1s; }
+.btn:hover  { background: #252545; }
+.btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+.btn.green  { background: #1a3a22; border-color: #2d6a4f; }
+.btn.green:hover { background: #2d6a4f; }
+#level-name-display { font-size: 12px; color: #8888aa; padding: 4px 8px;
+                      background: #12121e; border: 1px solid #333360; border-radius: 4px;
+                      min-width: 110px; text-align: center; }
+#level-name-display.dirty::after { content: ' *'; color: #e94560; }
+#main { display: flex; flex: 1; overflow: hidden; }
+.panel { width: 220px; background: #1a1a2e; display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+#left-panel  { border-right: 1px solid #252545; }
+#right-panel { border-left: 1px solid #252545; overflow-y: auto; }
+.panel-section { padding: 8px; border-bottom: 1px solid #252545; flex-shrink: 0; }
+.panel-section h3 { font-size: 10px; text-transform: uppercase; color: #666688;
+                    margin-bottom: 6px; letter-spacing: 1px; }
+#palette-list { overflow-y: auto; flex: 1; }
+#actor-list   { overflow-y: auto; flex: 1; }
+.actor-item { padding: 5px 8px; cursor: pointer; border-bottom: 1px solid #1e1e30;
+              font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8888aa; }
+.actor-item:hover  { background: #252545; color: #dde; }
+.actor-item.active { background: #e9456020; color: #e94560; }
+.prim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.prim-btn { padding: 8px 4px; border: 1px solid #333360; background: #12121e; color: #aaaacc;
+            border-radius: 4px; cursor: pointer; font-size: 11px; text-align: center; transition: background 0.1s; }
+.prim-btn:hover  { background: #252545; color: #dde; }
+.prim-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+.model-item { padding: 5px 8px; cursor: pointer; border-bottom: 1px solid #1e1e30;
+              font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8888aa; }
+.model-item:hover  { background: #252545; color: #dde; }
+.model-item.active { background: #e9456020; color: #e94560; }
+.link-item { display:flex; align-items:center; gap:4px; margin-top:3px; font-size:11px; background:#1a1a2e; border:1px solid #252545; border-radius:4px; padding:3px 5px; }
+.link-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.state-item { background: #1a1a2e; border: 1px solid #252545; border-radius: 4px;
+              padding: 5px 7px; margin-bottom: 5px; font-size: 11px; }
+.state-item-header { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.state-item-header input { flex: 1; }
+.state-item-row { display: flex; align-items: center; gap: 4px; margin-top: 3px; }
+.state-item-row label { min-width: 52px; font-size: 10px; color: #666688; }
+.state-field-row { margin-top: 4px; }
+.state-field-head { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+.state-field-head > label { font-size:11px; color:#aab; cursor:pointer; display:flex; align-items:center; gap:3px; flex-shrink:0; }
+.state-field-head > label input[type=checkbox] { cursor:pointer; accent-color:#e94560; }
+.state-rel-lbl { font-size:10px; color:#666688; display:flex; align-items:center; gap:2px; cursor:pointer; }
+.state-rel-lbl input[type=checkbox] { cursor:pointer; accent-color:#5566cc; }
+.state-field-xyz { display:flex; align-items:center; gap:2px; padding-left:16px; margin-top:2px; }
+.xyz-lbl { font-size:10px; color:#777799; width:9px; flex-shrink:0; text-align:right; }
+.sf-disabled .state-field-xyz { opacity:0.3; pointer-events:none; }
+.state-body-hidden { display: none !important; }
+.state-collapse-btn { background:none; border:none; color:#557799; font-size:9px; cursor:pointer; padding:0 3px; flex-shrink:0; line-height:1; }
+.state-collapse-btn:hover { color:#aaccee; }
+#model-editor-overlay { display:none; position:fixed; right:220px; top:0; bottom:0; width:270px; background:#141420; border-left:1px solid #252545; z-index:200; flex-direction:column; overflow:hidden; }
+#model-editor-overlay.me-open { display:flex; }
+#me-header { display:flex; align-items:center; gap:6px; padding:8px 10px; background:#1a1a2e; border-bottom:1px solid #252545; flex-shrink:0; }
+#me-body { flex:1; overflow-y:auto; padding:8px 10px; }
+#me-footer { padding:6px 10px; background:#0e0e1c; border-top:1px solid #1e1e30; flex-shrink:0; }
+#me-bone-list { margin-top:4px; max-height:160px; overflow-y:auto; }
+.me-bone-item { display:flex; align-items:center; gap:5px; padding:3px 5px; cursor:pointer; border-radius:3px; border:1px solid transparent; }
+.me-bone-item:hover { background:#1e1e30; }
+.me-bone-item.me-bone-selected { background:#1a2a3a; border-color:#336699; }
+.me-bone-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.me-bone-name { flex:1; font-size:11px; color:#aaaacc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.me-bone-tag { font-size:9px; color:#447799; background:#0a1e2e; border-radius:2px; padding:0 4px; flex-shrink:0; }
+.me-section-head { display:flex; align-items:center; gap:6px; margin-top:8px; margin-bottom:2px; }
+.me-section-title { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#5577aa; flex:1; }
+.me-row { display:flex; align-items:center; gap:4px; margin-bottom:4px; }
+.me-label { font-size:10px; color:#666688; min-width:52px; flex-shrink:0; }
+#viewport { flex: 1; position: relative; overflow: hidden; }
+#viewport canvas { display: block; }
+#placing-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+                background: rgba(233,69,96,.85); color: #fff; padding: 5px 14px;
+                border-radius: 10px; font-size: 12px; pointer-events: none; display: none; }
+#kbd-hint { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,.55); padding: 4px 12px; border-radius: 10px;
+            font-size: 11px; color: #666688; pointer-events: none; white-space: nowrap; }
+.vec3-group { margin-bottom: 8px; }
+.vec3-label { font-size: 11px; color: #666688; margin-bottom: 3px; font-weight: 600; letter-spacing: .5px; }
+.prop-row { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
+.prop-row label { min-width: 58px; font-size: 11px; color: #888; flex-shrink: 0; }
+.grp-mode-badge { display:none; font-size:10px; color:#fff; background:#5566cc; border-radius:3px; padding:1px 5px; margin-left:4px; }
+.grp-mode-active .grp-mode-badge { display:inline-block; }
+.grp-mode-active #btn-move-group { background:#5566cc; border-color:#7788ee; color:#fff; }
+.face-mode-active #btn-face-mode { background:#cc7722; border-color:#ee9944; color:#fff; }
+#face-mode-badge { display:none; font-size:10px; color:#fff; background:#cc7722; border-radius:3px; padding:1px 5px; margin-left:4px; }
+.face-mode-active #face-mode-badge { display:inline-block; }
+.prop-input { flex: 1; width: 0; background: #12121e; border: 1px solid #333360;
+              border-radius: 3px; color: #dde; padding: 3px 5px; font-size: 12px; outline: none; }
+.prop-input:focus { border-color: #e94560; }
+.prop-input[disabled] { opacity: 0.4; }
+.prop-input.full { flex: none; width: 100%; }
+.color-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.color-row label { font-size: 11px; color: #666688; flex: 1; }
+.color-row input[type=color] { width: 40px; height: 22px; border: 1px solid #333360; border-radius: 3px; cursor: pointer; background: none; padding: 1px; }
+.toggle-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.toggle-row label { font-size: 12px; cursor: pointer; }
+.toggle-row input[type=checkbox] { cursor: pointer; accent-color: #e94560; }
+.action-btns { display: flex; gap: 4px; }
+.action-btns .btn { flex: 1; text-align: center; padding: 5px 4px; }
+.btn-del { background: #2a1010; border-color: #5a2020; }
+.btn-del:hover { background: #5a2020; }
+.info-text { font-size: 11px; color: #8888aa; word-break: break-all; line-height: 1.4; }
+.scene-list-item { padding: 4px 8px; font-size: 11px; cursor: pointer;
+                   border-bottom: 1px solid #1e1e30; white-space: nowrap; overflow: hidden;
+                   text-overflow: ellipsis; color: #8888aa; }
+.scene-list-item:hover    { background: #252545; color: #dde; }
+.scene-list-item.selected { color: #e94560; }
+.group-header { display: flex; align-items: center; gap: 4px; padding: 4px 8px;
+                background: #161622; border-bottom: 1px solid #1e1e30; cursor: pointer; }
+.group-header:hover { background: #1e1e30; }
+.collapse-arrow { font-size: 9px; color: #555577; flex-shrink: 0; }
+.group-name-lbl { flex: 1; font-size: 11px; font-weight: 600; color: #aaaacc; }
+.group-xform-btn { font-size: 10px; padding: 1px 5px; margin-left: 2px; }
+.group-entry { display: flex; align-items: center; padding: 3px 6px 3px 20px;
+               font-size: 11px; cursor: pointer; border-bottom: 1px solid #1a1a28; color: #666688; }
+.group-entry .ge-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-entry .ge-rm   { flex-shrink: 0; background: none; border: none; color: #444466; font-size: 11px; cursor: pointer; padding: 0 2px; }
+.group-entry .ge-rm:hover { color: #e94560; }
+.group-entry:hover    { background: #252545; color: #dde; }
+.group-entry.selected { color: #e94560; }
+.section-collapse-btn { background: none; border: none; color: #555577; font-size: 10px; cursor: pointer; padding: 0 3px; }
+.section-collapse-btn:hover { color: #aaaacc; }
+#bottom-bar { display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+              background: #1a1a2e; border-top: 1px solid #252545; flex-shrink: 0; }
+#status { font-size: 11px; color: #666688; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#model-editor-overlay { display:none; }
+#level-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+               z-index: 9000; align-items: center; justify-content: center; }
+#level-modal.open { display: flex; }
+#level-modal-box { background: #1a1a2e; border: 1px solid #333360; border-radius: 6px;
+                   padding: 20px; min-width: 300px; max-width: 440px; }
+#level-modal-box h2 { font-size: 15px; color: #e94560; margin-bottom: 14px; }
+.level-list-item { padding: 7px 10px; cursor: pointer; border: 1px solid #252545;
+                   border-radius: 4px; margin-bottom: 5px; font-size: 13px; color: #aaaacc; }
+.level-list-item:hover    { border-color: #e94560; color: #dde; }
+.level-list-item.selected { border-color: #e94560; background: #e9456020; color: #e94560; }
+#modal-new-name { width: 100%; background: #12121e; border: 1px solid #333360; border-radius: 3px;
+                  color: #dde; padding: 6px 8px; font-size: 13px; outline: none; margin-bottom: 8px; }
+#modal-new-name:focus { border-color: #e94560; }
+.modal-btns { display: flex; gap: 6px; margin-top: 10px; justify-content: flex-end; }
+::-webkit-scrollbar       { width: 5px; }
+::-webkit-scrollbar-track { background: #12121e; }
+::-webkit-scrollbar-thumb { background: #333360; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>Level Editor</h1>
+  <div class="sep"></div>
+  <span style="color:#8888aa;font-size:11px">Level:</span>
+  <div id="level-name-display">main</div>
+  <button class="btn" id="btn-new-level"   title="New level">+ New</button>
+  <button class="btn" id="btn-open-level"  title="Open existing level"> Open</button>
+  <button class="btn green" id="btn-save-level" title="Save level (Ctrl+S)"> Save</button>
+  <div class="sep"></div>
+  <div style="display:flex;gap:3px">
+    <button class="btn active" id="btn-move"   title="Move (Ctrl+W)"> Move</button>
+    <button class="btn"        id="btn-rotate"  title="Rotate (Ctrl+E)"> Rot</button>
+    <button class="btn"        id="btn-scale"   title="Scale (Ctrl+R)"> Scale</button>
+  </div>
+  <div class="sep"></div>
+  <button class="btn" id="btn-face-mode" title="Face Mode — select faces on selected object (F)"> Face</button>
+  <div class="sep"></div>
+  <button class="btn active" id="btn-grid"      title="Toggle grid"> Grid</button>
+  <button class="btn active" id="btn-colliders" title="Toggle collision wireframes"> Col</button>
+  <button class="btn"        id="btn-preview-lighting" title="Preview game lighting (dim ambient + placed lights + tone mapping)"> Preview</button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-ruler" title="Ruler tool — click and drag to measure real-world distance">&#x1F4CF; Ruler</button>
+</div>
+
+<div id="main">
+  <div class="panel" id="left-panel">
+    <div class="panel-section">
+      <h3>Primitives</h3>
+      <div class="prim-grid">
+        <div class="prim-btn" data-prim="box"> Box</div>
+        <div class="prim-btn" data-prim="sphere"> Sphere</div>
+        <div class="prim-btn" data-prim="cylinder"> Cylinder</div>
+        <div class="prim-btn" data-prim="plane"> Plane</div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        Triggers
+        <label style="font-size:10px;font-weight:normal;color:#888;display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="toggle-triggers-visible" checked> show
+        </label>
+      </h3>
+      <div class="prim-grid">
+        <div class="prim-btn" data-prim="save-trigger" style="color:#44ffcc" title="Invisible zone that triggers a save when the player enters it"> Save</div>
+        <div class="prim-btn" data-prim="custom-trigger" style="color:#ffaa44" title="Invisible zone that sets a named variable in game code when the player enters it"> Custom</div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <h3>Lights</h3>
+      <div class="prim-grid">
+        <div class="prim-btn" data-prim="point-light"> Point</div>
+        <div class="prim-btn" data-prim="spot-light"> Spot</div>
+        <div class="prim-btn" data-prim="dir-light"> Dir</div>
+      </div>
+    </div>
+    <div style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+      <div class="panel-section" style="flex-shrink:0">
+        <h3 style="display:flex;align-items:center;justify-content:space-between">
+          Models
+          <button class="btn" id="btn-import-model" style="padding:2px 7px;font-size:10px">+ Import</button>
+        </h3>
+      </div>
+      <div id="palette-list">
+        <div style="padding:12px 10px;color:#555577;font-size:11px" id="palette-empty">
+          No models imported yet.
+        </div>
+      </div>
+      <div class="panel-section" style="flex-shrink:0;border-top:1px solid #252545">
+        <h3 style="display:flex;align-items:center;justify-content:space-between">
+          Image Models
+          <button class="btn" id="btn-import-image-model" style="padding:2px 7px;font-size:10px">+ Import</button>
+        </h3>
+      </div>
+      <div id="image-model-list">
+        <div style="padding:8px 10px;color:#555577;font-size:11px" id="image-model-empty">
+          No images imported yet.
+        </div>
+      </div>
+      <div class="panel-section" style="flex-shrink:0;border-top:1px solid #252545">
+        <h3 style="display:flex;align-items:center;justify-content:space-between">
+          Actors
+          <button class="btn" id="btn-import-actor" style="padding:2px 7px;font-size:10px">+ Import</button>
+        </h3>
+      </div>
+      <div id="actor-list">
+        <div style="padding:12px 10px;color:#555577;font-size:11px" id="actor-empty">
+          No actors imported yet.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="viewport">
+    <div id="placing-hint">Click to place &middot; Esc to cancel</div>
+    <div id="ruler-readout" style="display:none;position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(20,20,40,.92);color:#ffe;font-size:13px;padding:6px 16px;border-radius:8px;border:1px solid #555588;pointer-events:none;z-index:200;white-space:nowrap;font-family:monospace"></div>
+    <div id="kbd-hint">WASD Pan &nbsp;&middot;&nbsp; Ctrl+W/E/R transform &nbsp;&middot;&nbsp; G group &nbsp;&middot;&nbsp; Ctrl+D clone &nbsp;&middot;&nbsp; Ctrl+Z undo &nbsp;&middot;&nbsp; Del delete &nbsp;&middot;&nbsp; X cut-mode &nbsp;&middot;&nbsp; Space/Shift up/down</div>
+  </div>
+
+  <div class="panel" id="right-panel">
+    <div class="panel-section">
+      <h3>Selected</h3>
+      <div id="sel-name" class="info-text">None</div>
+    </div>
+    <div class="panel-section">
+      <div class="vec3-group">
+        <div class="vec3-label">Position</div>
+        <div class="prop-row"><label>X</label><input class="prop-input" id="px" type="number" step="0.1"></div>
+        <div class="prop-row"><label>Y</label><input class="prop-input" id="py" type="number" step="0.1"></div>
+        <div class="prop-row"><label>Z</label><input class="prop-input" id="pz" type="number" step="0.1"></div>
+      </div>
+      <div class="vec3-group">
+        <div class="vec3-label">Size / Scale</div>
+        <div class="prop-row"><label>X</label><input class="prop-input" id="sx" type="number" step="0.1" min="0.01"></div>
+        <div class="prop-row"><label>Y</label><input class="prop-input" id="sy" type="number" step="0.1" min="0.01"></div>
+        <div class="prop-row"><label>Z</label><input class="prop-input" id="sz" type="number" step="0.1" min="0.01"></div>
+      </div>
+      <div class="vec3-group">
+        <div class="vec3-label">Rotation &deg;</div>
+        <div class="prop-row"><label>X</label><input class="prop-input" id="rx" type="number" step="1"></div>
+        <div class="prop-row"><label>Y</label><input class="prop-input" id="ry" type="number" step="1"></div>
+        <div class="prop-row"><label>Z</label><input class="prop-input" id="rz" type="number" step="1"></div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <div class="color-row">
+        <label>Color</label>
+        <input type="text" id="obj-color-hex" value="#888888" maxlength="7" style="width:60px;font-size:11px;font-family:monospace;background:#0d0d20;color:#aaaacc;border:1px solid #333360;border-radius:3px;padding:2px 4px;">
+        <input type="color" id="obj-color" value="#888888">
+      </div>
+      <div class="prop-row">
+        <label>Opacity</label>
+        <input class="prop-input" id="obj-opacity" type="number" step="0.05" min="0" max="1" value="1" title="0 = invisible, 1 = fully opaque">
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="chk-collidable" checked>
+        <label for="chk-collidable">Collidable</label>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="chk-shadow" checked>
+        <label for="chk-shadow">Cast Shadow</label>
+      </div>
+      <div id="material-row" style="display:none;margin-top:4px">
+        <div class="prop-row">
+          <label>Roughness</label>
+          <input class="prop-input" id="obj-roughness" type="number" step="0.05" min="0" max="1" value="1">
+        </div>
+        <div class="prop-row">
+          <label>Metalness</label>
+          <input class="prop-input" id="obj-metalness" type="number" step="0.05" min="0" max="1" value="0">
+        </div>
+        <div class="toggle-row" style="margin-top:4px">
+          <input type="checkbox" id="chk-double-side">
+          <label for="chk-double-side">Double-sided</label>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="chk-invert-normals">
+          <label for="chk-invert-normals">Invert Normals</label>
+        </div>
+      </div>
+      <div id="emissive-row" style="display:none;margin-top:4px">
+        <div class="color-row">
+          <label>Emissive</label>
+          <input type="color" id="obj-emissive-color" value="#ffffff">
+        </div>
+        <div class="prop-row">
+          <label>Emissive Int.</label>
+          <input class="prop-input" id="obj-emissive-intensity" type="number" step="0.1" min="0" value="0">
+        </div>
+      </div>
+
+      <!-- Geometry params — shown for primitives only -->
+      <div id="geom-props" style="display:none;margin-top:6px">
+        <div class="vec3-label" style="margin-bottom:4px">Geometry</div>
+        <!-- Box -->
+        <div id="geom-box" style="display:none">
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Bevel</label>
+            <input class="prop-input" id="geom-bevel" type="number" step="0.01" min="0" max="0.49" value="0" style="flex:1" title="Corner bevel radius (0=square)">
+            <input class="prop-input" id="geom-bevel-segs" type="number" step="1" min="1" max="8" value="2" style="width:38px" title="Bevel smoothness">
+          </div>
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Segs</label>
+            <input class="prop-input" id="geom-box-ws" type="number" step="1" min="1" max="16" value="1" style="flex:1" title="Width segments">
+            <input class="prop-input" id="geom-box-hs" type="number" step="1" min="1" max="16" value="1" style="flex:1" title="Height segments">
+            <input class="prop-input" id="geom-box-ds" type="number" step="1" min="1" max="16" value="1" style="flex:1" title="Depth segments">
+          </div>
+        </div>
+        <!-- Sphere -->
+        <div id="geom-sphere" style="display:none">
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Segs</label>
+            <input class="prop-input" id="geom-sph-ws" type="number" step="1" min="3" max="64" value="16" style="flex:1" title="Longitude segments (smoothness)">
+            <input class="prop-input" id="geom-sph-hs" type="number" step="1" min="2" max="32" value="12" style="flex:1" title="Latitude segments (smoothness)">
+          </div>
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Arc°</label>
+            <input class="prop-input" id="geom-sph-phi" type="number" step="5" min="10" max="360" value="360" style="flex:1" title="Horizontal arc (360=full sphere)">
+            <input class="prop-input" id="geom-sph-theta" type="number" step="5" min="10" max="180" value="180" style="flex:1" title="Vertical arc (180=full)">
+          </div>
+        </div>
+        <!-- Cylinder -->
+        <div id="geom-cylinder" style="display:none">
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Sides</label>
+            <input class="prop-input" id="geom-cyl-rs" type="number" step="1" min="3" max="64" value="16" style="flex:1" title="Radial segments (sides)">
+            <input class="prop-input" id="geom-cyl-hs" type="number" step="1" min="1" max="16" value="1" style="flex:1" title="Height segments">
+          </div>
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Top R</label>
+            <input class="prop-input" id="geom-cyl-rt" type="number" step="0.05" min="0" max="1" value="1" style="flex:1" title="Top radius (0=cone, 1=cylinder)">
+          </div>
+          <div class="toggle-row">
+            <input type="checkbox" id="geom-cyl-open">
+            <label for="geom-cyl-open">Open ends</label>
+          </div>
+        </div>
+        <!-- Plane -->
+        <div id="geom-plane" style="display:none">
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Segs</label>
+            <input class="prop-input" id="geom-plane-ws" type="number" step="1" min="1" max="64" value="1" style="flex:1" title="Width segments">
+            <input class="prop-input" id="geom-plane-hs" type="number" step="1" min="1" max="64" value="1" style="flex:1" title="Height segments">
+          </div>
+        </div>
+      </div>
+
+      <div id="light-props" style="display:none;margin-top:6px">
+        <div class="vec3-label" style="margin-bottom:4px">Light</div>
+        <div class="prop-row"><label>Intensity</label><input class="prop-input" id="light-intensity" type="number" step="0.1" min="0" value="1"></div>
+        <div class="prop-row" id="light-distance-row"><label>Distance</label><input class="prop-input" id="light-distance" type="number" step="0.5" min="0" value="10"></div>
+        <div class="prop-row" id="light-angle-row"><label>Angle&deg;</label><input class="prop-input" id="light-angle" type="number" step="1" min="1" max="89" value="30"></div>
+        <div class="prop-row" id="light-penumbra-row"><label>Penumbra</label><input class="prop-input" id="light-penumbra" type="number" step="0.05" min="0" max="1" value="0.1"></div>
+        <div class="prop-row" id="light-decay-row"><label>Decay</label><input class="prop-input" id="light-decay" type="number" step="0.1" min="0" value="2"></div>
+      </div>
+      <div id="trigger-props" style="display:none;margin-top:6px">
+        <div class="vec3-label trigger-type-label" style="margin-bottom:4px;color:#44ffcc">Save Trigger</div>
+        <div class="prop-row save-trigger-row"><label>Slot</label><input class="prop-input" id="trigger-slot" type="text" value="autosave" placeholder="autosave" style="flex:1" title="Save slot key (e.g. autosave, checkpoint-1)"></div>
+        <div class="toggle-row save-trigger-row">
+          <input type="checkbox" id="trigger-once" checked>
+          <label for="trigger-once">Once only</label>
+        </div>
+        <div class="prop-row custom-trigger-row" style="display:none">
+          <label title="Var set to true on enter, false on exit">Presence</label>
+          <select class="prop-input" id="trigger-presence-var" style="flex:1" title="Set true while player is inside, false when they leave"><option value="">(none)</option></select>
+        </div>
+        <div class="prop-row custom-trigger-row" style="display:none">
+          <label>Var</label>
+          <select class="prop-input" id="trigger-var-name" style="flex:1" title="Level variable to change when player enters this trigger"><option value="">(none)</option></select>
+        </div>
+        <div class="prop-row custom-trigger-row" style="display:none">
+          <label>Op</label>
+          <select class="prop-input" id="trigger-var-op" style="width:58px;padding:2px 3px">
+            <option value="set">set</option>
+            <option value="toggle">toggle</option>
+            <option value="add">add</option>
+          </select>
+          <input class="prop-input" id="trigger-var-value" type="text" placeholder="e.g. true" style="flex:1;margin-left:4px" title="Value to set / amount to add">
+        </div>
+      </div>
+      <div id="model-path-row" style="display:none;margin-top:4px">
+        <div class="vec3-label">Model</div>
+        <div id="model-path-text" class="info-text"></div>
+      </div>
+      <div id="texture-section" style="display:none;margin-top:6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+          <div class="vec3-label" style="margin:0">Texture</div>
+          <button class="btn" id="btn-import-tex" style="font-size:10px;padding:2px 6px">+ Import</button>
+        </div>
+        <div id="face-select-row" style="display:none;margin-bottom:4px">
+          <div style="display:flex;gap:4px;align-items:center">
+            <select class="prop-input" id="tex-face" style="flex:1;font-size:11px">
+              <option value="all">All Faces</option>
+              <option value="0">Right (+X)</option>
+              <option value="1">Left  (-X)</option>
+              <option value="2">Top   (+Y)</option>
+              <option value="3">Bottom(-Y)</option>
+              <option value="4">Front (+Z)</option>
+              <option value="5">Back  (-Z)</option>
+            </select>
+            <button class="btn" id="btn-pick-face" style="font-size:10px;padding:2px 5px" title="Click a face in the viewport">Pick</button>
+          </div>
+          <div id="face-pick-hint" style="display:none;margin-top:3px;padding:3px 6px;background:#001a2e;border:1px solid #44aaff;border-radius:4px;font-size:10px;color:#88ccff">Click a face on the object - Esc cancels</div>
+        </div>
+        <div id="face-mode-tex-row" style="display:none;margin-bottom:4px;padding:3px 6px;background:#1a1000;border:1px solid #cc7722;border-radius:4px;font-size:10px;color:#ee9944">
+          <span id="face-mode-tex-label">No face selected — click a face in the viewport</span>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <input class="prop-input" id="tex-name" type="text" list="tex-datalist" placeholder="none" style="flex:1;font-size:11px">
+          <datalist id="tex-datalist"></datalist>
+          <datalist id="sound-datalist"></datalist>
+          <button class="btn" id="btn-clear-tex" style="padding:2px 5px;font-size:10px" title="Clear">X</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Tiling</label>
+          <select class="prop-input" id="tex-tiling-mode" style="flex:1;font-size:11px">
+            <option value="repeat">Repeat</option>
+            <option value="world">World</option>
+            <option value="stretch">Stretch</option>
+          </select>
+        </div>
+        <div id="tex-repeat-row" style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Tile</label>
+          <input class="prop-input" id="tex-repeat-x" type="number" step="0.5" min="0.01" value="1" style="flex:1" title="Tile X">
+          <input class="prop-input" id="tex-repeat-y" type="number" step="0.5" min="0.01" value="1" style="flex:1" title="Tile Y">
+        </div>
+        <div id="tex-world-row" style="display:none;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:52px">Units/tile</label>
+          <input class="prop-input" id="tex-world-scale" type="number" step="0.25" min="0.01" value="1" style="flex:1" title="Repeat every N world units">
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Offset</label>
+          <input class="prop-input" id="tex-offset-x" type="number" step="0.01" value="0" style="flex:1" title="U offset">
+          <input class="prop-input" id="tex-offset-y" type="number" step="0.01" value="0" style="flex:1" title="V offset">
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Wrap</label>
+          <select class="prop-input" id="tex-wrap" style="flex:1;font-size:11px">
+            <option value="repeat">Repeat</option>
+            <option value="clamp">Clamp</option>
+            <option value="mirror">Mirror</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Normal</label>
+          <input class="prop-input" id="tex-normal-map" type="text" list="tex-datalist" placeholder="none" style="flex:1;font-size:11px" title="Normal map texture name">
+          <button class="btn" id="btn-import-normal" style="font-size:10px;padding:2px 6px" title="Import normal map">+</button>
+          <button class="btn" id="btn-clear-normal" style="padding:2px 5px;font-size:10px" title="Clear normal map">X</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Rough</label>
+          <input class="prop-input" id="tex-roughness-map" type="text" list="tex-datalist" placeholder="none" style="flex:1;font-size:11px" title="Roughness map texture name (black=shiny, white=matte)">
+          <button class="btn" id="btn-import-roughness" style="font-size:10px;padding:2px 6px" title="Import roughness map">+</button>
+          <button class="btn" id="btn-clear-roughness" style="padding:2px 5px;font-size:10px" title="Clear roughness map">X</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Bump</label>
+          <input class="prop-input" id="tex-bump-map" type="text" list="tex-datalist" placeholder="none" style="flex:1;font-size:11px" title="Bump map (greyscale height map — no conversion needed)">
+          <input class="prop-input" id="tex-bump-scale" type="number" step="0.1" min="0" max="10" value="1" style="width:44px;font-size:11px" title="Bump strength">
+          <button class="btn" id="btn-import-bump" style="font-size:10px;padding:2px 6px" title="Import bump map">+</button>
+          <button class="btn" id="btn-clear-bump" style="padding:2px 5px;font-size:10px" title="Clear bump map">X</button>
+        </div>
+        <button class="btn" id="btn-uv-edit" style="width:100%;font-size:11px;margin-top:2px">Edit UV...</button>
+      </div>
+    </div>
+    <div class="panel-section" id="mesh-edit-section" style="display:none">
+      <button class="btn" id="btn-mesh-edit" style="width:100%;font-size:11px">Edit Meshes...</button>
+    </div>
+    <div class="panel-section" id="actor-spawn-section" style="display:none">
+      <h3 style="margin-bottom:6px">Actor Spawn</h3>
+      <div class="prop-row" style="margin-bottom:4px">
+        <label style="font-size:11px;color:#666688;min-width:52px">Model</label>
+        <span id="actor-spawn-model-name" style="font-size:10px;color:#8888aa;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">-</span>
+      </div>
+      <div class="prop-row" style="margin-bottom:4px">
+        <label style="font-size:11px;color:#666688;min-width:52px">Radius</label>
+        <input class="prop-input" id="actor-spawn-radius" type="number" step="0.5" min="0" value="0">
+      </div>
+      <div class="toggle-row" style="margin-bottom:3px">
+        <input type="checkbox" id="actor-persistent">
+        <label for="actor-persistent" style="font-size:12px">Persistent</label>
+      </div>
+      <div class="toggle-row" style="margin-bottom:6px">
+        <input type="checkbox" id="actor-single-instance">
+        <label for="actor-single-instance" style="font-size:12px">One at a time</label>
+      </div>
+      <div style="display:flex;gap:4px;margin-bottom:4px">
+        <button class="btn" id="btn-actor-ai" style="flex:1;font-size:10px;padding:3px 4px">AI...</button>
+        <button class="btn" id="btn-actor-pathfinding" style="flex:1;font-size:10px;padding:3px 4px">Pathfinding...</button>
+      </div>
+      <button class="btn" id="btn-actor-mesh-edit" style="width:100%;font-size:11px;margin-bottom:4px">Edit Meshes...</button>
+      <button class="btn" id="btn-actor-anims" style="width:100%;font-size:11px">Animations...</button>
+    </div>
+    <div class="panel-section">
+      <div class="vec3-label">Label</div>
+      <input class="prop-input full" id="obj-label" type="text" placeholder="">
+    </div>
+    <div class="panel-section">
+      <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:#666688;margin-bottom:4px">
+        <span>Group:</span>
+        <span id="sel-group-name" style="color:#aaaacc;flex:1">-</span>
+        <span class="grp-mode-badge" id="grp-mode-badge">GROUP MODE</span>
+        <button class="btn" id="btn-move-group" style="font-size:10px;padding:2px 5px;display:none" title="Transform all in group (G)">Grp</button>
+        <button class="btn" id="btn-ungroup"    style="font-size:10px;padding:2px 5px" title="Remove from group">X</button>
+      </div>
+      <div style="display:flex;gap:4px">
+        <button class="btn" id="btn-new-group"    style="font-size:10px;padding:2px 5px;flex:1" title="Create a new group">+ New</button>
+        <button class="btn" id="btn-add-to-group" style="font-size:10px;padding:2px 5px;flex:1" title="Add to existing group">+ Add</button>
+        <button class="btn" id="btn-export-group-glb" style="font-size:10px;padding:2px 5px" title="Export selected group to GLB file">GLB</button>
+        <label style="font-size:10px;color:#666688;display:flex;align-items:center;gap:2px;cursor:pointer" title="Include bone skeleton in exported GLB"><input type="checkbox" id="chk-export-bones"> Bones</label>
+      </div>
+      <div id="group-name-row" style="display:none;margin-top:4px;display:none">
+        <div style="display:flex;gap:4px">
+          <input class="prop-input" id="group-name-input" type="text" placeholder="Group name" style="flex:1;font-size:11px">
+          <button class="btn" id="group-name-ok" style="font-size:10px;padding:2px 6px">OK</button>
+          <button class="btn" id="group-name-cancel" style="font-size:10px;padding:2px 6px">✕</button>
+        </div>
+      </div>
+      <div id="group-pick-row" style="display:none;margin-top:4px">
+        <div style="display:flex;gap:4px">
+          <select class="prop-input" id="group-pick-select" style="flex:1;font-size:11px"></select>
+          <button class="btn" id="group-pick-ok" style="font-size:10px;padding:2px 6px">OK</button>
+          <button class="btn" id="group-pick-cancel" style="font-size:10px;padding:2px 6px">✕</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <div class="action-btns">
+        <button class="btn" id="btn-clone">Clone</button>
+        <button class="btn btn-del" id="btn-del">Delete</button>
+      </div>
+      <div class="action-btns" style="margin-top:4px">
+        <button class="btn" id="btn-cut" title="Use selected object to cut (subtract) from another object"> Cut into...</button>
+        <button class="btn" id="btn-set-pivot" title="Click a point on another object to set this object's rotation/scale pivot"> Set Pivot</button>
+      </div>
+      <div class="action-btns" style="margin-top:4px">
+        <button class="btn" id="btn-export-uv" title="Export UV layout as PNG for use in a photo editor">Export UV Map</button>
+      </div>
+      <div class="action-btns" style="margin-top:4px">
+        <button class="btn" id="btn-model-editor" title="Open the model / bone editor for the selected object">Model Editor...</button>
+      </div>
+      <div class="action-btns" style="margin-top:4px">
+        <button class="btn" id="btn-merge" title="Merge selected group objects into a single multi-mesh object">Merge Group...</button>
+      </div>
+      <div id="face-mode-badge" style="display:none;margin-top:4px;padding:4px 6px;background:#2a1800;border:1px solid #cc7722;border-radius:4px;font-size:11px;color:#ee9944">FACE MODE — hover &amp; click faces on selected object · Esc or F exits</div>
+      <div class="action-btns" style="margin-top:4px">
+        <button class="btn" id="btn-reset-pivot" title="Reset pivot back to object centre" style="display:none"> Reset Pivot</button>
+      </div>
+      <div id="pivot-hint" style="display:none;margin-top:4px;padding:4px 6px;background:#001a2e;border:1px solid #44aaff;border-radius:4px;font-size:11px;color:#88ccff">Click any surface to set pivot point &middot; Esc cancels</div>
+      <div id="cut-hint" style="display:none;margin-top:4px;padding:4px 6px;background:#2a1a00;border:1px solid #e94560;border-radius:4px;font-size:11px;color:#ffaa44">Click the target object to cut into it &middot; Esc cancels</div>
+    </div>
+    <div class="panel-section" id="links-section" style="display:none">
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        Links
+        <button class="btn" id="btn-add-link" style="font-size:10px;padding:2px 7px" title="Click another object to wire it to this object's interact">+ Link</button>
+      </h3>
+      <div id="link-hint" style="display:none;margin-top:4px;padding:4px 6px;background:#001a2e;border:1px solid #2255aa;border-radius:4px;font-size:11px;color:#88aaff">Click an object to link it &middot; Esc cancels</div>
+      <div id="links-list" style="margin-top:4px"></div>
+    </div>
+    <div class="panel-section" id="states-section" style="display:none">
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        States
+        <span style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:10px;color:#667799;font-weight:normal;cursor:pointer" title="When checked, the player cannot right-click this object — only linked objects can trigger its states"><input type="checkbox" id="chk-no-self-interact"> Link-only</label>
+          <button class="btn" id="btn-add-state" style="font-size:10px;padding:2px 7px">+ Add</button>
+        </span>
+      </h3>
+      <div id="states-list" style="margin-top:4px"></div>
+    </div>
+    <div class="panel-section" style="flex-shrink:0">
+      <h3 style="display:flex;align-items:center">
+        <button class="section-collapse-btn" id="btn-toggle-scene-list">&gt;</button>
+        &nbsp;Scene (<span id="obj-count">0</span>)
+      </h3>
+    </div>
+    <div id="scene-list-wrap" style="display:none"><div id="scene-list"></div></div>
+    <div class="panel-section" style="flex-shrink:0">
+      <h3 style="display:flex;align-items:center">
+        <button class="section-collapse-btn" id="btn-toggle-groups-panel">&gt;</button>
+        &nbsp;Groups (<span id="group-count">0</span>)
+      </h3>
+    </div>
+    <div id="groups-panel" style="display:none"></div>
+    <div class="panel-section" id="vars-section">
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        Variables
+        <button class="btn" id="btn-add-var" style="font-size:10px;padding:2px 7px">+ Add</button>
+      </h3>
+      <div style="font-size:10px;color:#445566;margin-bottom:4px">Prefix: <code style="color:#7799bb">lv_</code> &mdash; set by triggers, tested by state conditions</div>
+      <div id="vars-list"></div>
+    </div>
+  </div>
+</div>
+
+<div id="bottom-bar">
+  <span id="status">Ready - create or open a level to start building</span>
+</div>
+
+<!-- Model Editor overlay (bone/rig editor) — content built by JS -->
+<div id="model-editor-overlay"></div>
+
+<!-- Level open/create modal -->
+<div id="level-modal">
+  <div id="level-modal-box">
+    <h2>Open / Create Level</h2>
+    <div id="level-modal-list"></div>
+    <div style="margin-top:10px;border-top:1px solid #252545;padding-top:10px">
+      <div class="vec3-label" style="margin-bottom:4px">New level name:</div>
+      <input id="modal-new-name" type="text" placeholder="e.g. level2">
+    </div>
+    <div class="modal-btns">
+      <button class="btn" id="modal-cancel">Cancel</button>
+      <button class="btn green" id="modal-confirm">Open / Create</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./game/editorSetup.js"></script>
+
+<!-- Actor AI Placeholder Modal -->
+<div id="actor-ai-modal" style="display:none;position:fixed;z-index:9500;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:380px;top:100px;left:50%;transform:translateX(-50%)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <span style="font-size:13px;color:#e94560;font-weight:600">AI Editor</span>
+    <button class="btn" id="btn-actor-ai-close" style="padding:2px 8px">Close</button>
+  </div>
+  <div style="padding:20px;text-align:center;color:#445566;font-size:12px;background:#12121e;border-radius:4px;border:1px dashed #252545">
+    AI behaviour editor coming soon.
+  </div>
+</div>
+
+<!-- Actor Pathfinding Placeholder Modal -->
+<div id="actor-pathfinding-modal" style="display:none;position:fixed;z-index:9500;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:380px;top:100px;left:50%;transform:translateX(-50%)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <span style="font-size:13px;color:#e94560;font-weight:600">Pathfinding Editor</span>
+    <button class="btn" id="btn-actor-pathfinding-close" style="padding:2px 8px">Close</button>
+  </div>
+  <div style="padding:20px;text-align:center;color:#445566;font-size:12px;background:#12121e;border-radius:4px;border:1px dashed #252545">
+    Pathfinding editor coming soon.
+  </div>
+</div>
+
+<!-- Actor Mesh Editor Modal -->
+<div id="actor-mesh-modal" style="display:none;position:fixed;z-index:9500;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:480px;max-height:80vh;flex-direction:column;top:80px;left:50%;transform:translateX(-50%)">
+  <div id="actor-mesh-modal-drag" style="cursor:grab;margin-bottom:4px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:13px;color:#e94560;font-weight:600">Actor Meshes &ndash; <span id="actor-mesh-model-name">Actor</span></span>
+      <button class="btn" id="btn-actor-mesh-close" style="padding:2px 8px">Close</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;padding:6px 8px;background:#0d0d20;border-radius:4px;border:1px solid #252545">
+      <span style="font-size:11px;color:#aaaacc;white-space:nowrap">Master texture</span>
+      <input id="actor-mesh-master-tex" type="text" class="prop-input" placeholder="applies to all meshes" list="tex-datalist" style="flex:1;font-size:11px" />
+      <button class="btn" id="btn-actor-mesh-master-import" style="padding:2px 4px;font-size:11px" title="Import texture">+</button>
+      <button class="btn" id="btn-actor-mesh-master-clear" style="padding:2px 6px;font-size:11px" title="Clear master texture">&times;</button>
+    </div>
+    <div style="font-size:10px;color:#555577;margin-bottom:8px">Per-mesh overrides (ignored when master texture is set)</div>
+    <div style="display:grid;grid-template-columns:20px 1fr 130px 22px;gap:4px;font-size:10px;color:#445566;padding:0 2px 0 6px;margin-bottom:4px">
+      <span></span><span>Mesh</span><span>Texture override</span><span></span>
+    </div>
+  </div>
+  <div id="actor-mesh-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px"></div>
+</div>
+
+<!-- Actor Animations Modal -->
+<div id="actor-anims-modal" style="display:none;position:fixed;z-index:9500;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:420px;max-height:80vh;flex-direction:column;top:80px;left:50%;transform:translateX(-50%)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <span style="font-size:13px;color:#e94560;font-weight:600">Animations &ndash; <span id="actor-anims-model-name">Actor</span></span>
+    <div style="display:flex;gap:6px">
+      <button class="btn" id="btn-actor-import-anim" style="padding:2px 8px;font-size:11px">+ Import</button>
+      <button class="btn" id="btn-actor-anims-close" style="padding:2px 8px">Close</button>
+    </div>
+  </div>
+  <div style="font-size:10px;color:#555577;margin-bottom:8px">Animations are imported from FBX/GLB files. The clip name is used as the animation key in code.</div>
+  <div style="display:grid;grid-template-columns:1fr 120px 22px;gap:4px;font-size:10px;color:#445566;padding:0 4px;margin-bottom:4px">
+    <span>Clip name</span><span>File</span><span></span>
+  </div>
+  <div id="actor-anims-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px"></div>
+</div>
+
+<!-- UV Editor Modal -->
+<div id="uv-modal" style="display:none;position:fixed;z-index:9500;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:560px;top:80px;left:50%;transform:translateX(-50%)">
+    <div id="uv-modal-drag" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;cursor:grab">
+      <span style="font-size:13px;color:#e94560;font-weight:600">UV Editor - <span id="uv-face-label">All Faces</span></span>
+      <button class="btn" id="btn-uv-close" style="padding:2px 8px;cursor:pointer">Close</button>
+    </div>
+    <canvas id="uv-canvas" width="524" height="320" style="display:block;border:1px solid #333360;border-radius:3px;cursor:crosshair;background:#0a0a18"></canvas>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;font-size:11px;flex-wrap:wrap">
+      <label style="color:#666688">Offset U</label>
+      <input class="prop-input" id="uv-ox" type="number" step="0.01" value="0" style="width:58px">
+      <label style="color:#666688">V</label>
+      <input class="prop-input" id="uv-oy" type="number" step="0.01" value="0" style="width:58px">
+      <label style="color:#666688">Tile X</label>
+      <input class="prop-input" id="uv-rx" type="number" step="0.1" min="0.01" value="1" style="width:58px">
+      <label style="color:#666688">Y</label>
+      <input class="prop-input" id="uv-ry" type="number" step="0.1" min="0.01" value="1" style="width:58px">
+      <button class="btn" id="btn-uv-apply" style="margin-left:auto;padding:4px 14px">Apply</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+      <div style="font-size:10px;color:#555577">Drag the blue rect to offset. Drag corners to tile.</div>
+      <button class="btn" id="btn-export-uv" style="font-size:11px;padding:3px 10px" title="Export UV layout as PNG">Export UV...</button>
+    </div>
+</div>
+<!-- Mesh Editor Modal -->
+<div id="mesh-modal" style="display:none;position:fixed;z-index:9500;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:480px;max-height:80vh;flex-direction:column;top:80px;left:50%;transform:translateX(-50%)">
+    <div id="mesh-modal-drag" style="cursor:grab;margin-bottom:4px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:13px;color:#e94560;font-weight:600">Mesh Editor &ndash; <span id="mesh-model-name">Model</span></span>
+        <button class="btn" id="btn-mesh-close" style="padding:2px 8px;cursor:pointer">Close</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;padding:6px 8px;background:#0d0d20;border-radius:4px;border:1px solid #252545">
+        <span style="font-size:11px;color:#aaaacc;white-space:nowrap">Master texture</span>
+        <input id="mesh-master-tex" type="text" class="prop-input" placeholder="applies to all meshes" list="tex-datalist" style="flex:1;font-size:11px" />
+        <button class="btn" id="btn-mesh-master-import" style="padding:2px 4px;font-size:11px" title="Import texture">+</button>
+        <button class="btn" id="btn-mesh-master-clear" style="padding:2px 6px;font-size:11px" title="Clear master texture">&times;</button>
+      </div>
+      <div style="font-size:10px;color:#555577;margin-bottom:8px">Per-mesh overrides (ignored when master texture is set)</div>
+      <div style="display:grid;grid-template-columns:20px 1fr 130px 22px;gap:4px;font-size:10px;color:#445566;padding:0 2px 0 6px;margin-bottom:4px">
+        <span></span><span>Mesh</span><span>Texture override</span><span></span>
+      </div>
+    </div>
+    <div id="mesh-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:3px"></div>
+</div>
+<div id="merge-modal" style="display:none;position:fixed;z-index:9600;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:480px;max-height:80vh;flex-direction:column;top:60px;left:50%;transform:translateX(-50%)">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <span style="font-size:13px;color:#e94560;font-weight:600">Merge to Multi-Mesh Object</span>
+    <button class="btn" id="btn-merge-modal-close" style="padding:2px 8px">Cancel</button>
+  </div>
+  <div style="font-size:11px;color:#667799;margin-bottom:8px">Check objects to include. Objects with the same Mesh # will be merged into one mesh. Objects with different numbers become separate meshes.</div>
+  <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid #252545">
+    <span style="font-size:11px;color:#aaaacc;width:20px;text-align:center">&#10003;</span>
+    <span style="font-size:10px;color:#667799;flex:1">Object</span>
+    <span style="font-size:10px;color:#667799;width:52px;text-align:center">Mesh #</span>
+  </div>
+  <div id="merge-object-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:2px;margin-bottom:10px;max-height:40vh"></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding-top:6px;border-top:1px solid #252545">
+    <label style="font-size:11px;color:#aaaacc;white-space:nowrap">Name</label>
+    <input class="prop-input" type="text" id="merge-result-name" placeholder="merged_object" style="flex:1;font-size:11px">
+    <button class="btn" id="btn-merge-confirm" style="padding:4px 14px;font-size:12px">Merge</button>
+  </div>
+</div>
+<div id="sound-list-modal" style="display:none;position:fixed;z-index:9600;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:400px;max-height:75vh;flex-direction:column;top:80px;left:50%;transform:translateX(-50%)">
+  <div id="sound-list-modal-drag" style="cursor:grab;margin-bottom:4px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <span style="font-size:13px;color:#e94560;font-weight:600">Sounds &ndash; <span id="sound-list-modal-title">State</span></span>
+      <button class="btn" id="btn-sound-list-close" style="padding:2px 8px">Close</button>
+    </div>
+  </div>
+  <div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px">
+    <div>
+      <div style="font-size:11px;font-weight:600;color:#aaaacc;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #252545">On Enter</div>
+      <div id="snd-enter-list"></div>
+    </div>
+    <div>
+      <div style="font-size:11px;font-weight:600;color:#aaaacc;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #252545">On Exit</div>
+      <div id="snd-exit-list"></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

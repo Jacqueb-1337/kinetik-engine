@@ -11,11 +11,13 @@ const SCAFFOLD_DIR = path.join(__dirname, 'scaffold');
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 
 const SCAFFOLD_FILES = [
-  { from: 'electron-main.js', to: 'electron-main.js' },
-  { from: 'preload.js',       to: 'preload.js' },
-  { from: 'package.json',     to: 'package.json' },
-  { from: 'vite.config.js',   to: 'vite.config.js' },
-  { from: '.gitignore',       to: '.gitignore' },
+  { from: 'electron-main.js',        to: 'electron-main.js' },
+  { from: 'preload.js',              to: 'preload.js' },
+  { from: 'package.json',            to: 'package.json' },
+  { from: 'vite.config.js',          to: 'vite.config.js' },
+  { from: '.gitignore',              to: '.gitignore' },
+  { from: 'src/editor.html',         to: 'src/editor.html' },
+  { from: 'src/game/editorSetup.js', to: 'src/game/editorSetup.js' },
 ];
 
 const SCAFFOLD_DIRS = [
@@ -39,6 +41,8 @@ for (const { from, to } of SCAFFOLD_FILES) {
     skipped++;
     continue;
   }
+  const destDir = path.dirname(dest);
+  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
   fs.copyFileSync(src, dest);
   console.log(`  create  ${to}`);
   created++;
