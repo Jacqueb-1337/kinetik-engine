@@ -6,12 +6,32 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { GLTFLoader }        from 'three/examples/jsm/loaders/GLTFLoader';
 import { GLTFExporter }      from 'three/examples/jsm/exporters/GLTFExporter';
 import { FBXLoader }         from 'three/examples/jsm/loaders/FBXLoader';
+import { OBJLoader }         from 'three/examples/jsm/loaders/OBJLoader';
+import { MTLLoader }         from 'three/examples/jsm/loaders/MTLLoader';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry';
 
 let _highlightedMesh = null;
 let _highlightSavedEmissive = null;
 let _highlightedRow = null;
+
+function _normalizeLinks(arr) {
+  if (!arr?.length) return arr;
+  return arr.map(l => typeof l === 'number' ? { id: l } : l);
+}
+
+function _edKeyDisplay(code) {
+  if (!code) return '—';
+  if (code === 'MouseLeft') return 'LMB';
+  if (code === 'MouseRight') return 'RMB';
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code === 'Space') return 'SPACE';
+  if (code === 'ShiftLeft' || code === 'ShiftRight') return 'SHIFT';
+  if (code === 'ControlLeft' || code === 'ControlRight') return 'CTRL';
+  if (code === 'AltLeft' || code === 'AltRight') return 'ALT';
+  return code;
+}
 
 function _setMeshHighlight(mesh, row) {
   if (_highlightedMesh && _highlightSavedEmissive) {
@@ -116,6 +136,13 @@ const E = {
   faceSelectMesh:    null,   // scene-level selected highlight mesh
 
   _stateDragSrc: undefined,  // index of state item being dragged for reorder
+
+  // Model / bone editor
+  _modelEditorObj:  null,   // object open in model editor
+  _modelEditorBone: null,   // currently selected bone id
+  _boneMarkerGroup: null,   // THREE.Group in scene containing bone marker spheres
+  _boneMarkers:     new Map(), // boneId → THREE.Mesh (world-space bone gizmo target)
+  _stateExpanded:   new Set(), // keys 'edId_idx' of states that are explicitly expanded
 };
 
 // â”€â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -154,6 +181,7 @@ async function init() {
   E.transform.setRotationSnap(THREE.MathUtils.degToRad(5));
   E.scene.add(E.transform);
   E.transform.addEventListener('change', () => {
+    if (E._modelEditorBone) { _onBoneMarkerMoved(); }
     // If rotating around a custom pivot, keep pivot point fixed in world space.
     // NOTE: updateMatrixWorld must be called first — TC fires 'change' before updating matrixWorld.
     if (E._pivotDragStart && E.selected?.userData.pivotOffset && E.transform.mode === 'rotate') {
@@ -198,6 +226,7 @@ async function init() {
       E.wasDragging = true;
       markDirty();
       syncPropsFromSelected();
+      if (E.selected?.userData._restPos) E.selected.userData._restPos.copy(E.selected.position);
       setTimeout(() => { E.wasDragging = false; }, 80);
     }
   });
@@ -262,6 +291,7 @@ async function init() {
   setupUI();
   setupKeys();
   setupMouse();
+  setupRuler();
 
   // Disable props until a level is open
   updateProps(null);
@@ -606,6 +636,7 @@ function levelToJSON() {
     if (obj.userData.links?.length)      entry.links          = obj.userData.links;
     if (obj.userData.pivotOffset)        entry.pivotOffset    = obj.userData.pivotOffset;
     if (obj.userData.noSelfInteract)     entry.noSelfInteract = true;
+    if (obj.userData.bones?.length)      { entry.bones = obj.userData.bones; entry.boneMode = obj.userData.boneMode || 'rigid'; }
     // Trigger-specific fields
     if (isTriggerType(obj.userData.primType)) {
       if (obj.userData.primType === 'custom-trigger') {
@@ -715,6 +746,52 @@ function clearPlaced() {
 async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
   return new Promise(resolve => {
     const ext = (entry.modelPath || '').split('.').pop().toLowerCase();
+
+    if (ext === 'obj') {
+      const objBase  = ASSET_ROOT + entry.modelPath;          // e.g. ../models/editor/foo.obj
+      const dir      = objBase.substring(0, objBase.lastIndexOf('/') + 1);
+      const baseName = objBase.substring(objBase.lastIndexOf('/') + 1, objBase.lastIndexOf('.'));
+      const mtlUrl   = dir + baseName + '.mtl';
+
+      const _applyObjRoot = root => {
+        root.castShadow = entry.castShadow !== false;
+        root.traverse(c => { if (c.isMesh) { c.castShadow = entry.castShadow !== false; c.receiveShadow = true; } });
+        applyEntryTransform(root, entry);
+        root.userData.primType   = 'model';
+        root.userData.modelPath  = entry.modelPath;
+        root.userData.editorId   = entry.id;
+        root.userData.label      = entry.label || '';
+        root.userData.collidable = entry.collidable !== false;
+        root.name = entry.label || ('Model_' + entry.id);
+        if (entry.states?.length) { root.userData.states = entry.states; root.userData.currentState = 0; }
+        if (entry.links?.length)  root.userData.links  = _normalizeLinks(entry.links);
+        if (entry.noSelfInteract) root.userData.noSelfInteract = true;
+        if (entry.pivotOffset)    root.userData.pivotOffset = entry.pivotOffset;
+        if (entry.bones?.length)  { root.userData.bones = entry.bones; root.userData.boneMode = entry.boneMode || 'rigid'; }
+        E.placedGroup.add(root);
+        resolve(root);
+      };
+
+      const loadWithMtl = materials => {
+        const objLoader = new OBJLoader();
+        if (materials) { materials.preload(); objLoader.setMaterials(materials); }
+        objLoader.load(objBase, _applyObjRoot, undefined, err => {
+          console.warn('OBJ load error:', err);
+          resolve(null);
+        });
+      };
+
+      fetch(mtlUrl, { method: 'HEAD' })
+        .then(r => {
+          if (!r.ok) { loadWithMtl(null); return; }
+          const mtlLoader = new MTLLoader();
+          mtlLoader.setPath(dir);
+          mtlLoader.load(baseName + '.mtl', loadWithMtl, undefined, () => loadWithMtl(null));
+        })
+        .catch(() => loadWithMtl(null));
+      return;
+    }
+
     const loader = ext === 'fbx' ? fbxLoader : gltfLoader;
     loader.load(ASSET_ROOT + entry.modelPath, result => {
       const root = result.scene || result;
@@ -728,7 +805,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
       root.userData.collidable = entry.collidable !== false;
       root.name = entry.label || ('Model_' + entry.id);
       if (entry.states?.length) { root.userData.states = entry.states; root.userData.currentState = 0; }
-      if (entry.links?.length)  root.userData.links  = entry.links;
+      if (entry.links?.length)  root.userData.links  = _normalizeLinks(entry.links);
       if (entry.noSelfInteract) root.userData.noSelfInteract = true;
       if (entry.pivotOffset)    root.userData.pivotOffset = entry.pivotOffset;
       if (entry.emissiveIntensity > 0) {
@@ -812,6 +889,9 @@ function applyEntryTransform(obj, entry) {
   obj.position.set(...entry.pos);
   obj.rotation.set(entry.rot[0]*RAD, entry.rot[1]*RAD, entry.rot[2]*RAD);
   obj.scale.set(...entry.size);
+  obj.userData._restPos   = obj.position.clone();
+  obj.userData._restRot   = [entry.rot[0], entry.rot[1], entry.rot[2]];
+  obj.userData._restScale = obj.scale.clone();
 }
 
 // â”€â”€â”€ Primitives â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1580,7 +1660,7 @@ function spawnPrimFromEntry(entry) {
     };
     mesh.name = entry.label || ('ActorSpawn_' + entry.id);
     if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
-    if (entry.links?.length)  mesh.userData.links = entry.links;
+    if (entry.links?.length)  mesh.userData.links = _normalizeLinks(entry.links);
     E.placedGroup.add(mesh);
     return mesh;
   }
@@ -1599,7 +1679,7 @@ function spawnPrimFromEntry(entry) {
     group.userData.label    = entry.label || '';
     group.name = entry.label || (entry.type + '_' + entry.id);
     if (entry.states?.length) { group.userData.states = entry.states; group.userData.currentState = 0; }
-    if (entry.links?.length)  group.userData.links        = entry.links;
+    if (entry.links?.length)  group.userData.links        = _normalizeLinks(entry.links);
     if (entry.noSelfInteract) group.userData.noSelfInteract = true;
     E.placedGroup.add(group);
     return group;
@@ -1617,9 +1697,10 @@ function spawnPrimFromEntry(entry) {
   if (entry.isMainFloor)   mesh.userData.isMainFloor   = true;
   if (entry.isAdjFloor)    mesh.userData.isAdjFloor    = true;
   if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
-  if (entry.links?.length)  mesh.userData.links  = entry.links;
+  if (entry.links?.length)  mesh.userData.links  = _normalizeLinks(entry.links);
   if (entry.pivotOffset)    mesh.userData.pivotOffset = entry.pivotOffset;
   if (entry.noSelfInteract) mesh.userData.noSelfInteract = true;
+  if (entry.bones?.length) { mesh.userData.bones = entry.bones; mesh.userData.boneMode = entry.boneMode || 'rigid'; }
   if (entry.opacity !== undefined) {
     mesh.userData._opacity = entry.opacity;
   }
@@ -1708,23 +1789,52 @@ function commitPlace(worldPos) {
   if (E.placingType.startsWith('model:')) {
     const modelPath = E.placingType.slice(6);
     const ext = modelPath.split('.').pop().toLowerCase();
-    const loader = ext === 'fbx' ? new FBXLoader() : new GLTFLoader();
-    loader.load(ASSET_ROOT + modelPath, result => {
-      const root = result.scene || result;
-      root.traverse(c => {
-        if (c.isMesh) {
-          c.castShadow = c.receiveShadow = true;
-          const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
-          mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
-        }
+
+    if (ext === 'obj') {
+      const objBase  = ASSET_ROOT + modelPath;
+      const dir      = objBase.substring(0, objBase.lastIndexOf('/') + 1);
+      const baseName = objBase.substring(objBase.lastIndexOf('/') + 1, objBase.lastIndexOf('.'));
+      const _placeObjRoot = root => {
+        root.traverse(c => { if (c.isMesh) { c.castShadow = c.receiveShadow = true; } });
+        root.position.copy(worldPos);
+        root.userData = { primType: 'model', modelPath, editorId: id, label: '', collidable: true };
+        root.name = 'Model_' + id;
+        pushUndo();
+        E.placedGroup.add(root);
+        selectObj(root); updateSceneList(); markDirty();
+      };
+      const loadObjWithMtl = materials => {
+        const objLoader = new OBJLoader();
+        if (materials) { materials.preload(); objLoader.setMaterials(materials); }
+        objLoader.load(objBase, _placeObjRoot, undefined, err => { console.warn('OBJ load error:', err); });
+      };
+      fetch(dir + baseName + '.mtl', { method: 'HEAD' })
+        .then(r => {
+          if (!r.ok) { loadObjWithMtl(null); return; }
+          const mtlLoader = new MTLLoader();
+          mtlLoader.setPath(dir);
+          mtlLoader.load(baseName + '.mtl', loadObjWithMtl, undefined, () => loadObjWithMtl(null));
+        })
+        .catch(() => loadObjWithMtl(null));
+    } else {
+      const loader = ext === 'fbx' ? new FBXLoader() : new GLTFLoader();
+      loader.load(ASSET_ROOT + modelPath, result => {
+        const root = result.scene || result;
+        root.traverse(c => {
+          if (c.isMesh) {
+            c.castShadow = c.receiveShadow = true;
+            const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
+            mats.forEach(m => { m.side = THREE.DoubleSide; m.needsUpdate = true; });
+          }
+        });
+        root.position.copy(worldPos);
+        root.userData = { primType: 'model', modelPath, editorId: id, label: '', collidable: true, doubleSide: true };
+        root.name = 'Model_' + id;
+        pushUndo();
+        E.placedGroup.add(root);
+        selectObj(root); updateSceneList(); markDirty();
       });
-      root.position.copy(worldPos);
-      root.userData = { primType: 'model', modelPath, editorId: id, label: '', collidable: true, doubleSide: true };
-      root.name = 'Model_' + id;
-      pushUndo();
-      E.placedGroup.add(root);
-      selectObj(root); updateSceneList(); markDirty();
-    });
+    }
   } else if (E.placingType.startsWith('image-model:')) {
     const imagePath = E.placingType.slice('image-model:'.length);
     _buildImageModelMesh(imagePath, (group, aspect) => {
@@ -2467,7 +2577,10 @@ function cloneGroup(gid) {
 
   clones.forEach(c => {
     if (c.userData.links) {
-      c.userData.links = c.userData.links.map(lid => idMap[lid] ?? lid);
+      c.userData.links = c.userData.links.map(l => {
+        const newId = idMap[l.id] ?? l.id;
+        return newId === l.id ? l : { ...l, id: newId };
+      });
     }
     E.placedGroup.add(c);
   });
@@ -2726,22 +2839,443 @@ function _computeFacePlanarProj(mesh, faceGroup) {
   return { triUVs, W, H };
 }
 
+// ─────────────────────── Model / Bone Editor ───────────────────────
+
+function _genBoneId(obj) {
+  const existing = (obj.userData.bones || []).map(b => b.id);
+  let n = 0;
+  while (existing.includes(`bone_${n}`)) n++;
+  return `bone_${n}`;
+}
+
+function _makeBoneMarkerMesh(selected) {
+  const geo = new THREE.SphereGeometry(0.07, 8, 6);
+  const mat = new THREE.MeshBasicMaterial({ color: selected ? 0xffaa00 : 0x5588ff, depthTest: false });
+  const m = new THREE.Mesh(geo, mat);
+  m.renderOrder = 999;
+  return m;
+}
+
+function _rebuildBoneMarkers(obj) {
+  if (!E._boneMarkerGroup) {
+    E._boneMarkerGroup = new THREE.Group();
+    E._boneMarkerGroup.name = '__boneMarkers__';
+    E.scene.add(E._boneMarkerGroup);
+  }
+  const ownerId = obj.userData.editorId;
+  const toRemove = [];
+  E._boneMarkerGroup.children.forEach(m => {
+    if (m.userData.ownerEditorId == ownerId) toRemove.push(m);
+  });
+  toRemove.forEach(m => { E._boneMarkerGroup.remove(m); E._boneMarkers.delete(m.userData.boneId); });
+  const bones = obj.userData.bones || [];
+  bones.forEach(bone => {
+    const marker = _makeBoneMarkerMesh(bone.id === E._modelEditorBone);
+    marker.userData.boneId = bone.id;
+    marker.userData.ownerEditorId = ownerId;
+    marker.userData.isEditorHelper = true;
+    E._boneMarkerGroup.add(marker);
+    E._boneMarkers.set(bone.id, marker);
+  });
+  _syncBoneMarkersToWorld();
+}
+
+function _syncBoneMarkersToWorld() {
+  const obj = E._modelEditorObj;
+  if (!obj) return;
+  obj.updateMatrixWorld(true);
+  const bones = obj.userData.bones || [];
+  bones.forEach(bone => {
+    const marker = E._boneMarkers.get(bone.id);
+    if (!marker) return;
+    const lp = new THREE.Vector3(...(bone.localPos || [0, 0, 0]));
+    obj.localToWorld(lp);
+    marker.position.copy(lp);
+  });
+}
+
+function _onBoneMarkerMoved() {
+  const obj    = E._modelEditorObj;
+  const boneId = E._modelEditorBone;
+  if (!obj || !boneId) return;
+  const marker = E._boneMarkers.get(boneId);
+  if (!marker) return;
+  obj.updateMatrixWorld(true);
+  const local = obj.worldToLocal(marker.position.clone());
+  const bone  = (obj.userData.bones || []).find(b => b.id === boneId);
+  if (bone) bone.localPos = [local.x, local.y, local.z];
+  markDirty();
+}
+
+function openModelEditor(obj) {
+  if (!obj || !obj.userData.primType) { setStatus('Select a primitive object first'); return; }
+  E._modelEditorObj  = obj;
+  E._modelEditorBone = null;
+  if (!obj.userData.bones)    obj.userData.bones    = [];
+  if (!obj.userData.boneMode) obj.userData.boneMode = 'rigid';
+  _rebuildBoneMarkers(obj);
+  renderModelEditorOverlay();
+  document.getElementById('model-editor-overlay').classList.add('me-open');
+}
+
+function closeModelEditor() {
+  E._modelEditorObj  = null;
+  E._modelEditorBone = null;
+  if (E.selected) E.transform.attach(E.selected); else E.transform.detach();
+  if (E._boneMarkerGroup) {
+    E._boneMarkerGroup.clear();
+    E._boneMarkers.clear();
+  }
+  const ov = document.getElementById('model-editor-overlay');
+  if (ov) ov.classList.remove('me-open');
+}
+
+function selectBone(boneId) {
+  const obj = E._modelEditorObj;
+  if (!obj) return;
+  E._modelEditorBone = boneId;
+  E._boneMarkers.forEach((m, id) => { m.material.color.setHex(id === boneId ? 0xffaa00 : 0x5588ff); });
+  const marker = E._boneMarkers.get(boneId);
+  if (marker) {
+    E.transform.setMode('translate');
+    E.transform.attach(marker);
+  }
+  renderModelEditorOverlay();
+}
+
+function renderModelEditorOverlay() {
+  const ov = document.getElementById('model-editor-overlay');
+  if (!ov) return;
+  const obj = E._modelEditorObj;
+  if (!obj) { ov.innerHTML = ''; return; }
+  const bones    = obj.userData.bones  || [];
+  const boneMode = obj.userData.boneMode || 'rigid';
+  const selBone  = bones.find(b => b.id === E._modelEditorBone);
+  const subMeshes = [];
+  if (obj.isGroup) obj.traverse(c => { if (c.isMesh) subMeshes.push(c); });
+  else if (obj.isMesh) subMeshes.push(obj);
+
+  ov.innerHTML = `
+    <div id="me-header">
+      <span style="flex:1;font-size:11px;color:#9999cc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(obj.userData.label || '')}">${escHtml(obj.userData.label || 'Object')}</span>
+      <button class="btn" id="me-close-btn" style="font-size:10px;padding:2px 6px">&times; Close</button>
+    </div>
+    <div id="me-body">
+      <div style="margin-bottom:8px">
+        <div class="vec3-label" style="margin-bottom:3px">Skinning Mode</div>
+        <select class="prop-input" id="me-bone-mode" style="width:100%">
+          <option value="none"    ${boneMode === 'none'    ? 'selected' : ''}>None (no bones)</option>
+          <option value="rigid"   ${boneMode === 'rigid'   ? 'selected' : ''}>Rigid (assign meshes to bones)</option>
+          <option value="skinned" ${boneMode === 'skinned' ? 'selected' : ''}>Skinned (auto vertex weights)</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:4px">
+        <div class="vec3-label" style="flex:1">Bones</div>
+        <button class="btn" id="me-add-bone" style="font-size:10px;padding:2px 6px">+ Add</button>
+      </div>
+      <div id="me-bone-list">
+        ${bones.map(bone => `
+          <div class="me-bone-item${bone.id === E._modelEditorBone ? ' me-bone-selected' : ''}" data-boneid="${escHtml(bone.id)}">
+            <span class="me-bone-dot" style="background:${bone.id === E._modelEditorBone ? '#ffaa00' : '#5588ff'}"></span>
+            <span class="me-bone-name">${escHtml(bone.name || bone.id)}</span>
+            ${bone.tag ? `<span class="me-bone-tag">${escHtml(bone.tag)}</span>` : ''}
+            <button class="btn btn-del me-del-bone" data-boneid="${escHtml(bone.id)}" style="font-size:9px;padding:1px 4px">&times;</button>
+          </div>
+        `).join('')}
+        ${bones.length === 0 ? '<div style="font-size:10px;color:#555577;padding:2px">No bones yet</div>' : ''}
+      </div>
+      ${selBone ? `
+        <div style="border-top:1px solid #252545;padding-top:8px;margin-top:8px">
+          <div class="vec3-label" style="margin-bottom:6px">Bone Properties</div>
+          <div class="state-item-row"><label>Name</label><input class="prop-input" id="me-b-name" value="${escHtml(selBone.name || '')}" style="flex:1"></div>
+          <div class="state-item-row"><label>Tag</label><input class="prop-input" id="me-b-tag" value="${escHtml(selBone.tag || '')}" style="flex:1"></div>
+          <div class="state-item-row">
+            <label>Parent</label>
+            <select class="prop-input" id="me-b-parent" style="flex:1">
+              <option value="">(root)</option>
+              ${bones.filter(b => b.id !== selBone.id).map(b => `<option value="${escHtml(b.id)}" ${selBone.parentId === b.id ? 'selected' : ''}>${escHtml(b.name || b.id)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="state-item-row">
+            <label style="cursor:pointer"><input type="checkbox" id="me-b-visible" ${selBone.visible !== false ? 'checked' : ''}> Visible</label>
+          </div>
+          ${boneMode === 'rigid' ? `
+          <div class="state-item-row">
+            <label>Mesh</label>
+            <select class="prop-input" id="me-b-mesh" style="flex:1">
+              <option value="">(none)</option>
+              ${subMeshes.map((m, i) => `<option value="${escHtml(m.uuid)}" ${selBone.rigidMeshId === m.uuid ? 'selected' : ''}>${escHtml(m.name || ('mesh_' + i))}</option>`).join('')}
+            </select>
+          </div>` : ''}
+          <div class="vec3-label" style="margin:6px 0 3px">Rotation Limits (deg)</div>
+          ${['x', 'y', 'z'].map(ax => `
+          <div class="state-item-row">
+            <label style="width:18px;flex-shrink:0">${ax}</label>
+            <input class="prop-input" id="me-b-rl-${ax}-min" type="number" step="1" value="${selBone.rotLimits?.[ax]?.[0] ?? -180}" style="width:44px" title="min deg">
+            <span style="color:#556677;font-size:9px"> to </span>
+            <input class="prop-input" id="me-b-rl-${ax}-max" type="number" step="1" value="${selBone.rotLimits?.[ax]?.[1] ?? 180}" style="width:44px" title="max deg">
+          </div>`).join('')}
+          <div class="vec3-label" style="margin:6px 0 3px">Spring</div>
+          <div class="state-item-row"><label>Elasticity</label><input class="prop-input" id="me-b-el" type="number" step="0.01" min="0" max="1" value="${selBone.elasticity ?? 0}" style="flex:1"></div>
+          <div class="state-item-row"><label>Stiffness</label><input class="prop-input" id="me-b-st" type="number" step="0.01" min="0" max="1" value="${selBone.stiffness ?? 1}" style="flex:1"></div>
+          <div class="state-item-row"><label>Damping</label><input class="prop-input" id="me-b-da" type="number" step="0.01" min="0" max="1" value="${selBone.damping ?? 0.5}" style="flex:1"></div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  document.getElementById('me-close-btn').addEventListener('click', closeModelEditor);
+  document.getElementById('me-add-bone').addEventListener('click', () => addBone(obj));
+  document.getElementById('me-bone-mode').addEventListener('change', e => {
+    obj.userData.boneMode = e.target.value;
+    markDirty();
+    renderModelEditorOverlay();
+  });
+  document.querySelectorAll('.me-bone-item').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.target.classList.contains('me-del-bone')) return;
+      selectBone(el.dataset.boneid);
+    });
+  });
+  document.querySelectorAll('.me-del-bone').forEach(el => {
+    el.addEventListener('click', e => { e.stopPropagation(); deleteBone(obj, el.dataset.boneid); });
+  });
+  if (selBone) _wireBonePropsEvents(obj, selBone);
+}
+
+function _wireBonePropsEvents(obj, selBone) {
+  const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('input', fn); };
+  bind('me-b-name', e => { selBone.name = e.target.value; markDirty(); renderModelEditorOverlay(); });
+  bind('me-b-tag',  e => { selBone.tag  = e.target.value; markDirty(); });
+  const parentEl = document.getElementById('me-b-parent');
+  if (parentEl) parentEl.addEventListener('change', e => { selBone.parentId = e.target.value || null; markDirty(); });
+  const visEl = document.getElementById('me-b-visible');
+  if (visEl) visEl.addEventListener('change', e => { selBone.visible = e.target.checked; markDirty(); });
+  const meshEl = document.getElementById('me-b-mesh');
+  if (meshEl) meshEl.addEventListener('change', e => { selBone.rigidMeshId = e.target.value || null; markDirty(); });
+  for (const ax of ['x', 'y', 'z']) {
+    bind(`me-b-rl-${ax}-min`, e => {
+      if (!selBone.rotLimits) selBone.rotLimits = {};
+      if (!selBone.rotLimits[ax]) selBone.rotLimits[ax] = [-180, 180];
+      selBone.rotLimits[ax][0] = parseFloat(e.target.value) || -180;
+      markDirty();
+    });
+    bind(`me-b-rl-${ax}-max`, e => {
+      if (!selBone.rotLimits) selBone.rotLimits = {};
+      if (!selBone.rotLimits[ax]) selBone.rotLimits[ax] = [-180, 180];
+      selBone.rotLimits[ax][1] = parseFloat(e.target.value) || 180;
+      markDirty();
+    });
+  }
+  bind('me-b-el', e => { selBone.elasticity = parseFloat(e.target.value) ?? 0;   markDirty(); });
+  bind('me-b-st', e => { selBone.stiffness  = parseFloat(e.target.value) ?? 1;   markDirty(); });
+  bind('me-b-da', e => { selBone.damping    = parseFloat(e.target.value) ?? 0.5; markDirty(); });
+}
+
+function addBone(obj) {
+  pushUndo();
+  if (!obj.userData.bones) obj.userData.bones = [];
+  const id   = _genBoneId(obj);
+  const bone = {
+    id, name: 'Bone', tag: '', parentId: null, localPos: [0, 1, 0],
+    visible: true, rigidMeshId: null,
+    rotLimits: { x: [-180, 180], y: [-180, 180], z: [-180, 180] },
+    elasticity: 0, stiffness: 1, damping: 0.5,
+  };
+  obj.userData.bones.push(bone);
+  _rebuildBoneMarkers(obj);
+  selectBone(id);
+  markDirty();
+}
+
+function deleteBone(obj, boneId) {
+  pushUndo();
+  obj.userData.bones = (obj.userData.bones || []).filter(b => b.id !== boneId);
+  obj.userData.bones.forEach(b => { if (b.parentId === boneId) b.parentId = null; });
+  (obj.userData.states || []).forEach(st => {
+    if (st.boneOverrides) st.boneOverrides = st.boneOverrides.filter(o => o.boneId !== boneId);
+  });
+  E._boneMarkers.delete(boneId);
+  if (E._modelEditorBone === boneId) {
+    E._modelEditorBone = null;
+    if (E._modelEditorObj) E.transform.attach(E._modelEditorObj); else E.transform.detach();
+  }
+  _rebuildBoneMarkers(obj);
+  renderModelEditorOverlay();
+  markDirty();
+}
+
+function _appendBoneOverridesToStateItem(item, obj, idx) {
+  const bones = obj.userData.bones || [];
+  if (!bones.length) return;
+  const state = obj.userData.states[idx];
+  if (!state) return;
+  if (!state.boneOverrides) state.boneOverrides = [];
+  const stateBody = item.querySelector('.state-body') || item;
+
+  const sec = document.createElement('div');
+  sec.style.cssText = 'margin-top:6px;border-top:1px solid #252545;padding-top:5px';
+
+  const hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;margin-bottom:3px';
+  hdr.innerHTML = `<span style="font-size:10px;color:#6688aa;flex:1">Bone Overrides</span><button class="state-collapse-btn" style="font-size:9px;padding:0 3px">&#9654;</button>`;
+  const boneBody  = document.createElement('div');
+  boneBody.classList.add('state-body-hidden');
+  const toggleBtn = hdr.querySelector('button');
+  hdr.addEventListener('click', () => {
+    const hidden = boneBody.classList.toggle('state-body-hidden');
+    toggleBtn.innerHTML = hidden ? '&#9654;' : '&#9660;';
+  });
+
+  bones.forEach(bone => {
+    let ov = state.boneOverrides.find(b => b.boneId === bone.id);
+    if (!ov) { ov = { boneId: bone.id }; state.boneOverrides.push(ov); }
+
+    const boneRow  = document.createElement('div');
+    boneRow.style.cssText = 'margin-bottom:5px';
+    const boneHdr  = document.createElement('div');
+    boneHdr.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;margin-bottom:2px';
+    boneHdr.innerHTML = `<span class="me-bone-dot" style="width:6px;height:6px;border-radius:50%;background:#5588ff;flex-shrink:0"></span><span style="font-size:10px;color:#8899bb;flex:1">${escHtml(bone.name || bone.id)}</span><button class="state-collapse-btn" style="font-size:8px;padding:0 3px">&#9654;</button>`;
+    const boneDetail = document.createElement('div');
+    boneDetail.classList.add('state-body-hidden');
+    const boneToggle = boneHdr.querySelector('button');
+    boneHdr.addEventListener('click', () => {
+      const hidden = boneDetail.classList.toggle('state-body-hidden');
+      boneToggle.innerHTML = hidden ? '&#9654;' : '&#9660;';
+    });
+
+    const mkXyz = (label, key, enableKey, def) => {
+      const en = ov[enableKey] !== false ? '' : ' sf-disabled';
+      const v  = ov[key] || def;
+      const row = document.createElement('div');
+      row.className = `state-field-row${en}`;
+      row.dataset.field = key;
+      row.innerHTML = `
+        <div class="state-field-head">
+          <label><input type="checkbox" ${ov[enableKey] !== false ? 'checked' : ''} data-enkey="${enableKey}"> ${label}</label>
+        </div>
+        <div class="state-field-xyz">
+          <span class="xyz-lbl">x</span><input class="prop-input" data-key="${key}" data-axis="0" type="number" step="0.01" value="${v[0]}">
+          <span class="xyz-lbl">y</span><input class="prop-input" data-key="${key}" data-axis="1" type="number" step="0.01" value="${v[1]}">
+          <span class="xyz-lbl">z</span><input class="prop-input" data-key="${key}" data-axis="2" type="number" step="0.01" value="${v[2]}">
+        </div>`;
+      row.querySelector('[data-enkey]').addEventListener('change', ev => {
+        ov[enableKey] = ev.target.checked;
+        row.classList.toggle('sf-disabled', !ev.target.checked);
+        markDirty();
+      });
+      row.querySelectorAll('[data-key]').forEach(inp => {
+        inp.addEventListener('input', ev => {
+          if (!ov[key]) ov[key] = [...def];
+          ov[key][parseInt(inp.dataset.axis)] = parseFloat(ev.target.value) || 0;
+          markDirty();
+        });
+      });
+      return row;
+    };
+
+    boneDetail.appendChild(mkXyz('Pos',   'pos',   'posEnabled',   [0, 0, 0]));
+    boneDetail.appendChild(mkXyz('Rot',   'rot',   'rotEnabled',   [0, 0, 0]));
+    boneDetail.appendChild(mkXyz('Scale', 'scale', 'scaleEnabled', [1, 1, 1]));
+    boneRow.appendChild(boneHdr);
+    boneRow.appendChild(boneDetail);
+    boneBody.appendChild(boneRow);
+  });
+
+  sec.appendChild(hdr);
+  sec.appendChild(boneBody);
+  stateBody.appendChild(sec);
+}
+
+// ───────────────────────────────────────────────────────────────────
+
 function exportGroupGLB() {
   if (!E.selected) { setStatus('Select an object in a group first'); return; }
   const gid = findGroupOfObj(E.selected);
   if (!gid || !E.groups[gid]) { setStatus('Selected object is not in a group'); return; }
   const g = E.groups[gid];
-  const members = [...g.ids]
-    .map(id => E.placedGroup.children.find(o => o.userData.editorId === id))
-    .filter(Boolean);
+  const findById = id => {
+    const match = o => o.userData.editorId == id;
+    let found = E.placedGroup.children.find(match);
+    if (!found && E.groupPivot) found = E.groupPivot.children.find(match);
+    return found;
+  };
+  const members = [...g.ids].map(findById).filter(Boolean);
   if (!members.length) { setStatus('Group has no members'); return; }
 
+  const includeBones = document.getElementById('chk-export-bones')?.checked;
   const exportGroup = new THREE.Group();
   exportGroup.name = g.name;
+
   members.forEach(obj => {
-    const clone = obj.clone();
-    clone.name = obj.userData.label || obj.userData.editorId || obj.name;
-    exportGroup.add(clone);
+    const bonesData = obj.userData.bones || [];
+    const boneMode  = obj.userData.boneMode || 'none';
+
+    if (!includeBones || !bonesData.length || boneMode === 'none') {
+      const clone = obj.clone();
+      clone.name = obj.userData.label || obj.userData.editorId || obj.name;
+      exportGroup.add(clone);
+      return;
+    }
+
+    const skinRoot = new THREE.Group();
+    skinRoot.name  = obj.userData.label || String(obj.userData.editorId) || obj.name;
+
+    const boneObjMap = new Map();
+    bonesData.forEach(bd => {
+      const b = new THREE.Bone();
+      b.name = bd.name || bd.id;
+      boneObjMap.set(bd.id, b);
+    });
+
+    const rootBones = [];
+    bonesData.forEach(bd => {
+      const b = boneObjMap.get(bd.id);
+      if (bd.parentId && boneObjMap.has(bd.parentId)) {
+        const parentBone = boneObjMap.get(bd.parentId);
+        const parentBD   = bonesData.find(x => x.id === bd.parentId);
+        const pPos = new THREE.Vector3(...(parentBD.localPos || [0, 0, 0]));
+        const cPos = new THREE.Vector3(...(bd.localPos  || [0, 0, 0]));
+        b.position.copy(cPos.sub(pPos));
+        parentBone.add(b);
+      } else {
+        b.position.set(...(bd.localPos || [0, 0, 0]));
+        rootBones.push(b);
+      }
+    });
+    rootBones.forEach(rb => skinRoot.add(rb));
+
+    const allBones = [...boneObjMap.values()];
+    exportGroup.add(skinRoot);
+    exportGroup.updateMatrixWorld(true);
+    const skeleton = new THREE.Skeleton(allBones);
+
+    const meshes = [];
+    if (obj.isMesh) meshes.push(obj);
+    else obj.traverse(c => { if (c.isMesh && !c.userData.isEditorHelper) meshes.push(c); });
+
+    meshes.forEach(mesh => {
+      const assignedBD  = boneMode === 'rigid'
+        ? bonesData.find(bd => bd.rigidMeshId === mesh.uuid) : null;
+      const boneIdx = assignedBD ? allBones.indexOf(boneObjMap.get(assignedBD.id)) : 0;
+      const safeIdx = Math.max(0, boneIdx);
+
+      const geo   = mesh.geometry.clone();
+      const count = geo.attributes.position.count;
+      const si    = new Uint16Array(count * 4);
+      const sw    = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) { si[i*4] = safeIdx; sw[i*4] = 1; }
+      geo.setAttribute('skinIndex',  new THREE.BufferAttribute(si, 4));
+      geo.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+
+      const sm  = new THREE.SkinnedMesh(geo, Array.isArray(mesh.material) ? mesh.material.map(m => m.clone()) : mesh.material.clone());
+      sm.name   = mesh.name || mesh.uuid;
+      sm.position.copy(mesh.getWorldPosition(new THREE.Vector3()));
+      sm.quaternion.copy(mesh.getWorldQuaternion(new THREE.Quaternion()));
+      sm.scale.copy(mesh.getWorldScale(new THREE.Vector3()));
+      sm.bind(skeleton);
+      skinRoot.add(sm);
+    });
   });
 
   const defaultName = (g.name.replace(/[^a-z0-9_-]/gi, '_') || 'group') + '.glb';
@@ -3110,7 +3644,7 @@ function spawnMergedModel(entry) {
   };
   root.name = entry.label || ('Merged_' + entry.id);
   if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
-  if (entry.links?.length)     root.userData.links  = entry.links;
+  if (entry.links?.length)     root.userData.links  = _normalizeLinks(entry.links);
   if (entry.noSelfInteract)    root.userData.noSelfInteract = true;
   if (entry.meshOverrides) {
     root.userData.meshOverrides = entry.meshOverrides;
@@ -3157,7 +3691,7 @@ function spawnImageModel(entry) {
       };
       group.name = entry.label || ('Image_' + entry.id);
       if (entry.states?.length) { group.userData.states = entry.states; group.userData.currentState = 0; }
-      if (entry.links?.length)  group.userData.links = entry.links;
+      if (entry.links?.length)  group.userData.links = _normalizeLinks(entry.links);
       E.placedGroup.add(group);
       resolve(group);
     }, entry.wallColor);
@@ -4186,7 +4720,7 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
   };
   result.name = entry.label || ('CSG_' + entry.id);
   if (entry.states?.length)  { result.userData.states = entry.states; result.userData.currentState = 0; }
-  if (entry.links?.length)     result.userData.links  = entry.links;
+  if (entry.links?.length)     result.userData.links  = _normalizeLinks(entry.links);
   if (entry.noSelfInteract)    result.userData.noSelfInteract = true;
   if (entry.emissiveIntensity > 0 && result.material) {
     result.userData.emissiveIntensity = entry.emissiveIntensity;
@@ -4275,6 +4809,7 @@ function redo() {
 
 async function restoreSnapshot(json) {
   const data = JSON.parse(json);
+  closeModelEditor();
   clearPlaced();
   E.nextId = data.nextId || 1;
   if (data.groups) {
@@ -4515,9 +5050,8 @@ function applyStateToEditorObj(obj, state) {
 
   if (posOn && state.pos) {
     if (state.posRelative) {
-      obj.position.x += state.pos[0];
-      obj.position.y += state.pos[1];
-      obj.position.z += state.pos[2];
+      const rest = obj.userData._restPos ?? obj.position;
+      obj.position.set(rest.x + state.pos[0], rest.y + state.pos[1], rest.z + state.pos[2]);
     } else {
       obj.position.set(...state.pos);
     }
@@ -4625,6 +5159,15 @@ function applyStateToEditorObj(obj, state) {
       }
     });
   }
+  if (state.textureEnabled && state.textures) {
+    if (!obj.userData.faceTextures) obj.userData.faceTextures = {};
+    for (const [k, v] of Object.entries(state.textures)) {
+      if (!v?.name) delete obj.userData.faceTextures[k];
+      else obj.userData.faceTextures[k] = v;
+    }
+    if (obj.isMesh) applyFaceTextures(obj);
+    else obj.traverse(c => { if (c.isMesh && !c.userData.isFaceOverlay) applyFaceTextures(c); });
+  }
   obj.updateMatrixWorld(true);
   updateProps(obj);
   markDirty();
@@ -4673,6 +5216,7 @@ function renderStatesPanel(obj) {
     const emissiveEnabled    = !!state.emissiveEnabled;
     const opacityEnabled     = !!state.opacityEnabled;
     const meshColorEnabled   = !!state.meshColorEnabled;
+    const textureEnabled     = !!state.textureEnabled;
     const conditionEnabled   = !!state.conditionEnabled;
 
     const posRel    = !!state.posRelative;
@@ -4807,6 +5351,13 @@ function renderStatesPanel(obj) {
           <input class="prop-input" data-si="emissiveIntensityVal" type="number" step="0.1" min="0" value="${state.emissiveIntensity ?? 0}" style="width:50px" title="Emissive intensity (0 = off)">
           <input class="prop-input" data-si="emissiveColorVal" type="color" value="${state.emissiveColor ?? '#ffffff'}" style="width:36px;padding:1px 2px" title="Emissive color">
         </div>
+      </div>
+      <div class="state-field-row${textureEnabled ? '' : ' sf-disabled'}" data-field="texture">
+        <div class="state-field-head" style="gap:4px">
+          <label><input type="checkbox" data-si="texStateEn" ${textureEnabled ? 'checked' : ''}> Textures</label>
+          <button data-si="texStateAdd" style="font-size:10px;padding:1px 6px;margin-left:auto">+ Add</button>
+        </div>
+        <div data-si="texStateList" style="margin-top:3px"></div>
       </div>` : ''}
       <div class="state-field-row${conditionEnabled ? '' : ' sf-disabled'}" data-field="condition">
         <div class="state-field-head" style="gap:3px">
@@ -4823,6 +5374,28 @@ function renderStatesPanel(obj) {
         <button class="btn" data-si="soundsBtn" style="font-size:11px;padding:3px 10px;width:100%">&#127925; Sounds...</button>
       </div>
     `;
+
+    {
+      const stateKey  = `${obj.userData.editorId || 'noeid'}_${idx}`;
+      const isCollapsed = !E._stateExpanded.has(stateKey);
+      const hdr  = item.querySelector('.state-item-header');
+      const body = document.createElement('div');
+      body.className = 'state-body';
+      if (isCollapsed) body.classList.add('state-body-hidden');
+      while (hdr.nextSibling) body.appendChild(hdr.nextSibling);
+      item.appendChild(body);
+      const colBtn = document.createElement('button');
+      colBtn.className = 'state-collapse-btn';
+      colBtn.textContent = isCollapsed ? '\u25b6' : '\u25bc';
+      hdr.insertBefore(colBtn, hdr.firstChild);
+      colBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const nowCollapsed = !body.classList.contains('state-body-hidden');
+        body.classList.toggle('state-body-hidden', nowCollapsed);
+        colBtn.textContent = nowCollapsed ? '\u25b6' : '\u25bc';
+        if (nowCollapsed) E._stateExpanded.delete(stateKey); else E._stateExpanded.add(stateKey);
+      });
+    }
 
     const g  = sel => item.querySelector(`[data-si="${sel}"]`);
     const st = obj.userData.states[idx];
@@ -4961,6 +5534,58 @@ function renderStatesPanel(obj) {
       markDirty();
     });
     g('meshColorVal')?.addEventListener('change', e => { st.meshColor = e.target.value; markDirty(); });
+
+    // Texture state overrides
+    const _texKeyOptions = () => {
+      const isBox = obj.userData.primType === 'box';
+      let opts = `<option value="all">all</option>`;
+      if (isBox) for (let i = 0; i < 6; i++) opts += `<option value="${i}">${i}</option>`;
+      return opts;
+    };
+    const _renderTexStateList = () => {
+      if (!st.textures) st.textures = {};
+      const listEl = g('texStateList');
+      if (!listEl) return;
+      listEl.innerHTML = '';
+      for (const [k, v] of Object.entries(st.textures)) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:2px;align-items:center;margin-bottom:2px';
+        row.innerHTML = `
+          <select class="prop-input" style="width:40px;font-size:10px;padding:2px 2px">${_texKeyOptions()}</select>
+          <input class="prop-input" list="tex-datalist" value="${escHtml(v?.name ?? '')}" placeholder="texture" style="flex:1;font-size:10px" autocomplete="off">
+          <button style="font-size:10px;padding:1px 5px;flex-shrink:0">&times;</button>
+        `;
+        const keySel = row.children[0];
+        const nameIn = row.children[1];
+        const delBtn = row.children[2];
+        keySel.value = k;
+        const _save = () => {
+          const oldKey = k;
+          const newKey = keySel.value;
+          const name   = nameIn.value.trim();
+          if (oldKey !== newKey) { delete st.textures[oldKey]; }
+          st.textures[newKey] = name ? makeFaceTexConfig(name) : null;
+          markDirty();
+          _renderTexStateList();
+        };
+        keySel.addEventListener('change', _save);
+        nameIn.addEventListener('change', _save);
+        delBtn.addEventListener('click', () => { delete st.textures[k]; markDirty(); _renderTexStateList(); });
+        listEl.appendChild(row);
+      }
+    };
+    g('texStateEn')?.addEventListener('change', e => {
+      st.textureEnabled = e.target.checked;
+      item.querySelector('[data-field="texture"]').classList.toggle('sf-disabled', !e.target.checked);
+      markDirty();
+    });
+    g('texStateAdd')?.addEventListener('click', () => {
+      if (!st.textures) st.textures = {};
+      if (!st.textures['all']) st.textures['all'] = null;
+      _renderTexStateList();
+      markDirty();
+    });
+    _renderTexStateList();
 
     // Condition
     g('condEn').addEventListener('change', e => {
@@ -5132,7 +5757,8 @@ function renderStatesPanel(obj) {
     });
 
     renderInputRows();
-    item.appendChild(inputsSection);
+    { const _sb = item.querySelector('.state-body'); (_sb || item).appendChild(inputsSection); }
+    _appendBoneOverridesToStateItem(item, obj, idx);
 
     item.setAttribute('draggable', 'true');
     item.addEventListener('dragstart', e => {
@@ -5203,20 +5829,92 @@ function renderLinksPanel(obj) {
   list.innerHTML = '';
   const links = obj.userData.links || [];
 
-  links.forEach((targetId, idx) => {
-    let targetName = '#' + targetId;
+  links.forEach((link, idx) => {
+    let targetName = '#' + link.id;
     E.placedGroup.traverse(o => {
-      if (o.userData.editorId === targetId) targetName = o.name || targetName;
+      if (o.userData.editorId === link.id) targetName = o.name || targetName;
     });
     const item = document.createElement('div');
     item.className = 'link-item';
-    item.innerHTML = `<span title="${escHtml(targetName)}">${escHtml(targetName)}</span>
-      <button class="btn btn-del" data-li="del" style="font-size:10px;padding:2px 6px">&times;</button>`;
-    item.querySelector('[data-li="del"]').addEventListener('click', () => {
+    item.style.cssText = 'display:flex;flex-direction:column;gap:0;padding:4px 0;border-bottom:1px solid #151530';
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:4px';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    nameSpan.title = targetName;
+    nameSpan.textContent = targetName;
+
+    const keyBtn = document.createElement('button');
+    keyBtn.style.cssText = 'font-size:10px;min-width:32px;padding:2px 5px;background:#112233;border:1px solid #2255aa;color:' + (link.key ? '#88ffaa' : '#88aaff') + ';cursor:pointer;border-radius:3px';
+    keyBtn.title = 'Click to bind a key (Esc to clear)';
+    keyBtn.textContent = link.key ? _edKeyDisplay(link.key) : '—';
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-del';
+    delBtn.style.cssText = 'font-size:10px;padding:2px 6px';
+    delBtn.textContent = '×';
+
+    row.appendChild(nameSpan);
+    row.appendChild(keyBtn);
+    row.appendChild(delBtn);
+
+    const labelInput = document.createElement('input');
+    labelInput.type = 'text';
+    labelInput.value = link.label || '';
+    labelInput.placeholder = 'Tooltip text (auto from target state)';
+    labelInput.style.cssText = 'margin-top:3px;width:100%;font-size:10px;background:#0a0e14;border:1px solid #223355;color:#99aacc;padding:2px 4px;box-sizing:border-box;border-radius:2px';
+
+    item.appendChild(row);
+    item.appendChild(labelInput);
+
+    keyBtn.addEventListener('click', () => {
+      keyBtn.textContent = 'Press...';
+      keyBtn.style.color = '#ffaa44';
+      function onKey(e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        document.removeEventListener('keydown', onKey, true);
+        document.removeEventListener('mousedown', onMouse, true);
+        if (e.code === 'Escape') {
+          delete link.key;
+          keyBtn.textContent = '—';
+          keyBtn.style.color = '#88aaff';
+        } else {
+          link.key = e.code;
+          keyBtn.textContent = _edKeyDisplay(e.code);
+          keyBtn.style.color = '#88ffaa';
+        }
+        markDirty();
+      }
+      function onMouse(e) {
+        if (e.button !== 0 && e.button !== 2) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        document.removeEventListener('mousedown', onMouse, true);
+        document.removeEventListener('keydown', onKey, true);
+        link.key = e.button === 0 ? 'MouseLeft' : 'MouseRight';
+        keyBtn.textContent = _edKeyDisplay(link.key);
+        keyBtn.style.color = '#88ffaa';
+        markDirty();
+      }
+      document.addEventListener('keydown', onKey, true);
+      document.addEventListener('mousedown', onMouse, true);
+    });
+
+    labelInput.addEventListener('input', () => {
+      const v = labelInput.value.trim();
+      if (v) link.label = v; else delete link.label;
+      markDirty();
+    });
+
+    delBtn.addEventListener('click', () => {
       obj.userData.links.splice(idx, 1);
       if (!obj.userData.links.length) delete obj.userData.links;
       renderLinksPanel(obj); markDirty();
     });
+
     list.appendChild(item);
   });
 
@@ -5486,9 +6184,9 @@ function setupUI() {
     el.addEventListener('input',  cb);
     el.addEventListener('change', cb);
   }
-  bindProp('px', v => E.selected.position.x = v);
-  bindProp('py', v => E.selected.position.y = v);
-  bindProp('pz', v => E.selected.position.z = v);
+  bindProp('px', v => { E.selected.position.x = v; if (E.selected.userData._restPos) E.selected.userData._restPos.x = v; });
+  bindProp('py', v => { E.selected.position.y = v; if (E.selected.userData._restPos) E.selected.userData._restPos.y = v; });
+  bindProp('pz', v => { E.selected.position.z = v; if (E.selected.userData._restPos) E.selected.userData._restPos.z = v; });
   bindProp('sx', v => E.selected.scale.x = Math.max(0.001, v));
   bindProp('sy', v => E.selected.scale.y = Math.max(0.001, v));
   bindProp('sz', v => E.selected.scale.z = Math.max(0.001, v));
@@ -5944,6 +6642,7 @@ function setupUI() {
   });
 
   document.getElementById('btn-export-group-glb').addEventListener('click', exportGroupGLB);
+  document.getElementById('btn-model-editor').addEventListener('click', () => openModelEditor(E.selected));
 
   document.getElementById('btn-toggle-groups-panel').addEventListener('click', () => {
     const p = document.getElementById('groups-panel');
@@ -6147,6 +6846,7 @@ function setupKeys() {
     }
 
     if (e.code === 'Escape') {
+      if (_rulerState.active) { _rulerExit(); return; }
       if (E.faceModeActive)  { exitFaceMode(); return; }
       if (E.facePickMode){ cancelFacePick(); return; }
       if (E.pivotMode)   { cancelPivot(); return; }
@@ -6188,6 +6888,121 @@ function worldFromMouse(e) {
   const dir = _ray.ray.direction, o = _ray.ray.origin;
   const t = -o.y / dir.y;
   return t > 0 ? o.clone().addScaledVector(dir, t) : null;
+}
+
+// ─── Ruler tool ───────────────────────────────────────────────────────────────
+// Reference: 1 Three.js unit ≈ 20 inches (calibrated to standard 80" interior door)
+const INCHES_PER_UNIT = 20;
+
+const _rulerState = { active: false, dragging: false, start: null, end: null };
+let   _rulerLine  = null;
+let   _rulerTicks = null;
+
+function _rulerRaycast(e) {
+  mouseToNDC(e);
+  _ray.setFromCamera(_ndcM, E.camera);
+  const candidates = [];
+  E.placedGroup.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper && o.visible) candidates.push(o); });
+  if (E.groupPivot) E.groupPivot.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper && o.visible) candidates.push(o); });
+  const hits = _ray.intersectObjects(candidates, false);
+  if (hits.length) return hits[0].point.clone();
+  const floorHits = _ray.intersectObject(E.floorPlane);
+  if (floorHits.length) return floorHits[0].point.clone();
+  return null;
+}
+
+function _rulerClearScene() {
+  if (_rulerLine)  { E.scene.remove(_rulerLine);  _rulerLine.geometry.dispose();  _rulerLine.material.dispose();  _rulerLine = null; }
+  if (_rulerTicks) { E.scene.remove(_rulerTicks); _rulerTicks.geometry.dispose(); _rulerTicks.material.dispose(); _rulerTicks = null; }
+}
+
+function _rulerUpdate(start, end) {
+  _rulerClearScene();
+  if (!start || !end) return;
+
+  const dist       = start.distanceTo(end);
+  const totalInch  = dist * INCHES_PER_UNIT;
+  const feet       = Math.floor(totalInch / 12);
+  const inches     = totalInch - feet * 12;
+  const readout    = feet > 0 ? `${feet}' ${inches.toFixed(1)}"  (${totalInch.toFixed(1)}")` : `${inches.toFixed(1)}"`;
+
+  const rEl = document.getElementById('ruler-readout');
+  if (rEl) { rEl.textContent = readout; rEl.style.display = 'block'; }
+
+  // Main line
+  const lineMat = new THREE.LineBasicMaterial({ color: 0xffee44, depthTest: false });
+  const lineGeo = new THREE.BufferGeometry().setFromPoints([start, end]);
+  _rulerLine = new THREE.Line(lineGeo, lineMat);
+  _rulerLine.renderOrder = 999;
+  E.scene.add(_rulerLine);
+
+  // Tick marks at every foot along the line
+  const dir = end.clone().sub(start).normalize();
+  const perp = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+  if (perp.lengthSq() < 0.001) perp.set(0, 1, 0);
+  const FOOT_UNITS = 12 / INCHES_PER_UNIT;
+  const tickPoints = [];
+  const tickCount  = Math.floor(dist / FOOT_UNITS);
+  for (let i = 1; i <= tickCount; i++) {
+    const p = start.clone().addScaledVector(dir, i * FOOT_UNITS);
+    const hs = i % 12 === 0 ? 0.12 : (i % 3 === 0 ? 0.08 : 0.05);
+    tickPoints.push(p.clone().addScaledVector(perp, -hs), p.clone().addScaledVector(perp, hs));
+  }
+  if (tickPoints.length) {
+    const tickGeo = new THREE.BufferGeometry().setFromPoints(tickPoints);
+    const tickMat = new THREE.LineSegmentsGeometry ? undefined : new THREE.LineBasicMaterial({ color: 0xffee44, depthTest: false });
+    _rulerTicks = new THREE.LineSegments(tickGeo, tickMat ?? new THREE.LineBasicMaterial({ color: 0xffee44, depthTest: false }));
+    _rulerTicks.renderOrder = 999;
+    E.scene.add(_rulerTicks);
+  }
+}
+
+function _rulerExit() {
+  _rulerState.active   = false;
+  _rulerState.dragging = false;
+  _rulerState.start    = null;
+  _rulerState.end      = null;
+  _rulerClearScene();
+  const rEl = document.getElementById('ruler-readout');
+  if (rEl) rEl.style.display = 'none';
+  document.getElementById('btn-ruler')?.classList.remove('active');
+  document.getElementById('viewport')?.style?.setProperty('cursor', '');
+}
+
+function setupRuler() {
+  document.getElementById('btn-ruler').addEventListener('click', () => {
+    if (_rulerState.active) { _rulerExit(); return; }
+    _rulerState.active = true;
+    document.getElementById('btn-ruler').classList.add('active');
+    document.getElementById('viewport').style.cursor = 'crosshair';
+    setStatus('Ruler: click and drag to measure. Click again to reset. Esc to exit.');
+  });
+
+  const vp = document.getElementById('viewport');
+
+  vp.addEventListener('mousedown', e => {
+    if (!_rulerState.active || e.button !== 0) return;
+    const pt = _rulerRaycast(e);
+    if (!pt) return;
+    e.stopPropagation();
+    _rulerState.dragging = true;
+    _rulerState.start    = pt;
+    _rulerState.end      = pt.clone();
+    _rulerUpdate(_rulerState.start, _rulerState.end);
+  }, true);
+
+  vp.addEventListener('mousemove', e => {
+    if (!_rulerState.active || !_rulerState.dragging) return;
+    const pt = _rulerRaycast(e);
+    if (!pt) return;
+    _rulerState.end = pt;
+    _rulerUpdate(_rulerState.start, _rulerState.end);
+  }, true);
+
+  vp.addEventListener('mouseup', e => {
+    if (!_rulerState.active || e.button !== 0) return;
+    _rulerState.dragging = false;
+  }, true);
 }
 
 function setupMouse() {
@@ -6254,6 +7069,18 @@ function setupMouse() {
     // Selection - only placed objects, not ref
     mouseToNDC(e);
     _ray.setFromCamera(_ndcM, E.camera);
+
+    // Bone marker click — check first when model editor is open
+    if (E._modelEditorObj && E._boneMarkerGroup) {
+      const boneMarkers = [];
+      E._boneMarkerGroup.traverse(o => { if (o.isMesh) boneMarkers.push(o); });
+      const boneHits = _ray.intersectObjects(boneMarkers, false);
+      if (boneHits.length) {
+        selectBone(boneHits[0].object.userData.boneId);
+        return;
+      }
+    }
+
     const candidates = [];
     E.placedGroup.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper && o.visible) candidates.push(o); });
     // When group pivot is active its members live under E.groupPivot, not E.placedGroup.
@@ -6269,8 +7096,8 @@ function setupMouse() {
           const targetId = obj.userData.editorId;
           if (targetId !== undefined) {
             if (!E.linkSource.userData.links) E.linkSource.userData.links = [];
-            if (!E.linkSource.userData.links.includes(targetId)) {
-              E.linkSource.userData.links.push(targetId);
+            if (!E.linkSource.userData.links.some(l => l.id === targetId)) {
+              E.linkSource.userData.links.push({ id: targetId });
               markDirty();
             }
             renderLinksPanel(E.linkSource);
@@ -6380,8 +7207,8 @@ function animate(now = 0) {
     if (originDot)   originDot.scale.setScalar(s);
     if (originCross) originCross.scale.setScalar(s);
   }
+  if (E._modelEditorObj) _syncBoneMarkersToWorld();
   E.orbit.update();
-  E.colHelpers.forEach(h => h.update());
   E.renderer.render(E.scene, E.camera);
 }
 

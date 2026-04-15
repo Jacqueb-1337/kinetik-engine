@@ -2,6 +2,9 @@
 import * as THREE from 'three';
 import { gameState } from './globals.js';
 
+let _textureFn = null;
+export function setTextureFn(fn) { _textureFn = fn; }
+
 // ─── Level variables (set by levelLoader, mutated by custom triggers) ─────────
 export const levelVars = {};
 window.__lv = levelVars;
@@ -23,6 +26,17 @@ function _getAudioCtx() {
   if (!_audioCtx) _audioCtx = new AudioContext();
   if (_audioCtx.state === 'suspended') _audioCtx.resume();
   return _audioCtx;
+}
+export function getSharedAudioCtx() { return _getAudioCtx(); }
+
+let _decodeQueue = Promise.resolve();
+export function decodeAudioDataSafe(arrayBuffer) {
+  const ctx = _getAudioCtx();
+  const result = _decodeQueue
+    .then(() => ctx.decodeAudioData(arrayBuffer))
+    .catch(() => null);
+  _decodeQueue = result.then(() => {}, () => {});
+  return result;
 }
 
 const _activeSounds = [];
@@ -362,9 +376,8 @@ function _applyStateImmediate(obj, state) {
 
   if (posOn && state.pos) {
     if (state.posRelative) {
-      obj.position.x += state.pos[0];
-      obj.position.y += state.pos[1];
-      obj.position.z += state.pos[2];
+      const rest = obj.userData._restPos ?? obj.position;
+      obj.position.set(rest.x + state.pos[0], rest.y + state.pos[1], rest.z + state.pos[2]);
     } else {
       obj.position.set(...state.pos);
     }
@@ -465,6 +478,9 @@ function _applyStateImmediate(obj, state) {
       }
     });
   }
+  if (state.textureEnabled && state.textures && _textureFn) {
+    _textureFn(obj, state.textures);
+  }
   obj.updateMatrixWorld(true);
 }
 
@@ -486,9 +502,12 @@ function _startStateAnim(obj, state, duration) {
   let fromPos = null, toPos = null;
   if (posOn && state.pos) {
     fromPos = obj.position.clone();
-    toPos   = state.posRelative
-      ? obj.position.clone().add(new THREE.Vector3(...state.pos))
-      : new THREE.Vector3(...state.pos);
+    if (state.posRelative) {
+      const rest = obj.userData._restPos ?? obj.position;
+      toPos = new THREE.Vector3(rest.x + state.pos[0], rest.y + state.pos[1], rest.z + state.pos[2]);
+    } else {
+      toPos = new THREE.Vector3(...state.pos);
+    }
   }
 
   let fromQ = null, toQ = null;
@@ -562,6 +581,9 @@ function _startStateAnim(obj, state, duration) {
   // Boolean fields: apply immediately at animation start
   if (state.collidableEnabled && state.collidable != null) {
     obj.userData.collidable = state.collidable;
+  }
+  if (state.textureEnabled && state.textures && _textureFn) {
+    _textureFn(obj, state.textures);
   }
   if (state.castShadowEnabled && state.castShadow != null) {
     const v = !!state.castShadow;

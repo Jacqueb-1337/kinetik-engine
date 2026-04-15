@@ -6,6 +6,7 @@ import { gameState, cameraDistance, platformConfig } from './globals.js';
 import { isFreecamActive as isFreecamActiveMobile } from './mobileControls.js';
 import { isFreecamActive as isFreecamActiveDesktop } from './input.js';
 import { advanceObjectState, fireButtonTrigger } from './stateManager.js';
+import { refreshInteractTooltip } from './physics.js';
 
 let _knobSaveHook = null;
 export function setKnobSaveHook(fn) { _knobSaveHook = fn; }
@@ -374,22 +375,47 @@ export function initScene() {
     }, { passive: false });
     document.addEventListener('touchend', () => { _knobDragging = null; });
 
-    // Right-click = interact with highlighted object
+    // Right-click / left-click = interact or fire per-link keybind
     document.addEventListener('mousedown', (e) => {
-      if (e.button !== 2) return; // right button only
+      const isRight = e.button === 2;
+      const isLeft = e.button === 0;
+      if (!isRight && !isLeft) return;
       if (gameState.isPaused) return;
-      if (!gameState.isPointerLocked && !gameState.mobileInteractPending) return;
-      gameState.mobileInteractPending = false;
+      if (isRight) {
+        if (!gameState.isPointerLocked && !gameState.mobileInteractPending) return;
+        gameState.mobileInteractPending = false;
+      } else {
+        if (!gameState.isPointerLocked) return;
+      }
+      const obj = gameState.interactObj;
+      const mouseKey = isLeft ? 'MouseLeft' : 'MouseRight';
+      if (obj?.userData.keyedLinks?.length) {
+        for (const kl of obj.userData.keyedLinks) {
+          if (kl.key === mouseKey && kl.obj) {
+            advanceObjectState(kl.obj);
+            refreshInteractTooltip();
+            return;
+          }
+        }
+      }
       // Hardcoded pullstring interact — COMMENTED OUT: use editor-placed state objects instead
       // if (gameState.interactTarget === 'pullstring' && gameState.pullStringTab) { ... }
-      if (gameState.interactTarget === 'state-obj' && gameState.interactObj) {
-        advanceObjectState(gameState.interactObj);
-        // Refresh tooltip text to reflect next state
-        const obj    = gameState.interactObj;
-        const nextIdx = (obj.userData.currentState + 1) % obj.userData.states.length;
-        const label   = obj.userData.states[nextIdx]?.interactLabel || '[RIGHT CLICK] Interact';
-        const el = document.getElementById('interact-tooltip');
-        if (el) el.textContent = label;
+      if (isRight && gameState.interactTarget === 'state-obj' && obj) {
+        advanceObjectState(obj);
+        refreshInteractTooltip();
+      }
+    });
+    // Keydown handler for per-link keybinds
+    document.addEventListener('keydown', (e) => {
+      if (gameState.isPaused || !gameState.isPointerLocked) return;
+      const obj = gameState.interactObj;
+      if (!obj?.userData.keyedLinks?.length) return;
+      for (const kl of obj.userData.keyedLinks) {
+        if (kl.key === e.code && kl.obj) {
+          advanceObjectState(kl.obj);
+          refreshInteractTooltip();
+          break;
+        }
       }
     });
     // Prevent context menu appearing on right-click in game

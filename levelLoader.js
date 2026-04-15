@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
-import { initStatefulObjects, levelVars } from './stateManager.js';
+import { initStatefulObjects, levelVars, setTextureFn } from './stateManager.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
@@ -245,6 +245,19 @@ function _computeFaceGroupsRuntime(mesh) {
   return groups;
 }
 
+setTextureFn((obj, texOverrides) => {
+  const apply = mesh => {
+    if (!mesh.userData.faceTextures) mesh.userData.faceTextures = {};
+    for (const [k, v] of Object.entries(texOverrides)) {
+      if (!v?.name) delete mesh.userData.faceTextures[k];
+      else mesh.userData.faceTextures[k] = v;
+    }
+    applyFaceTextures(mesh, mesh.userData.faceTextures, mesh.userData._baseColor ?? '#aaaacc');
+  };
+  if (obj.isMesh) apply(obj);
+  else obj.traverse(c => { if (c.isMesh) apply(c); });
+});
+
 // Primitive geometry factories matching the editor
 const PRIM_GEO = {
   box:      () => new THREE.BoxGeometry(1, 1, 1),
@@ -257,6 +270,9 @@ function applyTransform(obj, entry) {
   obj.position.set(entry.pos[0], entry.pos[1], entry.pos[2]);
   obj.rotation.set(entry.rot[0] * RAD, entry.rot[1] * RAD, entry.rot[2] * RAD);
   obj.scale.set(entry.size[0], entry.size[1], entry.size[2]);
+  obj.userData._restPos   = obj.position.clone();
+  obj.userData._restRot   = [entry.rot[0], entry.rot[1], entry.rot[2]];
+  obj.userData._restScale = obj.scale.clone();
 }
 
 function spawnPrim(entry) {
@@ -910,18 +926,23 @@ export async function loadLevel(name = 'main') {
 
   console.log(`[levelLoader] Spawned ${spawned.length} of ${data.objects.length} objects from level "${name}"`);
 
-  // Build statefulObjects list and apply initial state transforms
-  gameState.statefulObjects = spawned.filter(o => o.userData.states?.length);
-
-  // Resolve object links: entry.links = [editorId, ...] → obj.userData.linkedObjects = [obj, ...]
-  // Build id→object map from spawned objects (excludes non-spawned types like save-trigger)
+  // Resolve object links into linkedObjects (keyless, auto-fired) and keyedLinks (per-key)
   const idMap = new Map(spawned.map(o => [o.userData.editorId, o]));
   for (const entry of data.objects) {
     if (!entry?.links?.length) continue;
     const obj = idMap.get(entry.id);
     if (!obj) continue;
-    obj.userData.linkedObjects = entry.links.map(id => idMap.get(id)).filter(Boolean);
+    const normalized = entry.links.map(l => typeof l === 'number' ? { id: l } : l);
+    obj.userData.linkedObjects = normalized.filter(l => !l.key).map(l => idMap.get(l.id)).filter(Boolean);
+    const keyed = normalized.filter(l => !!l.key).map(l => {
+      const target = idMap.get(l.id);
+      return target ? { obj: target, key: l.key, label: l.label } : null;
+    }).filter(Boolean);
+    if (keyed.length) obj.userData.keyedLinks = keyed;
   }
+
+  // Build statefulObjects after resolving links so objects with only keyedLinks are included
+  gameState.statefulObjects = spawned.filter(o => o.userData.states?.length || o.userData.keyedLinks?.length);
 
   initStatefulObjects();
 

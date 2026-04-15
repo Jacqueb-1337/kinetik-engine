@@ -23,48 +23,54 @@ A lightweight 3D game engine built on [Three.js](https://threejs.org/) for deskt
 
 ## Quick Start — New Game Project
 
-1. **Add Kinetik as a submodule**
+1. **Create a folder and add Kinetik as a submodule**
    ```bash
+   mkdir my-game && cd my-game && git init
    git submodule add https://github.com/Jacqueb-1337/kinetik-engine.git src/core
    ```
 
-2. **Install dependencies** — Three.js is the only hard requirement:
+2. **Run the scaffold script** — copies `electron-main.js`, `preload.js`, `package.json`, `vite.config.js`, `.gitignore`, and all required asset directories into the project root:
    ```bash
-   npm install three
+   node src/core/init.js
    ```
 
-3. **Create your entry point** (`src/main.js`):
+3. **Set your game name** — open the generated `package.json` and update `name`, `build.appId`, and `build.productName`.
+
+4. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+5. **Create your entry point** (`src/main.js`):
    ```js
    import { gameState } from './core/globals.js';
    import { initScene, updateCamera } from './core/scene.js';
    import { initInput } from './core/input.js';
    import { loadLevel } from './core/levelLoader.js';
    import { update as physicsUpdate } from './core/physics.js';
-   import { initStatefulObjects, updateStateSounds, updateStateAnimations } from './core/stateManager.js';
+   import { updateStateAnimations } from './core/stateManager.js';
 
    await initScene();
    initInput();
-   await loadLevel('main');        // loads levels/main.json
-   initStatefulObjects();
+   await loadLevel('main');
 
    function loop(delta) {
      physicsUpdate(delta);
      updateCamera();
-     updateStateSounds();
      updateStateAnimations(delta);
      gameState.renderer.render(gameState.scene, gameState.camera);
    }
    ```
 
-4. **Create `levels/main.json`** — start with an empty level:
+6. **Create `levels/main.json`** — start with an empty level:
    ```json
    { "objects": [], "playerStart": { "x": 0, "y": 1, "z": 0 } }
    ```
 
-5. **Run**:
+7. **Run**:
    ```bash
-   npm start        # Electron desktop
-   npm run dev      # Vite dev server (browser)
+   npm start          # Electron desktop (game)
+   npm run editor     # Electron desktop (visual editor)
    ```
 
 ---
@@ -86,7 +92,7 @@ The editor opens `initEditor()` from `editor.js` instead of the game loop. From 
 - Place player spawn, save triggers, and interact zones
 - Export the scene back to `levels/<name>.json`
 
-To open the editor in a **new game environment**, point `webDir` / `index.html` at `src/core/editor.js` and pass `--editor` at launch.
+To open the editor in a new project, follow the Quick Start above and use `npm run editor`.
 
 ---
 

@@ -8,6 +8,57 @@ let _tooltipHook = null;
 export function setInteractHook(fn) { _interactHook = fn; }
 export function setTooltipHook(fn) { _tooltipHook = fn; }
 
+function _keyDisplay(code) {
+  if (!code) return '?';
+  if (code === 'MouseLeft') return 'LMB';
+  if (code === 'MouseRight') return 'RMB';
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code === 'Space') return 'SPACE';
+  if (code === 'ShiftLeft' || code === 'ShiftRight') return 'SHIFT';
+  if (code === 'ControlLeft' || code === 'ControlRight') return 'CTRL';
+  if (code === 'AltLeft' || code === 'AltRight') return 'ALT';
+  return code;
+}
+
+function _escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function _buildTooltipLines(obj) {
+  const lines = [];
+  if (!obj.userData.noSelfInteract && obj.userData.states?.length) {
+    const nextIdx = ((obj.userData.currentState ?? 0) + 1) % obj.userData.states.length;
+    lines.push(obj.userData.states[nextIdx]?.interactLabel || '[RIGHT CLICK] Interact');
+  }
+  for (const kl of (obj.userData.keyedLinks ?? [])) {
+    const tgt = kl.obj;
+    const keyDisp = _keyDisplay(kl.key);
+    if (kl.label) {
+      lines.push(kl.label);
+    } else if (tgt.userData.states?.length) {
+      const ni = ((tgt.userData.currentState ?? 0) + 1) % tgt.userData.states.length;
+      lines.push(tgt.userData.states[ni]?.interactLabel || `[${keyDisp}] Interact`);
+    } else {
+      lines.push(`[${keyDisp}] Interact`);
+    }
+  }
+  return lines;
+}
+
+function _renderInteractTooltip(el, obj) {
+  const lines = _buildTooltipLines(obj);
+  el.innerHTML = lines.map(l => `<div>${_escHtml(l)}</div>`).join('');
+  el.classList.toggle('visible', lines.length > 0);
+}
+
+export function refreshInteractTooltip() {
+  const obj = gameState.interactObj;
+  const el = document.getElementById('interact-tooltip');
+  if (!el || !obj) return;
+  _renderInteractTooltip(el, obj);
+}
+
 function getPlayerBoundingBox() {
   if (!gameState.player) return new THREE.Box3();
   const box = new THREE.Box3();
@@ -468,7 +519,9 @@ export function update(delta) {
       // Walk up to find the root stateful object
       let root = hits[0].object;
       while (root.parent && !root.userData.states) root = root.parent;
-      if (root.userData.states?.length && !root.userData.noSelfInteract) {
+      const canSelf = root.userData.states?.length && !root.userData.noSelfInteract;
+      const hasKeyedLinks = root.userData.keyedLinks?.length > 0;
+      if (canSelf || hasKeyedLinks) {
         newTarget = 'state-obj';
         gameState.interactObj = root;
       }
@@ -482,13 +535,7 @@ export function update(delta) {
     const el = document.getElementById('interact-tooltip');
     if (el) {
       if (newTarget === 'state-obj') {
-        const obj = gameState.interactObj;
-        const stateIdx   = (obj?.userData.currentState ?? 0);
-        const states     = obj?.userData.states ?? [];
-        const nextIdx    = (stateIdx + 1) % states.length;
-        const label      = states[nextIdx]?.interactLabel || '[RIGHT CLICK] Interact';
-        el.textContent   = label;
-        el.classList.add('visible');
+        _renderInteractTooltip(el, gameState.interactObj);
       } else if (_tooltipHook && _tooltipHook(newTarget, el)) {
         // handled by game
       } else {

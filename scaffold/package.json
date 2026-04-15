@@ -1,0 +1,41 @@
+{
+  "name": "my-game",
+  "version": "0.1.0",
+  "description": "",
+  "main": "electron-main.js",
+  "scripts": {
+    "start":         "electron .",
+    "editor":        "electron . --editor",
+    "build:win":     "vite build && electron-builder --windows",
+    "build:mac":     "vite build && electron-builder --mac",
+    "build:linux":   "vite build && electron-builder --linux",
+    "build:android": "vite build && npx cap sync android",
+    "android:init":  "npx cap add android",
+    "android:open":  "npx cap open android",
+    "android:sync":  "npx cap sync android"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1",
+    "vite": "^5.0.11"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "gsap": "^3.12.5",
+    "three": "^0.163.0",
+    "three-bvh-csg": "^0.0.17"
+  },
+  "build": {
+    "appId": "com.example.mygame",
+    "productName": "My Game",
+    "files": ["**/*", "!src/core/.git"],
+    "directories": { "output": "dist" },
+    "win":   { "target": "nsis" },
+    "mac":   { "target": "dmg" },
+    "linux": { "target": "AppImage" }
+  }
+}
