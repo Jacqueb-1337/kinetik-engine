@@ -339,7 +339,9 @@ export function update(delta) {
   const playerCapsule = getPlayerCylinder();
   const moveAmount = MOVE_SPEED * delta * gameState.currentSpeed;
 
-  // Build collider list once per frame, pre-filtered by proximity
+  // Build collider list once per frame, pre-filtered by proximity.
+  // Use each object's bounding sphere radius to inflate the cull distance —
+  // otherwise long walls get excluded when the player stands near their far end.
   const _px = gameState.player.position.x, _pz = gameState.player.position.z;
   const CULL_DIST = 8;
   const checkObjects = gameState.scene.children.filter(obj => {
@@ -348,8 +350,14 @@ export function update(delta) {
       obj !== gameState.player;
     const isCollidable = obj.userData?.collidable || gameState.collidableObjects?.includes(obj);
     if (!isWall && !isCollidable) return false;
+    if (obj.userData._physCullRadius === undefined) {
+      const box = new THREE.Box3().setFromObject(obj);
+      const sz = box.getSize(new THREE.Vector3());
+      obj.userData._physCullRadius = Math.sqrt(sz.x * sz.x + sz.z * sz.z) / 2;
+    }
     const dx = obj.position.x - _px, dz = obj.position.z - _pz;
-    return (dx*dx + dz*dz) < CULL_DIST * CULL_DIST;
+    const r = CULL_DIST + obj.userData._physCullRadius;
+    return (dx * dx + dz * dz) < r * r;
   });
 
   // Three ray heights covering the full player capsule: ankle, centre, head.
@@ -361,16 +369,24 @@ export function update(delta) {
   const clearanceMargin = 0.3;
 
   function checkBlocked(dir3) {
-    for (const ry of rayHeights) {
-      gameState.raycaster.set(
-        new THREE.Vector3(playerCapsule.center.x, ry, playerCapsule.center.z),
-        dir3
-      );
-      const hits = gameState.raycaster.intersectObjects(checkObjects, true);
-      if (hits.length > 0 && hits[0].distance <= playerCapsule.radius) {
-        const obsBox = new THREE.Box3().setFromObject(hits[0].object);
-        if (playerBottom < obsBox.max.y - clearanceMargin && playerTop > obsBox.min.y) {
-          return true;
+    // Cast from capsule center AND both lateral edges (perpendicular to movement).
+    // Edge rays catch corner geometry that the center ray misses when sliding into a seam.
+    const perp = new THREE.Vector3(-dir3.z, 0, dir3.x).multiplyScalar(playerCapsule.radius * 0.9);
+    const cx = playerCapsule.center.x, cz = playerCapsule.center.z;
+    const rayOrigins = [
+      { x: cx,           z: cz,           limit: playerCapsule.radius },
+      { x: cx + perp.x,  z: cz + perp.z,  limit: 0.15 },
+      { x: cx - perp.x,  z: cz - perp.z,  limit: 0.15 },
+    ];
+    for (const { x: ox, z: oz, limit } of rayOrigins) {
+      for (const ry of rayHeights) {
+        gameState.raycaster.set(new THREE.Vector3(ox, ry, oz), dir3);
+        const hits = gameState.raycaster.intersectObjects(checkObjects, true);
+        if (hits.length > 0 && hits[0].distance <= limit) {
+          const obsBox = new THREE.Box3().setFromObject(hits[0].object);
+          if (playerBottom < obsBox.max.y - clearanceMargin && playerTop > obsBox.min.y) {
+            return true;
+          }
         }
       }
     }
@@ -506,8 +522,8 @@ export function update(delta) {
       // Walk up to find the root stateful object
       let root = hits[0].object;
       while (root.parent && !root.userData.states) root = root.parent;
-      const canSelf = root.userData.states?.length && !root.userData.noSelfInteract;
-      const hasKeyedLinks = root.userData.keyedLinks?.length > 0;
+      const canSelf = root.userData.states?.length && !root.userData.noSelfInteract && root.userData.stateInteractive !== false;
+      const hasKeyedLinks = root.userData.keyedLinks?.length > 0 && root.userData.stateInteractive !== false;
       if (canSelf || hasKeyedLinks) {
         newTarget = 'state-obj';
         gameState.interactObj = root;

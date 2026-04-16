@@ -224,6 +224,9 @@ async function init() {
         finalizeGroupTransform();
         if (regid && E.groups[regid]) beginGroupTransform(regid);
       }
+      if (E.transform.mode === 'scale' && E.selected?.userData.faceTextures) {
+        _reapplyWorldTiling(E.selected);
+      }
       E.wasDragging = true;
       markDirty();
       syncPropsFromSelected();
@@ -671,6 +674,40 @@ function levelToJSON() {
       }
       entry.scale = entry.size;
     }
+    if (isZombieType(obj.userData.primType)) {
+      const t = obj.userData.primType;
+      if (t === 'zombie-spawn') {
+        entry.spawnRadius = obj.userData.spawnRadius ?? 0;
+        if (obj.userData.actorModel)                                          entry.actorModel    = obj.userData.actorModel;
+        if (obj.userData.actorVariants?.length)                               entry.actorVariants = obj.userData.actorVariants;
+        if (obj.userData.actorRoles && Object.keys(obj.userData.actorRoles).length) entry.actorRoles = obj.userData.actorRoles;
+        if (obj.userData.meshOverrides && Object.keys(obj.userData.meshOverrides).length) entry.meshOverrides = obj.userData.meshOverrides;
+        if ((obj.userData.roundMin ?? 1) !== 1) entry.roundMin = obj.userData.roundMin;
+        if (obj.userData.roundMax != null)      entry.roundMax = obj.userData.roundMax;
+      } else if (t === 'zom-wallbuy') {
+        entry.weaponSlug      = obj.userData.weaponSlug      ?? '';
+        entry.wallBuyCost     = obj.userData.wallBuyCost     ?? 500;
+        entry.wallBuyAmmoCost = obj.userData.wallBuyAmmoCost ?? 250;
+        if (obj.userData.weaponDef && Object.keys(obj.userData.weaponDef).length) entry.weaponDef = obj.userData.weaponDef;
+        if (obj.userData.weaponModelPath) entry.weaponModelPath = obj.userData.weaponModelPath;
+        if (obj.userData.weaponModelOpacity != null && obj.userData.weaponModelOpacity !== 1) entry.weaponModelOpacity = obj.userData.weaponModelOpacity;
+      } else if (t === 'zom-perk') {
+        entry.perkId       = obj.userData.perkId       ?? '';
+        if (obj.userData.perkCost != null) entry.perkCost = obj.userData.perkCost;
+        entry.requirePower = obj.userData.requirePower !== false;
+      } else if (t === 'zom-mystery') {
+        if (obj.userData.mysteryBoxCost != null) entry.mysteryBoxCost = obj.userData.mysteryBoxCost;
+        entry.weaponPool = obj.userData.weaponPool ?? [];
+      } else if (t === 'zom-pap') {
+        if (obj.userData.tierCount != null)    entry.papTierCount = obj.userData.tierCount;
+        if (obj.userData.tierCosts?.length)    entry.papTierCosts = obj.userData.tierCosts;
+        entry.requirePower = obj.userData.requirePower !== false;
+      } else if (t === 'zom-ammo') {
+        entry.ammoCost = obj.userData.ammoCost ?? 500;
+      } else if (t === 'zom-door') {
+        entry.doorCost = obj.userData.doorCost ?? 750;
+      }
+    }
     objects.push(entry);
   });
 
@@ -688,7 +725,17 @@ function levelToJSON() {
     E.groupPivot.add(m);
   });
 
-  return { levelName: E.levelName, nextId: E.nextId, objects, groups, vars: E.levelVars, fogDensity: E.fogDensity ?? undefined };
+  const out = { levelName: E.levelName, nextId: E.nextId };
+  if (E.isZombiesMap) {
+    out.isZombiesMap = true;
+    if (E.zombiesMapDisplayName) out.zombiesMapDisplayName = E.zombiesMapDisplayName;
+    if (E.zombiesConfig) out.zombiesConfig = E.zombiesConfig;
+  }
+  out.objects = objects;
+  out.groups = groups;
+  out.vars = E.levelVars;
+  if (E.fogDensity != null) out.fogDensity = E.fogDensity;
+  return out;
 }
 
 async function saveLevel() {
@@ -726,6 +773,9 @@ async function loadLevel(name) {
   }
   E.levelVars = data?.vars ? { ...data.vars } : {};
   E.fogDensity = (data?.fogDensity != null) ? data.fogDensity : null;
+  E.isZombiesMap = data?.isZombiesMap ?? false;
+  E.zombiesMapDisplayName = data?.zombiesMapDisplayName ?? null;
+  E.zombiesConfig = data?.zombiesConfig ?? null;
   _updateFogInput();
   renderVarsPanel();
 
@@ -761,6 +811,9 @@ function clearPlaced() {
   E.groupCollapsed = {};
   E.levelVars = {};
   E.fogDensity = null;
+  E.isZombiesMap = false;
+  E.zombiesMapDisplayName = null;
+  E.zombiesConfig = null;
   _updateFogInput();
   updateSceneList();
   updateGroupsPanel();
@@ -968,7 +1021,8 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
 function applyEntryTransform(obj, entry) {
   obj.position.set(...entry.pos);
   obj.rotation.set(entry.rot[0]*RAD, entry.rot[1]*RAD, entry.rot[2]*RAD);
-  obj.scale.set(...entry.size);
+  const sz = entry.size ?? entry.scale ?? [1, 1, 1];
+  obj.scale.set(...sz);
   obj.userData._restPos   = obj.position.clone();
   obj.userData._restRot   = [entry.rot[0], entry.rot[1], entry.rot[2]];
   obj.userData._restScale = obj.scale.clone();
@@ -984,6 +1038,15 @@ const PRIM_GEOS = {
   'save-trigger':   () => new THREE.BoxGeometry(2, 2, 2),
   'custom-trigger': () => new THREE.BoxGeometry(2, 2, 2),
   'player-spawn':   () => { const g = new THREE.ConeGeometry(0.3, 1.0, 8); g.translate(0, 0.5, 0); return g; },
+  'zombie-spawn': () => new THREE.CylinderGeometry(0.5, 0.5, 1, 8),
+  'zom-wallbuy':  () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-perk':     () => new THREE.CylinderGeometry(0.5, 0.5, 1, 8),
+  'zom-mystery':  () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-pap':      () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-ammo':     () => new THREE.CylinderGeometry(0.5, 0.5, 1, 8),
+  'zom-power':    () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-door':     () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-drop':     () => new THREE.SphereGeometry(0.5, 8, 6),
 };
 
 function isLightType(t) {
@@ -996,6 +1059,15 @@ function isTriggerType(t) {
 
 function isPlayerSpawnType(t) {
   return t === 'player-spawn';
+}
+
+function isZombieType(t) {
+  return ['zombie-spawn','zom-wallbuy','zom-perk','zom-mystery','zom-pap','zom-ammo','zom-power','zom-door','zom-drop'].includes(t);
+}
+
+function zombieTypeColor(t) {
+  return ({'zombie-spawn':0x44ff44,'zom-wallbuy':0xffaa33,'zom-perk':0xff3333,'zom-mystery':0xffdd00,
+           'zom-pap':0xdd44ff,'zom-ammo':0x44ddff,'zom-power':0xffffff,'zom-door':0xaa6622,'zom-drop':0x88ff44})[t] ?? 0xffffff;
 }
 
 const LIGHT_DEFAULTS = {
@@ -1247,14 +1319,17 @@ function makePrimMesh(type, color = 0xaaaacc) {
   if (!geo) return null;
   const isTrigger = isTriggerType(type);
   const isSpawn   = isPlayerSpawnType(type);
+  const isZombie  = isZombieType(type);
   const trigColor = type === 'custom-trigger' ? 0xffaa44 : 0x44ffcc;
   const mat = isTrigger
     ? new THREE.MeshBasicMaterial({ color: trigColor, wireframe: true, opacity: 0.6, transparent: true })
     : isSpawn
     ? new THREE.MeshBasicMaterial({ color: 0x00ff88, wireframe: true })
+    : isZombie
+    ? new THREE.MeshBasicMaterial({ color: zombieTypeColor(type), wireframe: true, opacity: 0.7, transparent: true })
     : new THREE.MeshStandardMaterial({ color });
   const mesh = new THREE.Mesh(geo, mat);
-  if (!isTrigger && !isSpawn) { mesh.castShadow = mesh.receiveShadow = true; }
+  if (!isTrigger && !isSpawn && !isZombie) { mesh.castShadow = mesh.receiveShadow = true; }
   return mesh;
 }
 
@@ -1680,6 +1755,49 @@ function applyFaceTextures(mesh) {
   syncOpacityWireframe(mesh);
 }
 
+function _attachWallBuyModel(mesh) {
+  const existing = mesh.children.find(c => c.userData.isWbModelPreview);
+  if (existing) { mesh.remove(existing); existing.traverse(c => { c.geometry?.dispose(); if (c.material) (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => m.dispose()); }); }
+  const path = mesh.userData.weaponModelPath;
+  if (!path) return;
+  const loader = new GLTFLoader();
+  loader.load(ASSET_ROOT + path, gltf => {
+    const mdl = gltf.scene;
+    mdl.userData.isWbModelPreview = true;
+    mdl.userData.isEditorHelper   = true;
+    const opacity = mesh.userData.weaponModelOpacity ?? 1;
+    const emissiveIntensity = mesh.userData.emissiveIntensity ?? 0;
+    const emissiveColor = mesh.userData.emissiveColor ?? '#ffffff';
+    mdl.traverse(c => {
+      if (!c.isMesh || !c.material) return;
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => {
+        if (opacity < 1) { m.transparent = true; m.opacity = opacity; }
+        if (emissiveIntensity > 0 && 'emissive' in m) {
+          m.emissive.set(emissiveColor);
+          m.emissiveIntensity = emissiveIntensity;
+        }
+        m.needsUpdate = true;
+      });
+    });
+    mesh.add(mdl);
+    E.renderer.render(E.scene, E.camera);
+  }, undefined, err => console.warn('[editor] wallbuy preview model failed:', err));
+}
+
+function _reapplyWorldTiling(mesh) {
+  const ft = mesh.userData.faceTextures;
+  if (!ft) return;
+  let changed = false;
+  for (const [key, cfg] of Object.entries(ft)) {
+    if (cfg.tilingMode !== 'world' || !cfg.worldScale) continue;
+    const [rx, ry] = computeWorldRepeat(mesh, key, cfg.worldScale);
+    cfg.rx = rx; cfg.ry = ry;
+    changed = true;
+  }
+  if (changed) applyFaceTextures(mesh);
+}
+
 // Compute repeat values for world-based tiling on a box face
 function computeWorldRepeat(mesh, faceKey, unitsPerTile) {
   if (!unitsPerTile || unitsPerTile <= 0) return [1, 1];
@@ -1780,6 +1898,65 @@ function spawnPrimFromEntry(entry) {
     if (entry.noSelfInteract) group.userData.noSelfInteract = true;
     E.placedGroup.add(group);
     return group;
+  }
+
+  if (isZombieType(entry.type)) {
+    const mesh = makePrimMesh(entry.type, entry.color);
+    if (!mesh) return null;
+    applyEntryTransform(mesh, entry);
+    mesh.userData.primType   = entry.type;
+    mesh.userData.editorId   = entry.id;
+    mesh.userData.label      = entry.label || '';
+    mesh.userData.collidable = false;
+    mesh.userData._baseColor = entry.color ?? '#aaaacc';
+    if (entry.type === 'zombie-spawn') {
+      mesh.userData.spawnRadius   = entry.spawnRadius   ?? 0;
+      mesh.userData.actorModel    = entry.actorModel    ?? '';
+      mesh.userData.actorVariants = entry.actorVariants ? entry.actorVariants.map(v => ({ ...v })) : [];
+      mesh.userData.actorRoles    = entry.actorRoles    ? { ...entry.actorRoles }    : {};
+      mesh.userData.meshOverrides = entry.meshOverrides ? { ...entry.meshOverrides } : {};
+      mesh.userData.roundMin      = entry.roundMin ?? 1;
+      mesh.userData.roundMax      = entry.roundMax ?? null;
+    } else if (entry.type === 'zom-wallbuy') {
+      mesh.userData.weaponSlug        = entry.weaponSlug        ?? '';
+      mesh.userData.wallBuyCost       = entry.wallBuyCost       ?? 500;
+      mesh.userData.wallBuyAmmoCost   = entry.wallBuyAmmoCost   ?? 250;
+      mesh.userData.weaponDef         = entry.weaponDef         ? { ...entry.weaponDef } : null;
+      mesh.userData.weaponModelPath   = entry.weaponModelPath   ?? '';
+      mesh.userData.weaponModelOpacity = entry.weaponModelOpacity ?? 1;
+      if (entry.weaponModelPath) _attachWallBuyModel(mesh);
+    } else if (entry.type === 'zom-perk') {
+      mesh.userData.perkId       = entry.perkId       ?? '';
+      mesh.userData.perkCost     = entry.perkCost     ?? null;
+      mesh.userData.requirePower = entry.requirePower !== false;
+    } else if (entry.type === 'zom-mystery') {
+      mesh.userData.mysteryBoxCost = entry.mysteryBoxCost ?? null;
+      mesh.userData.weaponPool     = entry.weaponPool ? [...entry.weaponPool] : [];
+    } else if (entry.type === 'zom-pap') {
+      mesh.userData.tierCount    = entry.papTierCount ?? null;
+      mesh.userData.tierCosts    = entry.papTierCosts ? [...entry.papTierCosts] : [];
+      mesh.userData.requirePower = entry.requirePower !== false;
+    } else if (entry.type === 'zom-ammo') {
+      mesh.userData.ammoCost = entry.ammoCost ?? 500;
+    } else if (entry.type === 'zom-door') {
+      mesh.userData.doorCost = entry.doorCost ?? 750;
+    }
+    mesh.name = entry.label || (entry.type + '_' + entry.id);
+    if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
+    if (entry.links?.length)  mesh.userData.links = _normalizeLinks(entry.links);
+    if (entry.opacity !== undefined) {
+      mesh.userData._opacity = entry.opacity;
+      setMeshOpacity(mesh, entry.opacity);
+    }
+    if (entry.emissiveIntensity > 0 && mesh.material) {
+      mesh.userData.emissiveIntensity = entry.emissiveIntensity;
+      mesh.userData.emissiveColor     = entry.emissiveColor ?? '#ffffff';
+      const col = new THREE.Color(entry.emissiveColor ?? '#ffffff');
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      mats.forEach(m => { if ('emissive' in m) { m.emissive.copy(col); m.emissiveIntensity = entry.emissiveIntensity; } });
+    }
+    E.placedGroup.add(mesh);
+    return mesh;
   }
 
   const mesh = makePrimMesh(entry.type, entry.color);
@@ -2279,6 +2456,10 @@ function updateProps(obj) {
     if (geomProps)        geomProps.style.display        = 'none';
     if (textureSection)   textureSection.style.display   = 'none';
     if (triggerProps) triggerProps.style.display = 'none';
+    ['zom-wallbuy-section','zombie-spawn-section','zom-perk-section','zom-mystery-section',
+     'zom-pap-section','zom-ammo-section','zom-door-section'].forEach(id => {
+      const s = document.getElementById(id); if (s) s.style.display = 'none';
+    });
     const actorSpawnSection0 = document.getElementById('actor-spawn-section');
     if (actorSpawnSection0) actorSpawnSection0.style.display = 'none';
     setGroupDisplay(null);
@@ -2293,7 +2474,9 @@ function updateProps(obj) {
   const isMerged    = obj.userData.primType === 'merged-model';
   const isActorSpawn = obj.userData.primType === 'actor-spawn';
   const isImageModel = obj.userData.primType === 'image-model';
-  const isPrimitive = !isLight && !isTrigger && obj.userData.primType !== 'model' && !isCsgResult && !isMerged && !isActorSpawn && !isImageModel;
+  const isZombie    = isZombieType(obj.userData.primType);
+  const isWallBuy   = obj.userData.primType === 'zom-wallbuy';
+  const isPrimitive = !isLight && !isTrigger && !isZombie && obj.userData.primType !== 'model' && !isCsgResult && !isMerged && !isActorSpawn && !isImageModel;
   const hasTexture  = isPrimitive || isCsgResult;
   const isModel     = obj.userData.primType === 'model' || isMerged;
 
@@ -2503,6 +2686,117 @@ function updateProps(obj) {
         if (opEl  && document.activeElement !== opEl)  opEl.value  = obj.userData.triggerVarOp    || 'set';
         if (valEl && document.activeElement !== valEl) valEl.value = String(obj.userData.triggerVarValue ?? 'true');
       }
+    }
+  }
+
+  // Zombie type sections — hide all first, then show the matching one below
+  ['zom-wallbuy-section','zombie-spawn-section','zom-perk-section','zom-mystery-section',
+   'zom-pap-section','zom-ammo-section','zom-door-section'].forEach(id => {
+    const s = document.getElementById(id); if (s) s.style.display = 'none';
+  });
+
+  // Wall buy weapon definition section
+  const wbSection = document.getElementById('zom-wallbuy-section');
+  if (wbSection) {
+    wbSection.style.display = isWallBuy ? '' : 'none';
+    if (isWallBuy) {
+      const ud  = obj.userData;
+      const def = ud.weaponDef ?? {};
+      const setV = (id, val) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = val ?? ''; };
+      const setC = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+      setV('wb-slug',         ud.weaponSlug           ?? '');
+      setV('wb-label',        def.label               ?? '');
+      setV('wb-cost',         ud.wallBuyCost          ?? 500);
+      setV('wb-ammo-cost',    ud.wallBuyAmmoCost      ?? 250);
+      setV('wb-damage',       def.damage              ?? '');
+      setV('wb-clip',         def.clipSize            ?? '');
+      setV('wb-reserve',      def.reserveAmmo         ?? '');
+      setV('wb-reload',       def.reloadTime          ?? '');
+      setV('wb-firerate',     def.fireRate            ?? '');
+      setV('wb-spread',       def.spreadAngle         ?? '');
+      setV('wb-pellets',      def.pelletsPerShot      ?? '');
+      setV('wb-model-opacity',ud.weaponModelOpacity   ?? 1);
+      setC('wb-auto',         def.isAuto);
+      const modelEl = document.getElementById('wb-model-name');
+      if (modelEl) modelEl.textContent = ud.weaponModelPath ? (ud.weaponModelPath.split('/').pop() || ud.weaponModelPath) : '-';
+    }
+  }
+
+  // Zombie spawn section
+  const zsSection = document.getElementById('zombie-spawn-section');
+  if (zsSection) {
+    const isZS = obj.userData.primType === 'zombie-spawn';
+    zsSection.style.display = isZS ? '' : 'none';
+    if (isZS) {
+      const setV = (id, val) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = val ?? ''; };
+      setV('zs-radius',    obj.userData.spawnRadius ?? 0);
+      setV('zs-round-min', obj.userData.roundMin ?? 1);
+      setV('zs-round-max', obj.userData.roundMax ?? '');
+      const modelEl = document.getElementById('zs-model-name');
+      if (modelEl) modelEl.textContent = obj.userData.actorModel ? (obj.userData.actorModel.split('/').pop() || obj.userData.actorModel) : '-';
+    }
+  }
+
+  // Perk section
+  const perkSection = document.getElementById('zom-perk-section');
+  if (perkSection) {
+    const isPerk = obj.userData.primType === 'zom-perk';
+    perkSection.style.display = isPerk ? '' : 'none';
+    if (isPerk) {
+      const setV = (id, val) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = val ?? ''; };
+      setV('perk-id',   obj.userData.perkId   ?? '');
+      setV('perk-cost', obj.userData.perkCost ?? '');
+      const el = document.getElementById('perk-require-power');
+      if (el) el.checked = obj.userData.requirePower !== false;
+    }
+  }
+
+  // Mystery box section
+  const mystSection = document.getElementById('zom-mystery-section');
+  if (mystSection) {
+    const isMyst = obj.userData.primType === 'zom-mystery';
+    mystSection.style.display = isMyst ? '' : 'none';
+    if (isMyst) {
+      const el = document.getElementById('mystery-cost');
+      if (el && document.activeElement !== el) el.value = obj.userData.mysteryBoxCost ?? '';
+      const poolEl = document.getElementById('mystery-pool');
+      if (poolEl && document.activeElement !== poolEl) poolEl.value = (obj.userData.weaponPool ?? []).join('\n');
+    }
+  }
+
+  // Pack-a-Punch section
+  const papSection = document.getElementById('zom-pap-section');
+  if (papSection) {
+    const isPAP = obj.userData.primType === 'zom-pap';
+    papSection.style.display = isPAP ? '' : 'none';
+    if (isPAP) {
+      const setV = (id, val) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = val ?? ''; };
+      setV('pap-tiers',      obj.userData.tierCount ?? '');
+      setV('pap-tier-costs', (obj.userData.tierCosts ?? []).join(', '));
+      const el = document.getElementById('pap-require-power');
+      if (el) el.checked = obj.userData.requirePower !== false;
+    }
+  }
+
+  // Ammo section
+  const ammoSection = document.getElementById('zom-ammo-section');
+  if (ammoSection) {
+    const isAmmo = obj.userData.primType === 'zom-ammo';
+    ammoSection.style.display = isAmmo ? '' : 'none';
+    if (isAmmo) {
+      const el = document.getElementById('ammo-cost');
+      if (el && document.activeElement !== el) el.value = obj.userData.ammoCost ?? 500;
+    }
+  }
+
+  // Door section
+  const doorSection = document.getElementById('zom-door-section');
+  if (doorSection) {
+    const isDoor = obj.userData.primType === 'zom-door';
+    doorSection.style.display = isDoor ? '' : 'none';
+    if (isDoor) {
+      const el = document.getElementById('door-cost');
+      if (el && document.activeElement !== el) el.value = obj.userData.doorCost ?? 750;
     }
   }
 
@@ -5726,6 +6020,7 @@ function renderStatesPanel(obj) {
     const penumbraEnabled = state.penumbraEnabled   !== false;
     const collidableEnabled  = !!state.collidableEnabled;
     const castShadowEnabled  = !!state.castShadowEnabled;
+    const interactiveEnabled = !!state.interactiveEnabled;
     const emissiveEnabled    = !!state.emissiveEnabled;
     const opacityEnabled     = !!state.opacityEnabled;
     const meshColorEnabled   = !!state.meshColorEnabled;
@@ -5843,6 +6138,12 @@ function renderStatesPanel(obj) {
         <div class="state-field-head" style="gap:4px">
           <label><input type="checkbox" data-si="castShadowEn" ${castShadowEnabled ? 'checked' : ''}> CastShadow</label>
           <label style="color:#888"><input type="checkbox" data-si="castShadowVal" ${(state.castShadow !== false && state.castShadow !== undefined) ? 'checked' : ''}> on</label>
+        </div>
+      </div>
+      <div class="state-field-row${interactiveEnabled ? '' : ' sf-disabled'}" data-field="interactive">
+        <div class="state-field-head" style="gap:4px">
+          <label><input type="checkbox" data-si="interactiveEn" ${interactiveEnabled ? 'checked' : ''}> Interactive</label>
+          <label style="color:#888"><input type="checkbox" data-si="interactiveVal" ${(state.interactive !== false && state.interactive !== undefined) ? 'checked' : ''}> on</label>
         </div>
       </div>
       ${!isLight && !isTrigger ? `
@@ -6026,6 +6327,12 @@ function renderStatesPanel(obj) {
       markDirty();
     });
     g('castShadowVal').addEventListener('change', e => { st.castShadow = e.target.checked; markDirty(); });
+    g('interactiveEn').addEventListener('change', e => {
+      st.interactiveEnabled = e.target.checked;
+      item.querySelector('[data-field="interactive"]').classList.toggle('sf-disabled', !e.target.checked);
+      markDirty();
+    });
+    g('interactiveVal').addEventListener('change', e => { st.interactive = e.target.checked; markDirty(); });
 
     // Emissive / Opacity / Color (non-light, non-trigger only — elements conditionally rendered)
     g('emissiveEn')?.addEventListener('change', e => {
@@ -7453,7 +7760,332 @@ function setupUI() {
   _actorNumProp('actor-damage',         'actorDamage');
   _actorNumProp('actor-crit',           'actorCrit');
 
+  // Wall buy weapon definition inputs
+  const _wbStr = (id, prop) => {
+    document.getElementById(id)?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+    document.getElementById(id)?.addEventListener('input', e => {
+      if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+      if (!E.selected.userData.weaponDef) E.selected.userData.weaponDef = {};
+      E.selected.userData.weaponDef[prop] = e.target.value;
+      markDirty();
+    });
+  };
+  document.getElementById('wb-slug')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('wb-slug')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+    E.selected.userData.weaponSlug = e.target.value;
+    markDirty();
+  });
+  const _wbNum = (id, prop, topLevel = false) => {
+    document.getElementById(id)?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+    document.getElementById(id)?.addEventListener('input', e => {
+      if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+      const v = parseFloat(e.target.value);
+      if (isNaN(v)) return;
+      if (topLevel) {
+        E.selected.userData[prop] = v;
+        if (prop === 'weaponModelOpacity') {
+          const preview = E.selected.children.find(c => c.userData.isWbModelPreview);
+          if (preview) preview.traverse(c => { if (c.isMesh && c.material) { (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => { m.transparent = v < 1; m.opacity = v; m.needsUpdate = true; }); } });
+        }
+      }
+      else { if (!E.selected.userData.weaponDef) E.selected.userData.weaponDef = {}; E.selected.userData.weaponDef[prop] = v; }
+      markDirty();
+    });
+  };
+  _wbStr('wb-label', 'label');
+  _wbNum('wb-cost',      'wallBuyCost',    true);
+  _wbNum('wb-ammo-cost', 'wallBuyAmmoCost',true);
+  _wbNum('wb-damage',    'damage');
+  _wbNum('wb-clip',      'clipSize');
+  _wbNum('wb-reserve',   'reserveAmmo');
+  _wbNum('wb-reload',    'reloadTime');
+  _wbNum('wb-firerate',  'fireRate');
+  _wbNum('wb-spread',    'spreadAngle');
+  _wbNum('wb-pellets',   'pelletsPerShot');
+  _wbNum('wb-model-opacity', 'weaponModelOpacity', true);
+  document.getElementById('wb-auto')?.addEventListener('change', e => {
+    if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+    if (!E.selected.userData.weaponDef) E.selected.userData.weaponDef = {};
+    E.selected.userData.weaponDef.isAuto = e.target.checked;
+    markDirty();
+  });
+  document.getElementById('btn-wb-pick-model')?.addEventListener('click', async () => {
+    if (!E.selected || E.selected.userData.primType !== 'zom-wallbuy') return;
+    if (!window.electron?.importModel) return;
+    const p = await window.electron.importModel();
+    if (!p) return;
+    E.selected.userData.weaponModelPath = p;
+    const el = document.getElementById('wb-model-name');
+    if (el) el.textContent = p.split('/').pop() || p;
+    _attachWallBuyModel(E.selected);
+    markDirty();
+  });
+  document.getElementById('btn-wb-clear-model')?.addEventListener('click', () => {
+    if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+    E.selected.userData.weaponModelPath = '';
+    const el = document.getElementById('wb-model-name');
+    if (el) el.textContent = '-';
+    _attachWallBuyModel(E.selected);
+    markDirty();
+  });
+
+  // Zombie spawn inputs
+  const _zsNum = (id, prop) => {
+    document.getElementById(id)?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+    document.getElementById(id)?.addEventListener('input', e => {
+      if (E.selected?.userData.primType !== 'zombie-spawn') return;
+      const v = e.target.value.trim();
+      E.selected.userData[prop] = v === '' ? null : parseFloat(v);
+      markDirty();
+    });
+  };
+  _zsNum('zs-radius',    'spawnRadius');
+  _zsNum('zs-round-min', 'roundMin');
+  _zsNum('zs-round-max', 'roundMax');
+  document.getElementById('btn-zs-pick-model')?.addEventListener('click', async () => {
+    if (!E.selected || E.selected.userData.primType !== 'zombie-spawn') return;
+    if (!window.electron?.importActorModel) return;
+    const p = await window.electron.importActorModel();
+    if (!p) return;
+    E.selected.userData.actorModel = p;
+    const el = document.getElementById('zs-model-name');
+    if (el) el.textContent = p.split('/').pop() || p;
+    markDirty();
+  });
+
+  // Perk inputs
+  document.getElementById('perk-id')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('perk-id')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-perk') return;
+    E.selected.userData.perkId = e.target.value;
+    markDirty();
+  });
+  document.getElementById('perk-cost')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('perk-cost')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-perk') return;
+    const v = parseFloat(e.target.value);
+    E.selected.userData.perkCost = isNaN(v) ? null : v;
+    markDirty();
+  });
+  document.getElementById('perk-require-power')?.addEventListener('change', e => {
+    if (E.selected?.userData.primType !== 'zom-perk') return;
+    E.selected.userData.requirePower = e.target.checked;
+    markDirty();
+  });
+
+  // Mystery box inputs
+  document.getElementById('mystery-cost')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('mystery-cost')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-mystery') return;
+    const v = parseFloat(e.target.value);
+    E.selected.userData.mysteryBoxCost = isNaN(v) ? null : v;
+    markDirty();
+  });
+  document.getElementById('mystery-pool')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-mystery') return;
+    E.selected.userData.weaponPool = e.target.value.split('\n').map(s => s.trim()).filter(Boolean);
+    markDirty();
+  });
+
+  // Pack-a-Punch inputs
+  document.getElementById('pap-tiers')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('pap-tiers')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-pap') return;
+    const v = parseInt(e.target.value, 10);
+    E.selected.userData.tierCount = isNaN(v) ? null : v;
+    markDirty();
+  });
+  document.getElementById('pap-tier-costs')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-pap') return;
+    E.selected.userData.tierCosts = e.target.value.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+    markDirty();
+  });
+  document.getElementById('pap-require-power')?.addEventListener('change', e => {
+    if (E.selected?.userData.primType !== 'zom-pap') return;
+    E.selected.userData.requirePower = e.target.checked;
+    markDirty();
+  });
+
+  // Ammo station input
+  document.getElementById('ammo-cost')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('ammo-cost')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-ammo') return;
+    E.selected.userData.ammoCost = parseFloat(e.target.value) || 500;
+    markDirty();
+  });
+
+  // Door input
+  document.getElementById('door-cost')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+  document.getElementById('door-cost')?.addEventListener('input', e => {
+    if (E.selected?.userData.primType !== 'zom-door') return;
+    E.selected.userData.doorCost = parseFloat(e.target.value) || 750;
+    markDirty();
+  });
+
+  // Zombies tree toggle
+  document.getElementById('zombies-prim-header')?.addEventListener('click', () => {
+    const tree  = document.getElementById('zombies-prim-tree');
+    const arrow = document.getElementById('zombies-prim-arrow');
+    if (!tree) return;
+    const open = tree.style.display === 'none';
+    tree.style.display  = open ? '' : 'none';
+    if (arrow) arrow.innerHTML = open ? '&#9660;' : '&#9654;';
+  });
+
   window.addEventListener('resize', resizeRenderer);
+
+  // Zombies map settings modal
+  function _openZombiesSettings() {
+    const modal = document.getElementById('zombies-settings-modal');
+    if (!modal) return;
+    const cfg = E.zombiesConfig ?? {};
+    const setV = (id, val, fallback) => {
+      const el = document.getElementById(id);
+      if (el) el.value = (val !== undefined && val !== null) ? val : (fallback !== undefined ? fallback : '');
+    };
+    const chk = document.getElementById('zms-is-zombies-map');
+    if (chk) chk.checked = !!E.isZombiesMap;
+    const dnEl = document.getElementById('zms-display-name');
+    if (dnEl) dnEl.value = E.zombiesMapDisplayName ?? '';
+    setV('zms-base-hp',        cfg.baseZombieHp);
+    setV('zms-hp-scale',       cfg.hpScale);
+    setV('zms-base-dmg',       cfg.baseDamage);
+    setV('zms-dmg-scale',      cfg.dmgScale);
+    setV('zms-base-count',     cfg.baseZombiesPerRound);
+    setV('zms-count-mult',     cfg.zombiesPerRoundMult);
+    setV('zms-count-cap',      cfg.zombiesPerRoundCap);
+    setV('zms-round-cap',      cfg.roundCap);
+    setV('zms-spawn-interval', cfg.baseSpawnInterval);
+    setV('zms-spawn-decay',    cfg.spawnIntervalDecay);
+    setV('zms-min-interval',   cfg.minSpawnInterval);
+    setV('zms-inter-round',    cfg.interRoundDelay);
+    setV('zms-start-pts',      cfg.startingPoints);
+    setV('zms-pts-kill',       cfg.pointsPerKill);
+    setV('zms-kill-scale',     cfg.killScalePerRound);
+    setV('zms-round-bonus',    cfg.endRoundBonus);
+    setV('zms-hs-bonus',       cfg.headShotBonus);
+    setV('zms-melee-bonus',    cfg.meleeBonus);
+    setV('zms-mystery-cost',   cfg.mysteryBoxCost);
+    setV('zms-drop-chance',    cfg.dropChancePerKill);
+    setV('zms-powerup-dur',    cfg.powerupDuration);
+    setV('zms-revive-time',    cfg.reviveTime);
+
+    const DEFAULT_PAP_TIERS = [
+      { cost: 2500, damageMult: 2.0 },
+      { cost: 5000, damageMult: 3.5 },
+      { cost: 10000, damageMult: 6.0 },
+    ];
+    const papTiers = cfg.papTiers?.length ? cfg.papTiers : DEFAULT_PAP_TIERS;
+    const tiersEl = document.getElementById('zms-pap-tiers');
+    if (tiersEl) {
+      tiersEl.innerHTML = '';
+      papTiers.forEach((t, i) => {
+        const row = document.createElement('div');
+        row.className = 'prop-row pap-tier-row';
+        row.style.cssText = 'gap:6px';
+        row.innerHTML = `<label style="font-size:10px;color:#666688;min-width:54px">Tier ${i + 1}</label>`
+          + `<input class="prop-input pap-cost" type="number" step="500" placeholder="Cost" value="${t.cost ?? ''}" style="flex:1;font-size:11px">`
+          + `<input class="prop-input pap-dmg" type="number" step="0.25" placeholder="DmgMult" value="${t.damageMult ?? ''}" style="flex:1;font-size:11px">`;
+        tiersEl.appendChild(row);
+      });
+    }
+
+    const clipMults = cfg.weaponClipMults ?? {};
+    const slugs = [];
+    E.placedGroup.traverse(obj => {
+      if (obj.userData.primType === 'zom-wallbuy' && obj.userData.weaponSlug && !slugs.includes(obj.userData.weaponSlug))
+        slugs.push(obj.userData.weaponSlug);
+    });
+    const clipEl = document.getElementById('zms-clip-mults');
+    if (clipEl) {
+      clipEl.innerHTML = slugs.length
+        ? slugs.map(slug => {
+            const val = clipMults[slug] ?? '';
+            return `<div class="prop-row clip-mult-row" data-slug="${slug}" style="gap:6px">`
+              + `<label style="font-size:10px;color:#aaaacc;min-width:100px;overflow:hidden;text-overflow:ellipsis">${slug}</label>`
+              + `<input class="prop-input" type="number" step="0.5" min="1" placeholder="1 (no change)" value="${val}" style="flex:1;font-size:11px">`
+              + `</div>`;
+          }).join('')
+        : '<div style="font-size:10px;color:#444466;padding:4px">No wallbuys in this level.</div>';
+    }
+
+    modal.style.display = 'flex';
+  }
+  document.getElementById('btn-zms-add-tier')?.addEventListener('click', () => {
+    const tiersEl = document.getElementById('zms-pap-tiers');
+    if (!tiersEl || tiersEl.children.length >= 5) return;
+    const i = tiersEl.children.length;
+    const row = document.createElement('div');
+    row.className = 'prop-row pap-tier-row';
+    row.style.cssText = 'gap:6px';
+    row.innerHTML = `<label style="font-size:10px;color:#666688;min-width:54px">Tier ${i + 1}</label>`
+      + `<input class="prop-input pap-cost" type="number" step="500" placeholder="Cost" style="flex:1;font-size:11px">`
+      + `<input class="prop-input pap-dmg" type="number" step="0.25" placeholder="DmgMult" style="flex:1;font-size:11px">`;
+    tiersEl.appendChild(row);
+  });
+  document.getElementById('btn-zms-remove-tier')?.addEventListener('click', () => {
+    const tiersEl = document.getElementById('zms-pap-tiers');
+    if (tiersEl && tiersEl.children.length > 1) tiersEl.removeChild(tiersEl.lastChild);
+  });
+  function _applyZombiesSettings() {
+    const modal = document.getElementById('zombies-settings-modal');
+    const getN = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseFloat(el.value); };
+    const getI = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseInt(el.value, 10); };
+    E.isZombiesMap = document.getElementById('zms-is-zombies-map')?.checked ?? false;
+    const dn = document.getElementById('zms-display-name')?.value.trim();
+    E.zombiesMapDisplayName = dn || null;
+    const cfg = { ...(E.zombiesConfig ?? {}) };
+    const _set = (k, v) => { if (v !== undefined && !isNaN(v)) cfg[k] = v; };
+    _set('baseZombieHp',        getN('zms-base-hp'));
+    _set('hpScale',             getN('zms-hp-scale'));
+    _set('baseDamage',          getN('zms-base-dmg'));
+    _set('dmgScale',            getN('zms-dmg-scale'));
+    _set('baseZombiesPerRound', getI('zms-base-count'));
+    _set('zombiesPerRoundMult', getN('zms-count-mult'));
+    _set('zombiesPerRoundCap',  getI('zms-count-cap'));
+    _set('roundCap',            getI('zms-round-cap'));
+    _set('baseSpawnInterval',   getN('zms-spawn-interval'));
+    _set('spawnIntervalDecay',  getN('zms-spawn-decay'));
+    _set('minSpawnInterval',    getN('zms-min-interval'));
+    _set('interRoundDelay',     getN('zms-inter-round'));
+    _set('startingPoints',      getI('zms-start-pts'));
+    _set('pointsPerKill',       getI('zms-pts-kill'));
+    _set('killScalePerRound',   getN('zms-kill-scale'));
+    _set('endRoundBonus',       getI('zms-round-bonus'));
+    _set('headShotBonus',       getI('zms-hs-bonus'));
+    _set('meleeBonus',          getI('zms-melee-bonus'));
+    _set('mysteryBoxCost',      getI('zms-mystery-cost'));
+    _set('dropChancePerKill',   getN('zms-drop-chance'));
+    _set('powerupDuration',     getN('zms-powerup-dur'));
+    _set('reviveTime',          getN('zms-revive-time'));
+
+    const papTierRows = document.querySelectorAll('#zms-pap-tiers .pap-tier-row');
+    const papTiers = [];
+    papTierRows.forEach(row => {
+      const cost    = parseFloat(row.querySelector('.pap-cost')?.value);
+      const dmgMult = parseFloat(row.querySelector('.pap-dmg')?.value);
+      if (!isNaN(cost) && !isNaN(dmgMult)) papTiers.push({ cost, damageMult: dmgMult });
+    });
+    if (papTiers.length > 0) cfg.papTiers = papTiers; else delete cfg.papTiers;
+
+    const clipMultRows = document.querySelectorAll('#zms-clip-mults .clip-mult-row');
+    const weaponClipMults = {};
+    clipMultRows.forEach(row => {
+      const slug = row.dataset.slug;
+      const mult = parseFloat(row.querySelector('input')?.value);
+      if (slug && !isNaN(mult) && mult > 1) weaponClipMults[slug] = mult;
+    });
+    if (Object.keys(weaponClipMults).length > 0) cfg.weaponClipMults = weaponClipMults; else delete cfg.weaponClipMults;
+
+    E.zombiesConfig = Object.keys(cfg).length ? cfg : null;
+    if (modal) modal.style.display = 'none';
+    saveLevel();
+  }
+  document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
+  document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
+  document.getElementById('btn-zms-apply')?.addEventListener('click',  _applyZombiesSettings);
+  window.electron?.onMenuAction?.('open-zombies-settings', _openZombiesSettings);
 }
 
 function setTransformMode(mode) {

@@ -435,6 +435,9 @@ function _applyStateImmediate(obj, state) {
   if (state.collidableEnabled && state.collidable != null) {
     obj.userData.collidable = state.collidable;
   }
+  if (state.interactiveEnabled && state.interactive != null) {
+    obj.userData.stateInteractive = state.interactive;
+  }
   if (state.castShadowEnabled && state.castShadow != null) {
     const v = !!state.castShadow;
     obj.castShadow = v;
@@ -581,6 +584,9 @@ function _startStateAnim(obj, state, duration) {
   // Boolean fields: apply immediately at animation start
   if (state.collidableEnabled && state.collidable != null) {
     obj.userData.collidable = state.collidable;
+  }
+  if (state.interactiveEnabled && state.interactive != null) {
+    obj.userData.stateInteractive = state.interactive;
   }
   if (state.textureEnabled && state.textures && _textureFn) {
     _textureFn(obj, state.textures);

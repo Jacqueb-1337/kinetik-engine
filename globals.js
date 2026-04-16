@@ -70,7 +70,26 @@ export const gameState = {
   interactTarget: null,
   interactObj: null,
   playerSpawnObj: null,  // Object3D placed via editor; position is the live respawn point
+
+  // Zombies mode
+  zombiesConfig:       null,           // parsed from level JSON zombiesConfig block
+  zombiesSpawnPoints:  [],
+  zombiesDoors:        [],
+  zombiesWallBuys:     [],
+  zombiesPerkMachines: [],
+  zombiesMysteryBoxes: [],
+  zombiesPAP:          [],
+  zombiesAmmoStations: [],
+  zombiesPowerSwitches: [],
+  zombiesDropZones:    [],
+  zombiesSpeedMult:    1,              // modified by Stamin-Up perk
+  powerupDrops:        [],
 };
+
+// ─── Game load lifecycle ───────────────────────────────────────────────────────
+let _gameLoaded = false;
+export function isGameLoaded()   { return _gameLoaded; }
+export function setGameLoaded(v) { _gameLoaded = !!v; }
 
 export const GRAVITY = -30;
 export const MOVE_SPEED = 5;

@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
 import { initStatefulObjects, levelVars, setTextureFn } from './stateManager.js';
+import { registerWeapon } from '../game/zombiesWeapons.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
@@ -266,6 +267,38 @@ const PRIM_GEO = {
   plane:    () => new THREE.PlaneGeometry(1, 1),
 };
 
+const ZOMBIE_PRIM_GEO = {
+  'zombie-spawn': () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+  'zom-wallbuy':  () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-perk':     () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+  'zom-mystery':  () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-pap':      () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-ammo':     () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+  'zom-power':    () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-door':     () => new THREE.BoxGeometry(1, 1, 1),
+  'zom-drop':     () => new THREE.SphereGeometry(0.5, 16, 12),
+};
+
+function spawnZombiePrim(entry) {
+  const geoFn = ZOMBIE_PRIM_GEO[entry.type];
+  if (!geoFn) return new THREE.Object3D();
+  const opacity = entry.opacity ?? 1;
+  const mat = new THREE.MeshStandardMaterial({
+    color:       entry.color ?? '#aaaacc',
+    roughness:   0.8,
+    transparent: opacity < 1,
+    opacity,
+  });
+  const mesh = new THREE.Mesh(geoFn(), mat);
+  applyTransform(mesh, entry);
+  mesh.castShadow    = entry.castShadow !== false;
+  mesh.receiveShadow = true;
+  mesh.userData.levelObj   = true;
+  mesh.userData.editorId   = entry.id;
+  mesh.userData.collidable = false;
+  return mesh;
+}
+
 function applyTransform(obj, entry) {
   obj.position.set(entry.pos[0], entry.pos[1], entry.pos[2]);
   obj.rotation.set(entry.rot[0] * RAD, entry.rot[1] * RAD, entry.rot[2] * RAD);
@@ -457,6 +490,26 @@ function spawnModel(entry) {
             }
           });
         });
+      }
+      if (entry.modelMaps && Object.keys(entry.modelMaps).length) {
+        const MAP_SLOTS = { diffuse: 'map', normal: 'normalMap', roughness: 'roughnessMap', metalness: 'metalnessMap' };
+        for (const [slot, texName] of Object.entries(entry.modelMaps)) {
+          if (!texName) continue;
+          const matKey = MAP_SLOTS[slot];
+          if (!matKey) continue;
+          const applyTex = tex => {
+            if (!tex) return;
+            tex.colorSpace = slot === 'diffuse' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            root.traverse(c => {
+              if (!c.isMesh) return;
+              const mats = Array.isArray(c.material) ? c.material : [c.material];
+              mats.forEach(m => { if (m) { m[matKey] = tex; m.needsUpdate = true; } });
+            });
+          };
+          getTexLoader().load(`./textures/${texName}.png`, applyTex, undefined,
+            () => getTexLoader().load(`./textures/${texName}.jpg`, applyTex));
+        }
       }
       if (entry.doubleSide) {
         root.traverse(c => {
@@ -854,6 +907,19 @@ export async function loadLevel(name = 'main') {
     return;
   }
 
+  // Reset zombies-mode placement data
+  gameState.zombiesSpawnPoints  = [];
+  gameState.zombiesDoors        = [];
+  gameState.zombiesWallBuys     = [];
+  gameState.zombiesPerkMachines = [];
+  gameState.zombiesMysteryBoxes = [];
+  gameState.zombiesPAP          = [];
+  gameState.zombiesAmmoStations = [];
+  gameState.zombiesPowerSwitches = [];
+  gameState.zombiesDropZones    = [];
+  gameState.zombiesConfig          = data.zombiesConfig ?? null;
+  gameState.zombiesMapDisplayName   = data.zombiesMapDisplayName ?? null;
+
   const spawned = [];
   for (const entry of data.objects) {
     let obj = null;
@@ -899,6 +965,135 @@ export async function loadLevel(name = 'main') {
         marker.userData.editorId    = entry.id;
         marker.userData.isPlayerSpawn = true;
         if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        obj = marker;
+      } else if (entry.type === 'zombie-spawn') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZombieSpawn = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesSpawnPoints.push({
+          _obj:          marker,
+          actorModel:    entry.actorModel    || '',
+          actorVariants: entry.actorVariants || [],
+          actorRoles:    entry.actorRoles    || {},
+          spawnRadius:   entry.spawnRadius   ?? 0,
+          roundMin:      entry.roundMin      ?? 1,
+          roundMax:      entry.roundMax      ?? null,
+          meshOverrides: entry.meshOverrides || {},
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-door') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomDoor = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesDoors.push({
+          _obj:     marker,
+          editorId: entry.id,
+          cost:     entry.doorCost ?? 750,
+          opened:   false,
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-wallbuy') {
+        if (entry.weaponSlug && entry.weaponDef) registerWeapon(entry.weaponSlug, entry.weaponDef);
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomWallBuy = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        const wbEntry = {
+          _obj:       marker,
+          editorId:   entry.id,
+          weaponSlug: entry.weaponSlug || '',
+          weaponDef:  entry.weaponDef  ?? null,
+          cost:       entry.wallBuyCost ?? 500,
+          ammoCost:   entry.wallBuyAmmoCost ?? 250,
+        };
+        gameState.zombiesWallBuys.push(wbEntry);
+        if (entry.weaponModelPath) {
+          marker.visible = false;
+          const gltfLoader = new GLTFLoader();
+          gltfLoader.load(entry.weaponModelPath, gltf => {
+            const mdl = gltf.scene;
+            mdl.position.copy(marker.position);
+            mdl.rotation.copy(marker.rotation);
+            mdl.scale.copy(marker.scale);
+            mdl.traverse(c => {
+              if (!c.isMesh || !c.material) return;
+              const mats = Array.isArray(c.material) ? c.material : [c.material];
+              mats.forEach(m => {
+                if (entry.weaponModelOpacity != null && entry.weaponModelOpacity < 1) {
+                  m.transparent = true; m.opacity = entry.weaponModelOpacity;
+                }
+                if (entry.emissiveIntensity > 0 && 'emissive' in m) {
+                  m.emissive.set(entry.emissiveColor ?? '#ffffff');
+                  m.emissiveIntensity = entry.emissiveIntensity;
+                }
+                m.needsUpdate = true;
+              });
+            });
+            gameState.scene.add(mdl);
+            wbEntry._modelObj = mdl;
+          }, undefined, err => console.warn('[levelLoader] wallbuy model failed:', err));
+        }
+        obj = marker;
+      } else if (entry.type === 'zom-perk') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomPerk = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesPerkMachines.push({
+          _obj:         marker,
+          editorId:     entry.id,
+          perkId:       entry.perkId   || '',
+          cost:         entry.perkCost ?? null,
+          requirePower: entry.requirePower !== false,
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-mystery') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomMystery = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesMysteryBoxes.push({
+          _obj:       marker,
+          editorId:   entry.id,
+          cost:       entry.mysteryBoxCost ?? null,
+          weaponPool: entry.weaponPool || [],
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-pap') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomPAP = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesPAP.push({
+          _obj:         marker,
+          editorId:     entry.id,
+          tierCount:    entry.papTierCount ?? null,
+          tierCosts:    entry.papTierCosts || [],
+          requirePower: entry.requirePower !== false,
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-ammo') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomAmmo = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesAmmoStations.push({
+          _obj:     marker,
+          editorId: entry.id,
+          cost:     entry.ammoCost ?? 500,
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-power') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomPower = true;
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesPowerSwitches.push({
+          _obj:     marker,
+          editorId: entry.id,
+        });
+        obj = marker;
+      } else if (entry.type === 'zom-drop') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomDrop = true;
+        gameState.zombiesDropZones.push({
+          _obj:   marker,
+          weight: entry.dropWeight ?? 1,
+        });
         obj = marker;
       } else if (entry.type === 'csg-result') {
         obj = await spawnCsgResult(entry);
