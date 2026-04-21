@@ -309,6 +309,8 @@ export function update(delta) {
     return;
   }
   
+  const isPlayerDowned = gameState.isPlayerDowned?.() ?? false;
+  
   // Horizontal movement relative to camera
   const forwardX = -Math.sin(gameState.cameraAngle);
   const forwardZ = -Math.cos(gameState.cameraAngle);
@@ -331,7 +333,7 @@ export function update(delta) {
   updateWalkingAnimation(isMoving, moveSpeed, delta, gameState);
 
   // Smooth speed ramping (acceleration/deceleration)
-  const targetSpeedMultiplier = !isMoving ? 0 : (isSprinting ? 2.0 : 1.0);
+  const targetSpeedMultiplier = !isMoving ? 0 : (isPlayerDowned ? 0.2 : (isSprinting ? 2.0 : 1.0));
   const acceleration = 8.0; // How fast to ramp up/down
   gameState.currentSpeed += (targetSpeedMultiplier - gameState.currentSpeed) * Math.min(1, delta * acceleration);
   
@@ -411,7 +413,9 @@ export function update(delta) {
 
   // Rotate player smoothly to match camera angle (add Math.PI to face away)
   const targetRotation = gameState.cameraAngle + Math.PI;
-  gameState.playerRotation = THREE.MathUtils.lerp(gameState.playerRotation, targetRotation, 0.2);
+  let rotDelta = targetRotation - gameState.playerRotation;
+  rotDelta = rotDelta - Math.round(rotDelta / (Math.PI * 2)) * (Math.PI * 2);
+  gameState.playerRotation += rotDelta * 0.2;
   gameState.player.rotation.y = gameState.playerRotation;
 
   // Jumping with animation windup
@@ -419,7 +423,7 @@ export function update(delta) {
   const ANIMATION_FPS = 24; // Mixamo animation FPS
   const JUMP_WINDUP_TIME = JUMP_WINDUP_FRAME / ANIMATION_FPS; // ~0.542 seconds
   
-  if (gameState.keys['Space'] && gameState.canJump && !gameState.isJumpWindup) {
+  if (gameState.keys['Space'] && gameState.canJump && !gameState.isJumpWindup && !isPlayerDowned) {
     // Start jump windup - animation plays but no velocity yet
     gameState.isJumpWindup = true;
     gameState.canJump = false;

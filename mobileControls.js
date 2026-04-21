@@ -4,17 +4,39 @@ import { gameState } from './globals.js';
 import { platformConfig } from './platform.js';
 import { toggleDebugOverlay, toggleFreecam, toggleCameraMode } from './input.js';
 import { readSetting, writeSetting } from './settings.js';
+import { getZombiesHudEditorElements, applyZombiesHudLayout } from '../game/zombiesHUD.js';
+import { mobileFireDown, mobileFireUp, mobileReload, mobileSwitchWeapon } from '../game/zombiesMode.js';
 
 let _pauseToggle = () => {};
 export function setPauseToggleCallback(fn) { _pauseToggle = fn; }
 
 const HUD_SETTINGS_KEY = 'hud_config';
+const CORE_HUD_KEYS = ['fire', 'reload', 'swap', 'sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5'];
+
+function _ensureZombiesLayoutDefaults(layout) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  if (!layout['zom-hp-wrap'])    layout['zom-hp-wrap'] = { x: 24, y: Math.max(20, H - 92), size: 70, opacity: 1.0 };
+  if (!layout['zom-round'])      layout['zom-round'] = { x: Math.max(20, (W * 0.5) - 140), y: 18, size: 120, opacity: 1.0 };
+  if (!layout['zom-count'])      layout['zom-count'] = { x: Math.max(20, W - 220), y: 18, size: 120, opacity: 1.0 };
+  if (!layout['zom-points'])     layout['zom-points'] = { x: 24, y: Math.max(20, H - 76), size: 90, opacity: 1.0 };
+  if (!layout['zom-perks'])      layout['zom-perks'] = { x: Math.max(20, W - 80), y: Math.max(20, H - 130), size: 60, opacity: 1.0 };
+  if (!layout['zom-pap'])        layout['zom-pap'] = { x: Math.max(20, W - 160), y: Math.max(20, H - 190), size: 70, opacity: 1.0 };
+  if (!layout['zom-timer-wrap']) layout['zom-timer-wrap'] = { x: Math.max(20, (W * 0.5) - 160), y: Math.max(20, H - 8), size: 180, opacity: 1.0 };
+  if (!layout['zom-slots'])      layout['zom-slots'] = { x: Math.max(20, W - 160), y: Math.max(20, H - 340), size: 90, opacity: 1.0 };
+  if (!layout['zom-ammo'])       layout['zom-ammo'] = { x: Math.max(20, W - 170), y: Math.max(20, H - 250), size: 90, opacity: 1.0 };
+}
 
 function _migrateLayout(layout) {
   const W = window.innerWidth;
+  const H = window.innerHeight;
+  if (!layout.fire)   layout.fire   = { x: W - 210, y: H - 280, size: 70, opacity: 1.0 };
+  if (!layout.reload) layout.reload = { x: W - 210, y: H - 190, size: 70, opacity: 1.0 };
+  if (!layout.swap)   layout.swap   = { x: W - 210, y: H - 370, size: 70, opacity: 1.0 };
   if (!layout.f3)  layout.f3  = { x: 20,  y: 20, size: 44, opacity: 1.0 };
   if (!layout.cam) layout.cam = { x: 74,  y: 20, size: 44, opacity: 1.0 };
   if (!layout.f5)  layout.f5  = { x: 128, y: 20, size: 44, opacity: 1.0 };
+  _ensureZombiesLayoutDefaults(layout);
   for (const k of Object.keys(layout)) {
     if (layout[k].opacity === undefined) layout[k].opacity = 1.0;
   }
@@ -23,7 +45,9 @@ function _migrateLayout(layout) {
 
 function _initHudConfigDefaults() {
   if (!gameState.hudConfig) {
-    gameState.hudConfig = { autoRunLock: true, layout: getDefaultLayout() };
+    const layout = getDefaultLayout();
+    _migrateLayout(layout);
+    gameState.hudConfig = { autoRunLock: true, layout };
   }
 }
 
@@ -40,13 +64,18 @@ export async function loadHudConfig() {
   } catch (e) {
     console.warn('[mobileControls] loadHudConfig failed:', e);
   }
-  gameState.hudConfig = { autoRunLock: true, layout: getDefaultLayout() };
+  const layout = getDefaultLayout();
+  _migrateLayout(layout);
+  gameState.hudConfig = { autoRunLock: true, layout };
 }
 
 function getDefaultLayout() {
   const W = window.innerWidth;
   const H = window.innerHeight;
   return {
+    fire:     { x: W - 210, y: H - 280, size: 70, opacity: 1.0 },
+    reload:   { x: W - 210, y: H - 190, size: 70, opacity: 1.0 },
+    swap:     { x: W - 210, y: H - 370, size: 70, opacity: 1.0 },
     sprint:   { x: W - 110, y: H - 190, size: 70, opacity: 1.0 },
     jump:     { x: W - 110, y: H - 280, size: 70, opacity: 1.0 },
     interact: { x: W - 110, y: H - 370, size: 70, opacity: 1.0 },
@@ -76,6 +105,7 @@ function applyLayout() {
     el.style.bottom = '';
     el.style.opacity = (cfg.opacity ?? 1.0).toString();
   }
+  applyZombiesHudLayout(layout);
 }
 
 const touchState = {
@@ -100,6 +130,9 @@ const touchState = {
   // Visual elements
   joystickBase: null,
   joystickThumb: null,
+  fireButton: null,
+  reloadButton: null,
+  swapButton: null,
   sprintButton: null,
   jumpButton: null,
   interactButton: null,
@@ -211,6 +244,23 @@ function createControlElements() {
 
   const svgRun = `<img src="./textures/run.png" style="width:55%;height:55%;object-fit:contain;pointer-events:none;">`;
 
+  const svgFire = `<svg viewBox="0 0 24 24" width="55%" height="55%" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M6 18L18 6" stroke="rgba(255,255,255,0.92)" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M11 6H18V13" stroke="rgba(255,255,255,0.92)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+
+  const svgReload = `<svg viewBox="0 0 24 24" width="55%" height="55%" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M20 4v4h-4" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+
+  const svgSwap = `<svg viewBox="0 0 24 24" width="55%" height="55%" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4 8h13" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M14 5l3 3-3 3" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M20 16H7" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M10 13l-3 3 3 3" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+
   const svgJump = `<svg viewBox="0 0 32 32" width="52%" height="52%" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M16 26V8" stroke="rgba(255,255,255,0.9)" stroke-width="2.5" stroke-linecap="round"/>
     <path d="M8 16l8-10 8 10" stroke="rgba(255,255,255,0.9)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
@@ -218,6 +268,10 @@ function createControlElements() {
   <span style="color:rgba(255,255,255,0.6);font-size:9px;font-family:sans-serif;letter-spacing:0.5px;margin-top:1px;">JUMP</span>`;
 
   const svgInteract = `<img src="./textures/interact.png" style="width:55%;height:55%;object-fit:contain;pointer-events:none;">`;
+
+  makeHudButton('fire-button', 'fire', btnBase, svgFire);
+  makeHudButton('reload-button', 'reload', btnBase, svgReload);
+  makeHudButton('swap-button', 'swap', btnBase, svgSwap);
 
   makeHudButton('sprint-button', 'sprint', btnBase, svgRun);
 
@@ -356,6 +410,7 @@ function setupTouchHandlers() {
   
   // F3 debug button handler
   touchState.f3Button.addEventListener('touchstart', (e) => {
+    if (hudEditorActive) return;
     e.preventDefault();
     e.stopPropagation();
     toggleDebugOverlay();
@@ -363,6 +418,7 @@ function setupTouchHandlers() {
   
   // Camera toggle button handler
   touchState.camButton.addEventListener('touchstart', (e) => {
+    if (hudEditorActive) return;
     e.preventDefault();
     e.stopPropagation();
     toggleFreecam();
@@ -370,6 +426,7 @@ function setupTouchHandlers() {
   
   // F5 camera mode toggle button handler
   touchState.f5Button.addEventListener('touchstart', (e) => {
+    if (hudEditorActive) return;
     e.preventDefault();
     e.stopPropagation();
     toggleCameraMode();
@@ -393,6 +450,34 @@ function setupTouchHandlers() {
     gameState.mobileInteractPending = true;
     document.dispatchEvent(new MouseEvent('mousedown', { bubbles: false, button: 2 }));
   });
+
+  touchState.fireButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    mobileFireDown();
+  }, { passive: false });
+  touchState.fireButton.addEventListener('touchend', (e) => {
+    if (hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    mobileFireUp();
+  }, { passive: false });
+  touchState.fireButton.addEventListener('touchcancel', () => { mobileFireUp(); }, { passive: true });
+
+  touchState.reloadButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    mobileReload();
+  }, { passive: false });
+
+  touchState.swapButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    mobileSwitchWeapon();
+  }, { passive: false });
 }
 
 function startJoystick(touchId, x, y) {
@@ -675,11 +760,46 @@ let editorOverlay = null;
 let editorSelectedKey = null;
 let editorOpacityPanel = null;
 
+let _pcEditorActive = false;
+let _pcEditorDrag = null;
+let _pcEditorOverlay = null;
+let _pcEditorSelectedKey = null;
+let _pcEditorOpacityPanel = null;
+
+function _getEditorElementByKey(key) {
+  return touchState[key + 'Button'] || document.getElementById(key);
+}
+
+function _getEditorTargets() {
+  return [
+    ...CORE_HUD_KEYS.map(key => ({ key, el: touchState[key + 'Button'], resizable: true })),
+    ...getZombiesHudEditorElements(),
+  ].filter(t => !!t.el);
+}
+
+function _ensureTargetLayoutEntry(key, el) {
+  if (!gameState.hudConfig?.layout) return;
+  if (gameState.hudConfig.layout[key]) return;
+  const rect = el.getBoundingClientRect();
+  gameState.hudConfig.layout[key] = {
+    x: rect.left,
+    y: rect.top,
+    size: Math.max(rect.width, rect.height),
+    opacity: parseFloat(el.style.opacity || '1') || 1,
+  };
+}
+
+export function setZombiesControlsVisible(visible) {
+  if (touchState.fireButton) touchState.fireButton.style.display = visible ? 'flex' : 'none';
+  if (touchState.reloadButton) touchState.reloadButton.style.display = visible ? 'flex' : 'none';
+  if (touchState.swapButton) touchState.swapButton.style.display = visible ? 'flex' : 'none';
+}
+
 export function startHudEditor() {
   hudEditorActive = true;
   gameState.hudEditorActive = true;
 
-  for (const key of ['sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5']) {
+  for (const key of CORE_HUD_KEYS) {
     const el = touchState[key + 'Button'];
     if (!el) continue;
     el.style.outline = '2px dashed rgba(255,255,255,0.7)';
@@ -702,6 +822,11 @@ export function startHudEditor() {
     `;
     handle.innerHTML = '\u21d8';
     el.appendChild(handle);
+  }
+
+  for (const { key, el } of getZombiesHudEditorElements()) {
+    _ensureTargetLayoutEntry(key, el);
+    el.style.outline = '2px dashed rgba(255,255,255,0.7)';
   }
 
   if (touchState.interactButton) {
@@ -766,6 +891,7 @@ export function startHudEditor() {
   btnRow.appendChild(makeEditorBtn('Reset', 'rgba(180,60,60,0.9)', () => {
     hideOpacityPanel();
     gameState.hudConfig.layout = getDefaultLayout();
+    _migrateLayout(gameState.hudConfig.layout);
     applyLayout();
     saveHudConfig();
   }));
@@ -785,17 +911,16 @@ function stopHudEditor() {
   hudEditorActive = false;
   gameState.hudEditorActive = false;
 
-  for (const key of ['sprint', 'jump', 'interact', 'pause']) {
+  for (const key of CORE_HUD_KEYS) {
     const el = touchState[key + 'Button'];
     if (!el) continue;
     el.style.outline = '';
     el.querySelectorAll('.hud-resize-handle').forEach(h => h.remove());
   }
-  for (const key of ['f3', 'cam', 'f5']) {
-    const el = touchState[key + 'Button'];
+
+  for (const { el } of getZombiesHudEditorElements()) {
     if (!el) continue;
     el.style.outline = '';
-    el.querySelectorAll('.hud-resize-handle').forEach(h => h.remove());
   }
 
   if (editorOverlay) { editorOverlay.remove(); editorOverlay = null; }
@@ -825,15 +950,15 @@ function editorTouchStart(e) {
     const r = editorOpacityPanel.getBoundingClientRect();
     if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
   }
-  for (const key of ['sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5']) {
-    const el = touchState[key + 'Button'];
-    if (!el) continue;
+  for (const target of _getEditorTargets()) {
+    const { key, el, resizable = false } = target;
     const rect = el.getBoundingClientRect();
     if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
       e.preventDefault();
       e.stopPropagation();
       editorTouchId = touch.identifier;
-      const isResize = (x > rect.right - 22 && y > rect.bottom - 22);
+      const isResize = resizable && (x > rect.right - 22 && y > rect.bottom - 22);
+      _ensureTargetLayoutEntry(key, el);
       editorTarget = {
         key, el,
         startX: x, startY: y,
@@ -866,6 +991,11 @@ function editorTouchMove(e) {
       cfg.y = editorTarget.startBtnY + dy;
       editorTarget.el.style.left = cfg.x + 'px';
       editorTarget.el.style.top  = cfg.y + 'px';
+      editorTarget.el.style.right = '';
+      editorTarget.el.style.bottom = '';
+      if (editorTarget.key === 'zom-round' || editorTarget.key === 'zom-timer-wrap') {
+        editorTarget.el.style.transform = 'none';
+      }
     }
     break;
   }
@@ -897,7 +1027,7 @@ function selectButton(key) {
 function hideOpacityPanel() {
   if (editorOpacityPanel) { editorOpacityPanel.remove(); editorOpacityPanel = null; }
   if (editorSelectedKey) {
-    const el = touchState[editorSelectedKey + 'Button'];
+    const el = _getEditorElementByKey(editorSelectedKey);
     if (el) el.style.outline = '2px dashed rgba(255,255,255,0.7)';
     editorSelectedKey = null;
   }
@@ -906,7 +1036,7 @@ function hideOpacityPanel() {
 function showOpacityPanel(key) {
   hideOpacityPanel();
   editorSelectedKey = key;
-  const el = touchState[key + 'Button'];
+  const el = _getEditorElementByKey(key);
   if (el) el.style.outline = '2px dashed rgba(255,220,80,0.9)';
   const cfg = gameState.hudConfig.layout[key];
 
@@ -961,4 +1091,232 @@ function showOpacityPanel(key) {
   panel.appendChild(sliderRow);
   document.body.appendChild(panel);
   editorOpacityPanel = panel;
+}
+
+export function startPcHudEditor(onDone) {
+  if (_pcEditorActive) return;
+  _pcEditorActive = true;
+  hudEditorActive = true;
+  gameState.hudEditorActive = true;
+  _initHudConfigDefaults();
+  const targets = getZombiesHudEditorElements();
+  for (const { key, el } of targets) {
+    _ensureTargetLayoutEntry(key, el);
+    el.style.outline = '2px dashed rgba(255,255,255,0.7)';
+    const handle = document.createElement('div');
+    handle.className = 'hud-resize-handle';
+    handle.style.cssText = [
+      'position:absolute;bottom:2px;right:2px;width:14px;height:14px',
+      'background:rgba(255,255,255,0.85);border-radius:3px;pointer-events:none',
+      'font-size:9px;display:flex;align-items:center;justify-content:center;color:#333',
+    ].join(';');
+    handle.textContent = '\u21d8';
+    el.appendChild(handle);
+  }
+
+  _pcEditorOverlay = document.createElement('div');
+  _pcEditorOverlay.id = 'hud-editor-overlay';
+  _pcEditorOverlay.style.cssText = [
+    'position:fixed;top:0;left:0;right:0;pointer-events:none',
+    'z-index:2000;display:flex;flex-direction:column;align-items:center;padding:16px;gap:8px',
+  ].join(';');
+
+  const label = document.createElement('div');
+  label.textContent = 'HUD EDITOR \u2014 drag to move, drag corner to resize, click to adjust opacity';
+  label.style.cssText = [
+    'color:white;font-size:13px;background:rgba(0,0,0,0.65)',
+    'padding:5px 12px;border-radius:6px;pointer-events:none;text-align:center',
+  ].join(';');
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:14px;pointer-events:auto;';
+
+  function _makeBtn(text, bg, fn) {
+    const b = document.createElement('div');
+    b.textContent = text;
+    b.style.cssText = [
+      `padding:8px 24px;font-size:16px;font-weight:bold;background:${bg}`,
+      'color:white;border:2px solid rgba(255,255,255,0.8);border-radius:8px',
+      'user-select:none;cursor:pointer',
+    ].join(';');
+    b.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); fn(); });
+    return b;
+  }
+
+  btnRow.appendChild(_makeBtn('Reset', 'rgba(180,60,60,0.9)', () => {
+    _pcHideOpacityPanel();
+    const layout = gameState.hudConfig.layout;
+    for (const { key, el } of getZombiesHudEditorElements()) {
+      delete layout[key];
+      el.style.transform = '';
+      el.style.transformOrigin = '';
+    }
+    _ensureZombiesLayoutDefaults(layout);
+    applyZombiesHudLayout(layout);
+    saveHudConfig();
+  }));
+  btnRow.appendChild(_makeBtn('Done', 'rgba(60,180,60,0.9)', () => {
+    _stopPcHudEditor();
+    if (onDone) onDone();
+  }));
+
+  _pcEditorOverlay.appendChild(label);
+  _pcEditorOverlay.appendChild(btnRow);
+  document.body.appendChild(_pcEditorOverlay);
+
+  document.addEventListener('mousedown', _pcEditorMouseDown, true);
+  document.addEventListener('mousemove', _pcEditorMouseMove, true);
+  document.addEventListener('mouseup', _pcEditorMouseUp, true);
+}
+
+function _stopPcHudEditor() {
+  _pcHideOpacityPanel();
+  _pcEditorActive = false;
+  hudEditorActive = false;
+  gameState.hudEditorActive = false;
+  for (const { el } of getZombiesHudEditorElements()) {
+    if (!el) continue;
+    el.style.outline = '';
+    el.querySelectorAll('.hud-resize-handle').forEach(h => h.remove());
+  }
+  if (_pcEditorOverlay) { _pcEditorOverlay.remove(); _pcEditorOverlay = null; }
+  saveHudConfig();
+  document.removeEventListener('mousedown', _pcEditorMouseDown, true);
+  document.removeEventListener('mousemove', _pcEditorMouseMove, true);
+  document.removeEventListener('mouseup', _pcEditorMouseUp, true);
+}
+
+function _pcHideOpacityPanel() {
+  if (_pcEditorOpacityPanel) { _pcEditorOpacityPanel.remove(); _pcEditorOpacityPanel = null; }
+  if (_pcEditorSelectedKey) {
+    const el = document.getElementById(_pcEditorSelectedKey);
+    if (el) el.style.outline = '2px dashed rgba(255,255,255,0.7)';
+    _pcEditorSelectedKey = null;
+  }
+}
+
+function _pcShowOpacityPanel(key) {
+  _pcHideOpacityPanel();
+  _pcEditorSelectedKey = key;
+  const el = document.getElementById(key);
+  if (el) el.style.outline = '2px dashed rgba(255,220,80,0.9)';
+  const cfg = gameState.hudConfig?.layout?.[key];
+  if (!cfg) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'hud-opacity-panel';
+  panel.style.cssText = [
+    'position:fixed;top:80px;left:50%;transform:translateX(-50%)',
+    'background:rgba(10,10,10,0.88);border:1px solid rgba(255,255,255,0.18)',
+    'border-radius:10px;padding:12px 24px;z-index:2100;pointer-events:auto',
+    'display:flex;flex-direction:column;align-items:center;gap:8px;min-width:280px',
+  ].join(';');
+
+  const title = document.createElement('div');
+  title.textContent = key.replace('zom-', '').toUpperCase() + ' OPACITY';
+  title.style.cssText = 'color:rgba(255,220,80,0.9);font-size:11px;font-family:sans-serif;font-weight:bold;letter-spacing:1.5px;';
+
+  const sliderRow = document.createElement('div');
+  sliderRow.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '15';
+  slider.max = '100';
+  slider.value = Math.round((cfg.opacity ?? 1.0) * 100);
+  slider.style.cssText = 'flex:1;accent-color:rgba(255,220,80,1);height:20px;cursor:pointer;';
+
+  const pct = document.createElement('span');
+  pct.textContent = slider.value + '%';
+  pct.style.cssText = 'color:white;font-size:14px;font-family:sans-serif;min-width:40px;text-align:right;';
+
+  slider.addEventListener('input', () => {
+    const val = parseInt(slider.value) / 100;
+    cfg.opacity = val;
+    pct.textContent = slider.value + '%';
+    if (el) el.style.opacity = val.toString();
+  });
+
+  sliderRow.appendChild(slider);
+  sliderRow.appendChild(pct);
+  panel.appendChild(title);
+  panel.appendChild(sliderRow);
+  document.body.appendChild(panel);
+  _pcEditorOpacityPanel = panel;
+}
+
+function _pcEditorMouseDown(e) {
+  if (e.button !== 0) return;
+  if (_pcEditorDrag) return;
+  const x = e.clientX, y = e.clientY;
+  if (_pcEditorOpacityPanel) {
+    const r = _pcEditorOpacityPanel.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
+    _pcHideOpacityPanel();
+    return;
+  }
+  if (_pcEditorOverlay) {
+    const r = _pcEditorOverlay.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
+  }
+  for (const { key, el } of getZombiesHudEditorElements()) {
+    const rect = el.getBoundingClientRect();
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      e.preventDefault();
+      e.stopPropagation();
+      _ensureTargetLayoutEntry(key, el);
+      const isResize = (x > rect.right - 22 && y > rect.bottom - 22);
+      _pcEditorDrag = {
+        key, el,
+        startX: x, startY: y,
+        startBtnX: gameState.hudConfig.layout[key].x,
+        startBtnY: gameState.hudConfig.layout[key].y,
+        startScale: gameState.hudConfig.layout[key].scale ?? 1.0,
+        moved: false,
+        resizing: isResize,
+      };
+      return;
+    }
+  }
+}
+
+function _pcEditorMouseMove(e) {
+  if (!_pcEditorDrag) return;
+  e.preventDefault();
+  const dx = e.clientX - _pcEditorDrag.startX;
+  const dy = e.clientY - _pcEditorDrag.startY;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _pcEditorDrag.moved = true;
+  const cfg = gameState.hudConfig.layout[_pcEditorDrag.key];
+  if (_pcEditorDrag.resizing) {
+    const newScale = Math.max(0.3, Math.min(4.0, _pcEditorDrag.startScale + (dx + dy) / 200));
+    cfg.scale = newScale;
+    _pcEditorDrag.el.style.transform = `scale(${newScale})`;
+    _pcEditorDrag.el.style.transformOrigin = 'top left';
+  } else {
+    cfg.x = _pcEditorDrag.startBtnX + dx;
+    cfg.y = _pcEditorDrag.startBtnY + dy;
+    _pcEditorDrag.el.style.left = cfg.x + 'px';
+    _pcEditorDrag.el.style.top = cfg.y + 'px';
+    _pcEditorDrag.el.style.right = '';
+    _pcEditorDrag.el.style.bottom = '';
+    if (_pcEditorDrag.key === 'zom-round' || _pcEditorDrag.key === 'zom-timer-wrap') {
+      const existingScale = cfg.scale;
+      _pcEditorDrag.el.style.transform = existingScale !== undefined ? `scale(${existingScale})` : 'none';
+      _pcEditorDrag.el.style.transformOrigin = 'top left';
+    }
+  }
+}
+
+function _pcEditorMouseUp(e) {
+  if (!_pcEditorDrag) return;
+  if (!_pcEditorDrag.moved && !_pcEditorDrag.resizing) {
+    const key = _pcEditorDrag.key;
+    if (_pcEditorSelectedKey === key) {
+      _pcHideOpacityPanel();
+    } else {
+      _pcShowOpacityPanel(key);
+    }
+  }
+  saveHudConfig();
+  _pcEditorDrag = null;
 }

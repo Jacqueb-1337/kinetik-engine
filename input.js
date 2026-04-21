@@ -11,9 +11,15 @@ export function setPauseToggleCallback(fn) { _pauseToggle = fn; }
 let debugOverlayVisible = false;
 let freecamActive = false;
 let savedCameraState = null;
+let debugOverlayElement = null;
+let debugOverlayInterval = null;
+let debugOverlayLastText = '';
 
 export function initInput() {
   document.addEventListener('keydown', (e) => {
+    const tag = e.target?.tagName;
+    const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable;
+
     gameState.keys[e.code] = true;
     
     // Handle Escape key to toggle pause menu (Keyboard Lock API captures it)
@@ -43,7 +49,7 @@ export function initInput() {
     }
     
     // Handle C key to toggle freecam
-    if (e.code === 'KeyC') {
+    if (e.code === 'KeyC' && !isTyping) {
       e.preventDefault();
       toggleFreecam();
     }
@@ -87,13 +93,10 @@ function toggleDebugOverlay() {
     gameState.shadowCameraHelper.visible = gameState.debugMode;
   }
   
-  let debugOverlay = document.getElementById('debug-overlay');
-  
-  if (debugOverlayVisible && !debugOverlay) {
-    // Create debug overlay
-    debugOverlay = document.createElement('div');
-    debugOverlay.id = 'debug-overlay';
-    debugOverlay.style.cssText = `
+  if (debugOverlayVisible && !debugOverlayElement) {
+    debugOverlayElement = document.createElement('div');
+    debugOverlayElement.id = 'debug-overlay';
+    debugOverlayElement.style.cssText = `
       position: fixed;
       top: 10px;
       left: 10px;
@@ -106,32 +109,39 @@ function toggleDebugOverlay() {
       z-index: 2000;
       pointer-events: none;
       white-space: pre;
+      contain: layout style paint;
     `;
-    document.body.appendChild(debugOverlay);
-    
-    // Update debug info every frame
-    function updateDebugInfo() {
-      const overlay = document.getElementById('debug-overlay');
-      if (!overlay) return;
-      
-      const cam = gameState.camera;
-      const pos = cam.position;
-      const rot = cam.rotation;
-      const fps = gameState.stats ? gameState.stats.fps : 0;
-      
-      overlay.textContent = 
-        `FPS: ${fps}\n` +
-        `Pos: ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}\n` +
-        `Rot: ${(rot.x * 180 / Math.PI).toFixed(1)}°, ${(rot.y * 180 / Math.PI).toFixed(1)}°\n` +
-        `Freecam: ${freecamActive ? 'ON' : 'OFF'}\n` +
-        `Platform: ${platformConfig.platform} (${platformConfig.isMobile ? 'mobile' : 'desktop'})`;
-      
-      requestAnimationFrame(updateDebugInfo);
-    }
+    document.body.appendChild(debugOverlayElement);
     updateDebugInfo();
-  } else if (!debugOverlayVisible && debugOverlay) {
-    // Remove debug overlay
-    debugOverlay.remove();
+    debugOverlayInterval = setInterval(updateDebugInfo, 200);
+  } else if (!debugOverlayVisible && debugOverlayElement) {
+    if (debugOverlayInterval) {
+      clearInterval(debugOverlayInterval);
+      debugOverlayInterval = null;
+    }
+    debugOverlayLastText = '';
+    debugOverlayElement.remove();
+    debugOverlayElement = null;
+  }
+}
+
+function updateDebugInfo() {
+  if (!debugOverlayVisible || !debugOverlayElement || !gameState.camera) return;
+
+  const cam = gameState.camera;
+  const pos = cam.position;
+  const rot = cam.rotation;
+  const fps = gameState.stats ? gameState.stats.fps : 0;
+  const nextText =
+    `FPS: ${fps}\n` +
+    `Pos: ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}\n` +
+    `Rot: ${(rot.x * 180 / Math.PI).toFixed(1)}°, ${(rot.y * 180 / Math.PI).toFixed(1)}°\n` +
+    `Freecam: ${freecamActive ? 'ON' : 'OFF'}\n` +
+    `Platform: ${platformConfig.platform} (${platformConfig.isMobile ? 'mobile' : 'desktop'})`;
+
+  if (nextText !== debugOverlayLastText) {
+    debugOverlayElement.textContent = nextText;
+    debugOverlayLastText = nextText;
   }
 }
 
@@ -140,9 +150,7 @@ function toggleFreecam() {
   
   if (freecamActive) {
     // Don't save camera state anymore - we'll move the camera freely
-    console.log('Freecam enabled - WASD to move camera, Shift=down, Space=up, mouse to look');
   } else {
-    console.log('Freecam disabled - camera restored to player');
   }
 }
 

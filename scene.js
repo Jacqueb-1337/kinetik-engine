@@ -150,7 +150,9 @@ export function initScene() {
   if (!isEditorMode) {
     document.addEventListener('click', async () => {
       if (!gameState.isPaused && !gameState.mainMenuActive) {
-        document.body.requestPointerLock().catch?.(() => {});
+        if (!document.pointerLockElement) {
+          document.body.requestPointerLock().catch?.(() => {});
+        }
         if (!document.fullscreenElement) {
           try {
             await document.documentElement.requestFullscreen();
@@ -168,17 +170,28 @@ export function initScene() {
         }
       }
     });
+    let _skipNextMouseMove = false;
     document.addEventListener('pointerlockchange', () => {
+      const wasLocked = gameState.isPointerLocked;
       gameState.isPointerLocked = (document.pointerLockElement === document.body);
+      if (!wasLocked && gameState.isPointerLocked) {
+        _skipNextMouseMove = true;
+      }
     });
     
     document.addEventListener('mousemove', (event) => {
       if (gameState.isPointerLocked) {
+        if (_skipNextMouseMove) {
+          _skipNextMouseMove = false;
+          return;
+        }
         const sensitivity = gameState.mouseSensitivity || 1.0;
-        gameState.cameraAngle -= event.movementX * 0.002 * sensitivity;
+        const dx = Math.max(-100, Math.min(100, event.movementX));
+        const dy = Math.max(-100, Math.min(100, event.movementY));
+        gameState.cameraAngle -= dx * 0.002 * sensitivity;
         // Invert vertical controls in front-facing third person
         const pitchMultiplier = gameState.cameraMode === 2 ? 1 : -1;
-        gameState.cameraPitch += event.movementY * 0.002 * pitchMultiplier * sensitivity;
+        gameState.cameraPitch += dy * 0.002 * pitchMultiplier * sensitivity;
         gameState.cameraPitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, gameState.cameraPitch));
       }
     });
@@ -514,13 +527,11 @@ export function updateCamera() {
     );
     const intersects = cameraRaycaster.intersectObjects(meshes, true);
     
-    // Use collision-adjusted position if hit, otherwise use intended position
-    if (intersects.length > 0) {
-      // If there's a collision, keep camera at head position (don't move backward through walls)
-      gameState.camera.position.copy(gameState.smoothedCameraPos);
-    } else {
-      gameState.camera.position.copy(intendedCameraPos);
-    }
+    // Smoothly blend between intended and head position on collision to avoid snapping
+    const targetCollisionT = intersects.length > 0 ? 1.0 : 0.0;
+    if (gameState._camCollisionT === undefined) gameState._camCollisionT = targetCollisionT;
+    gameState._camCollisionT += (targetCollisionT - gameState._camCollisionT) * 0.35;
+    gameState.camera.position.lerpVectors(intendedCameraPos, gameState.smoothedCameraPos, gameState._camCollisionT);
     
     gameState.camera.rotation.order = 'YXZ';
     gameState.camera.rotation.y = gameState.cameraAngle;
