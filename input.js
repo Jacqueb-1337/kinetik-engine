@@ -29,10 +29,14 @@ export function initInput() {
       return;
     }
 
-    // Handle F3 key to toggle debug overlay
+    // Handle F3 key to toggle debug overlay (Shift+F3 = pathfinding debug only)
     if (e.code === 'F3') {
       e.preventDefault();
-      toggleDebugOverlay();
+      if (e.shiftKey) {
+        togglePathDebug();
+      } else {
+        toggleDebugOverlay();
+      }
     }
     
     // Handle F5 key to cycle camera mode
@@ -221,3 +225,15 @@ export function isFreecamActive() {
 
 // Export functions for mobile controls to use
 export { toggleDebugOverlay, toggleFreecam, toggleCameraMode };
+
+function togglePathDebug() {
+  gameState.pathDebugMode = !gameState.pathDebugMode;
+  if (!gameState.pathDebugMode && gameState.pathDebugVisualizers) {
+    for (const obj of gameState.pathDebugVisualizers) {
+      gameState.scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
+    gameState.pathDebugVisualizers = [];
+  }
+}

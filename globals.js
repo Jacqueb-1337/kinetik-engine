@@ -26,6 +26,8 @@ export const gameState = {
   actualCameraDistance: 5,  // Actual distance after collision detection
   smoothedCameraPos: null,  // Smoothed position for first-person camera damping
   debugMode: false,
+  pathDebugMode: false,
+  pathDebugVisualizers: [],
   debugFogWireframe: false,  // Toggle fog visualization
   fogWireframe: null,  // Fog boundary wireframe mesh
   hitboxHelper: null,
@@ -82,7 +84,8 @@ export const gameState = {
   zombiesAmmoStations: [],
   zombiesPowerSwitches: [],
   zombiesDropZones:    [],
-  zombiesSpeedMult:    1,              // modified by Stamin-Up perk
+  zombiesJackpot:      [],
+  zombiesSpeedMult:    1,              // modified by Adrenaline perk
   powerupDrops:        [],
 };
 
@@ -96,3 +99,4 @@ export const MOVE_SPEED = 5;
 export const JUMP_SPEED = 10;
 export const cameraDistance = 10;
 export const INTERACT_RANGE = 6;  // Max distance (metres) for all interactable objects
+export function isInteractPress(e) { return e.button === 2; }

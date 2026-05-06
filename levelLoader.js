@@ -267,6 +267,183 @@ const PRIM_GEO = {
   plane:    () => new THREE.PlaneGeometry(1, 1),
 };
 
+// Rope physics simulations running each frame
+const _ropeSimulations = [];
+
+const _ropeFwd   = new THREE.Vector3();
+const _ropeRight = new THREE.Vector3();
+const _ropeUp    = new THREE.Vector3();
+const _worldUp   = new THREE.Vector3(0, 1, 0);
+const _ropeTmp   = new THREE.Vector3();
+
+function _updateRopeTube(posAttr, normAttr, pts, radius, R) {
+  const N = pts.length;
+  for (let i = 0; i < N; i++) {
+    if (i < N - 1) _ropeFwd.subVectors(pts[i + 1], pts[i]).normalize();
+    else _ropeFwd.subVectors(pts[i], pts[i - 1]).normalize();
+    if (Math.abs(_ropeFwd.y) < 0.99) {
+      _ropeRight.crossVectors(_ropeFwd, _worldUp).normalize();
+    } else {
+      _ropeRight.set(1, 0, 0);
+    }
+    _ropeUp.crossVectors(_ropeRight, _ropeFwd).normalize();
+    for (let j = 0; j < R; j++) {
+      const a = (j / R) * Math.PI * 2;
+      const nx = Math.cos(a) * _ropeRight.x + Math.sin(a) * _ropeUp.x;
+      const ny = Math.cos(a) * _ropeRight.y + Math.sin(a) * _ropeUp.y;
+      const nz = Math.cos(a) * _ropeRight.z + Math.sin(a) * _ropeUp.z;
+      const vi = i * R + j;
+      posAttr.setXYZ(vi, pts[i].x + nx * radius, pts[i].y + ny * radius, pts[i].z + nz * radius);
+      normAttr.setXYZ(vi, nx, ny, nz);
+    }
+  }
+  posAttr.needsUpdate = true;
+  normAttr.needsUpdate = true;
+}
+
+function _buildRopeTubeGeo(pts, radius, R) {
+  const N      = pts.length;
+  const totalV = N * R;
+  const positions = new Float32Array(totalV * 3);
+  const normals   = new Float32Array(totalV * 3);
+  const indices   = [];
+  for (let i = 0; i < N - 1; i++) {
+    for (let j = 0; j < R; j++) {
+      const a = i * R + j;
+      const b = i * R + (j + 1) % R;
+      const c = (i + 1) * R + j;
+      const d = (i + 1) * R + (j + 1) % R;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo      = new THREE.BufferGeometry();
+  const posAttr  = new THREE.BufferAttribute(positions, 3);
+  const normAttr = new THREE.BufferAttribute(normals, 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  normAttr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('position', posAttr);
+  geo.setAttribute('normal', normAttr);
+  geo.setIndex(indices);
+  _updateRopeTube(posAttr, normAttr, pts, radius, R);
+  return geo;
+}
+
+function _stepRope(sim, delta) {
+  const { pts, prev, anchored, restLen, damping } = sim;
+  const N  = pts.length;
+  const g  = -9.8;
+  const SUBSTEPS = 4;
+  const ITERS    = 8;
+  const subDt    = Math.min(delta, 0.05) / SUBSTEPS;
+  for (let s = 0; s < SUBSTEPS; s++) {
+    for (let i = 0; i < N; i++) {
+      if (anchored[i]) continue;
+      const vx = (pts[i].x - prev[i].x) * damping;
+      const vy = (pts[i].y - prev[i].y) * damping;
+      const vz = (pts[i].z - prev[i].z) * damping;
+      const nx = pts[i].x + vx;
+      const ny = pts[i].y + vy + g * subDt * subDt;
+      const nz = pts[i].z + vz;
+      prev[i].copy(pts[i]);
+      pts[i].x = nx; pts[i].y = ny; pts[i].z = nz;
+    }
+    for (let k = 0; k < ITERS; k++) {
+      for (let i = 0; i < N - 1; i++) {
+        const dx   = pts[i + 1].x - pts[i].x;
+        const dy   = pts[i + 1].y - pts[i].y;
+        const dz   = pts[i + 1].z - pts[i].z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 1e-6) continue;
+        const diff = (dist - restLen) / dist * 0.5;
+        const hx = dx * diff, hy = dy * diff, hz = dz * diff;
+        if (!anchored[i])     { pts[i].x     += hx; pts[i].y     += hy; pts[i].z     += hz; }
+        if (!anchored[i + 1]) { pts[i + 1].x -= hx; pts[i + 1].y -= hy; pts[i + 1].z -= hz; }
+      }
+    }
+  }
+}
+
+function _findSceneObj(id) {
+  let found = null;
+  gameState.scene.traverse(obj => { if (!found && obj.userData.editorId === id) found = obj; });
+  return found;
+}
+
+function spawnRope(entry) {
+  const p       = entry.geomParams ?? {};
+  const segs    = Math.max(2, Math.round(p.ropeSegs    ?? 12));
+  const radius  = Math.max(0.001, p.ropeRadius ?? 0.015);
+  const ropLen  = p.ropeLength   ?? 1.2;
+  const sag     = p.ropeSag      ?? 0.5;
+  const damping = p.ropeDamping  ?? 0.985;
+  const bOff    = p.anchorBOffset ?? [0, -0.5, 0];
+  const ancBId  = p.anchorBId    ?? null;
+  const ancBWorldOff = p.anchorBWorldOffset ? new THREE.Vector3(...p.anchorBWorldOffset) : null;
+  const ancAId  = p.anchorAId    ?? null;
+  const ancAOff = p.anchorAOffset ? new THREE.Vector3(...p.anchorAOffset) : null;
+  const R       = 6;
+  const ax = entry.pos[0], ay = entry.pos[1], az = entry.pos[2];
+  const bx = ax + bOff[0], by = ay + bOff[1], bz = az + bOff[2];
+  const pts  = [];
+  const prev = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const x = ax + (bx - ax) * t;
+    const y = ay + (by - ay) * t - sag * ropLen * 0.25 * 4 * t * (1 - t);
+    const z = az + (bz - az) * t;
+    pts.push(new THREE.Vector3(x, y, z));
+    prev.push(new THREE.Vector3(x, y, z));
+  }
+  const anchored  = new Uint8Array(segs + 1);
+  anchored[0]     = ancAId != null ? 1 : 1;
+  anchored[segs]  = ancBId != null ? 1 : 0;
+  const restLen   = ropLen / segs;
+  const geo       = _buildRopeTubeGeo(pts, radius, R);
+  const mat       = new THREE.MeshStandardMaterial({ color: entry.color ?? '#222222', roughness: 0.9 });
+  const mesh      = new THREE.Mesh(geo, mat);
+  mesh.position.set(0, 0, 0);
+  mesh.frustumCulled   = false;
+  mesh.castShadow      = entry.castShadow !== false;
+  mesh.receiveShadow   = true;
+  mesh.userData.levelObj   = true;
+  mesh.userData.editorId   = entry.id;
+  mesh.userData.collidable = false;
+  mesh.userData.isRope     = true;
+  _ropeSimulations.push({ pts, prev, anchored, restLen, damping, radius, R, mesh, ancBId, ancBWorldOff, ancAId, ancAOff });
+  return mesh;
+}
+
+export function tickRopes(delta) {
+  for (const sim of _ropeSimulations) {
+    if (sim.ancAId != null) {
+      const obj = _findSceneObj(sim.ancAId);
+      if (obj) {
+        obj.getWorldPosition(_ropeTmp);
+        if (sim.ancAOff) _ropeTmp.add(sim.ancAOff);
+        sim.pts[0].copy(_ropeTmp);
+        sim.prev[0].copy(_ropeTmp);
+      }
+    }
+    if (sim.ancBId != null) {
+      const obj = _findSceneObj(sim.ancBId);
+      if (obj) {
+        obj.getWorldPosition(_ropeTmp);
+        if (sim.ancBWorldOff) _ropeTmp.add(sim.ancBWorldOff);
+        const last = sim.pts.length - 1;
+        sim.pts[last].copy(_ropeTmp);
+        sim.prev[last].copy(_ropeTmp);
+        sim.anchored[last] = 1;
+      }
+    }
+    _stepRope(sim, delta);
+    _updateRopeTube(
+      sim.mesh.geometry.attributes.position,
+      sim.mesh.geometry.attributes.normal,
+      sim.pts, sim.radius, sim.R
+    );
+  }
+}
+
 const ZOMBIE_PRIM_GEO = {
   'zombie-spawn': () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
   'zom-wallbuy':  () => new THREE.BoxGeometry(1, 1, 1),
@@ -389,7 +566,7 @@ function spawnLight(entry) {
   light.castShadow = entry.castShadow !== false;
   if (light.castShadow) {
     const isPoint = entry.type === 'point-light';
-    light.shadow.mapSize.set(isPoint ? 2048 : 1024, isPoint ? 2048 : 1024);
+    light.shadow.mapSize.set(512, 512);
     light.shadow.camera.near = 0.1;
     light.shadow.camera.far  = isPoint
       ? (entry.distance > 0 ? entry.distance : 500)
@@ -445,7 +622,14 @@ function spawnModel(entry) {
           const key = c.name || c.uuid;
           const ovr = entry.meshOverrides[key];
           if (!ovr) return;
-          if (ovr.visible === false) c.visible = false;
+          if (ovr.visible === false) {
+            if (Array.isArray(c.material)) {
+              c.material = c.material.map(m => { const n = m.clone(); n.visible = false; return n; });
+            } else if (c.material) {
+              c.material = c.material.clone();
+              c.material.visible = false;
+            }
+          }
           if (ovr.texture) {
             const name = ovr.texture;
             const applyTex = tex => {
@@ -497,18 +681,27 @@ function spawnModel(entry) {
           if (!texName) continue;
           const matKey = MAP_SLOTS[slot];
           if (!matKey) continue;
-          const applyTex = tex => {
-            if (!tex) return;
-            tex.colorSpace = slot === 'diffuse' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+          const resCap = entry.modelMapRes?.[slot] || null;
+          const colorSpace = slot === 'diffuse' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+          (async () => {
+            let blob = null;
+            for (const ext of ['png', 'jpg']) {
+              try { const r = await fetch(`./textures/${texName}.${ext}`); if (r.ok) { blob = await r.blob(); break; } } catch {}
+            }
+            if (!blob) return;
+            const bmpOpts = resCap ? { resizeWidth: resCap, resizeHeight: resCap, resizeQuality: 'high', imageOrientation: 'flipY' } : { imageOrientation: 'flipY' };
+            const bmp = await createImageBitmap(blob, bmpOpts);
+            const tex = new THREE.Texture(bmp);
+            tex.flipY = false;
+            tex.colorSpace = colorSpace;
             tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.needsUpdate = true;
             root.traverse(c => {
               if (!c.isMesh) return;
               const mats = Array.isArray(c.material) ? c.material : [c.material];
               mats.forEach(m => { if (m) { m[matKey] = tex; m.needsUpdate = true; } });
             });
-          };
-          getTexLoader().load(`./textures/${texName}.png`, applyTex, undefined,
-            () => getTexLoader().load(`./textures/${texName}.jpg`, applyTex));
+          })();
         }
       }
       if (entry.doubleSide) {
@@ -572,9 +765,10 @@ async function spawnCsgResult(entry) {
     result.scale.setScalar(1);
     result.castShadow    = entry.castShadow !== false;
     result.receiveShadow = true;
-    result.userData.collidable = entry.collidable !== false;
-    result.userData.levelObj   = true;
-    result.userData.editorId   = entry.id;
+    result.userData.collidable  = entry.collidable !== false;
+    result.userData.levelObj    = true;
+    result.userData.editorId    = entry.id;
+    result.userData.isCsgResult = true;
     if (entry.emissiveIntensity > 0) {
       const col = new THREE.Color(entry.emissiveColor ?? '#ffffff');
       const mats = Array.isArray(result.material) ? result.material : [result.material];
@@ -639,7 +833,14 @@ function spawnMergedModel(entry) {
       if (!c.isMesh) return;
       const ovr = entry.meshOverrides[c.name];
       if (!ovr) return;
-      if (ovr.visible === false) c.visible = false;
+      if (ovr.visible === false) {
+        if (Array.isArray(c.material)) {
+          c.material = c.material.map(m => { const n = m.clone(); n.visible = false; return n; });
+        } else if (c.material) {
+          c.material = c.material.clone();
+          c.material.visible = false;
+        }
+      }
       if (ovr.texture) {
         const name = ovr.texture;
         const applyTex = tex => {
@@ -887,6 +1088,7 @@ export async function loadLevel(name = 'main') {
   gameState.currentLevel = name;
   gameState.saveTriggers    = [];  // clear triggers from previous level
   gameState.customTriggers  = [];
+  _ropeSimulations.length   = 0;
 
   let data = null;
   try {
@@ -917,6 +1119,7 @@ export async function loadLevel(name = 'main') {
   gameState.zombiesAmmoStations = [];
   gameState.zombiesPowerSwitches = [];
   gameState.zombiesDropZones    = [];
+  gameState.zombiesJackpot      = [];
   gameState.zombiesConfig          = data.zombiesConfig ?? null;
   gameState.zombiesMapDisplayName   = data.zombiesMapDisplayName ?? null;
 
@@ -1064,7 +1267,6 @@ export async function loadLevel(name = 'main') {
           _obj:         marker,
           editorId:     entry.id,
           tierCount:    entry.papTierCount ?? null,
-          tierCosts:    entry.papTierCosts || [],
           requirePower: entry.requirePower !== false,
         });
         obj = marker;
@@ -1095,6 +1297,14 @@ export async function loadLevel(name = 'main') {
           weight: entry.dropWeight ?? 1,
         });
         obj = marker;
+      } else if (entry.type === 'zom-jackpot') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomJackpot = true;
+        gameState.zombiesJackpot.push({
+          _obj:     marker,
+          editorId: entry.id,
+        });
+        obj = marker;
       } else if (entry.type === 'csg-result') {
         obj = await spawnCsgResult(entry);
       } else if (entry.type === 'merged-model') {
@@ -1105,6 +1315,8 @@ export async function loadLevel(name = 'main') {
         obj = await spawnModel(entry);
       } else if (entry.type === 'point-light' || entry.type === 'spot-light' || entry.type === 'dir-light') {
         obj = spawnLight(entry);
+      } else if (entry.type === 'rope') {
+        obj = spawnRope(entry);
       } else {
         obj = spawnPrim(entry);
       }

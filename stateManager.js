@@ -1,9 +1,13 @@
 ﻿// stateManager.js — Manages object/light state machines for level interactables
 import * as THREE from 'three';
 import { gameState } from './globals.js';
+import { initWarble } from '../game/warble.js';
 
 let _textureFn = null;
 export function setTextureFn(fn) { _textureFn = fn; }
+
+const _objectStateHooks = [];
+export function onObjectStateAdvanced(fn) { _objectStateHooks.push(fn); }
 
 // ─── Level variables (set by levelLoader, mutated by custom triggers) ─────────
 export const levelVars = {};
@@ -23,7 +27,17 @@ function _fireActiveVars(obj, newIdx) {
 
 let _audioCtx = null;
 function _getAudioCtx() {
-  if (!_audioCtx) _audioCtx = new AudioContext();
+  if (!_audioCtx) {
+    _audioCtx = new AudioContext();
+    const realDest = _audioCtx.destination;
+    const insertBus = _audioCtx.createGain();
+    insertBus.connect(realDest);
+    Object.defineProperty(_audioCtx, 'destination', {
+      get: () => insertBus,
+      configurable: true
+    });
+    initWarble(_audioCtx, insertBus, realDest).catch(() => {});
+  }
   if (_audioCtx.state === 'suspended') _audioCtx.resume();
   return _audioCtx;
 }
@@ -255,6 +269,9 @@ export function advanceObjectState(obj) {
   } else {
     _startStateAnim(obj, state, duration);
   }
+  if (obj.userData.editorId && _objectStateHooks.length) {
+    for (const fn of _objectStateHooks) fn(obj.userData.editorId, nextIdx);
+  }
   // Advance all wired link targets too
   if (obj.userData.linkedObjects?.length) {
     for (const linked of obj.userData.linkedObjects) {
@@ -434,6 +451,7 @@ function _applyStateImmediate(obj, state) {
   }
   if (state.collidableEnabled && state.collidable != null) {
     obj.userData.collidable = state.collidable;
+    obj.traverse(c => { if (c.isMesh) c.userData.collidable = state.collidable; });
   }
   if (state.interactiveEnabled && state.interactive != null) {
     obj.userData.stateInteractive = state.interactive;
@@ -491,6 +509,23 @@ function _startStateAnim(obj, state, duration) {
   // Cancel any existing animation on this object
   const existing = _anims.findIndex(a => a.obj === obj);
   if (existing !== -1) _anims.splice(existing, 1);
+
+  // Discrete (non-interpolated) properties are applied immediately, even for animated transitions.
+  if (state.collidableEnabled && state.collidable != null) {
+    obj.userData.collidable = state.collidable;
+    obj.traverse(c => { if (c.isMesh) c.userData.collidable = state.collidable; });
+  }
+  if (state.visibleEnabled && state.visible != null) {
+    obj.visible = !!state.visible;
+  }
+  if (state.castShadowEnabled && state.castShadow != null) {
+    const v = !!state.castShadow;
+    obj.castShadow = v;
+    obj.traverse(c => {
+      if (c.isMesh)  c.castShadow = v;
+      if (c.isLight) c.castShadow = v;
+    });
+  }
 
   const posOn      = state.posEnabled   !== false;
   const rotOn      = state.rotEnabled   !== false;
@@ -582,9 +617,6 @@ function _startStateAnim(obj, state, duration) {
   }
 
   // Boolean fields: apply immediately at animation start
-  if (state.collidableEnabled && state.collidable != null) {
-    obj.userData.collidable = state.collidable;
-  }
   if (state.interactiveEnabled && state.interactive != null) {
     obj.userData.stateInteractive = state.interactive;
   }

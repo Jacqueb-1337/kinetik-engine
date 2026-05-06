@@ -121,6 +121,10 @@ const E = {
   pivotMode:     false,
   pivotSource:   null,   // the object whose pivot we're setting
 
+  // Rope anchor attach mode
+  ropeAnchorMode:   null,   // null | 'A' | 'B'
+  ropeAnchorSource: null,   // the rope object being edited
+
   // Per-face texture selection
   selectedFace:      null,   // null = 'all', 0-5 = specific box face
   facePickMode:      false,
@@ -642,6 +646,7 @@ function levelToJSON() {
     if (obj.userData.colorSpace) entry.colorSpace = obj.userData.colorSpace;
     if (obj.userData.pbrConverted) entry.pbrConverted = true;
     if (obj.userData.modelMaps)    entry.modelMaps = obj.userData.modelMaps;
+    if (obj.userData.modelMapRes)  entry.modelMapRes = obj.userData.modelMapRes;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -700,7 +705,6 @@ function levelToJSON() {
         entry.weaponPool = obj.userData.weaponPool ?? [];
       } else if (t === 'zom-pap') {
         if (obj.userData.tierCount != null)    entry.papTierCount = obj.userData.tierCount;
-        if (obj.userData.tierCosts?.length)    entry.papTierCosts = obj.userData.tierCosts;
         entry.requirePower = obj.userData.requirePower !== false;
       } else if (t === 'zom-ammo') {
         entry.ammoCost = obj.userData.ammoCost ?? 500;
@@ -848,6 +852,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         if (entry.bones?.length)  { root.userData.bones = entry.bones; root.userData.boneMode = entry.boneMode || 'rigid'; }
         if (entry.colorSpace)     root.userData.colorSpace = entry.colorSpace;
         if (entry.pbrConverted)   root.userData.pbrConverted = true;
+        if (entry.modelMapRes)    root.userData.modelMapRes = entry.modelMapRes;
         if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
         E.placedGroup.add(root);
         resolve(root);
@@ -921,6 +926,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
       if (entry.pivotOffset)    root.userData.pivotOffset = entry.pivotOffset;
       if (entry.colorSpace)     root.userData.colorSpace = entry.colorSpace;
       if (entry.pbrConverted)   root.userData.pbrConverted = true;
+      if (entry.modelMapRes)     root.userData.modelMapRes = entry.modelMapRes;
       if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
       if (entry.emissiveIntensity > 0) {
         root.userData.emissiveIntensity = entry.emissiveIntensity;
@@ -940,7 +946,14 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
           const key = c.name || c.uuid;
           const ovr = entry.meshOverrides[key];
           if (!ovr) return;
-          if (ovr.visible === false) c.visible = false;
+          if (ovr.visible === false) {
+            if (Array.isArray(c.material)) {
+              c.material = c.material.map(m => { const n = m.clone(); n.visible = false; return n; });
+            } else if (c.material) {
+              c.material = c.material.clone();
+              c.material.visible = false;
+            }
+          }
           if (ovr.texture) _applyMeshEditorTexture(c, ovr.texture);
         });
       }
@@ -1047,6 +1060,8 @@ const PRIM_GEOS = {
   'zom-power':    () => new THREE.BoxGeometry(1, 1, 1),
   'zom-door':     () => new THREE.BoxGeometry(1, 1, 1),
   'zom-drop':     () => new THREE.SphereGeometry(0.5, 8, 6),
+  'zom-jackpot':  () => new THREE.BoxGeometry(1, 1.5, 1),
+  rope:            () => new THREE.CylinderGeometry(0.015, 0.015, 0.5, 6),
 };
 
 function isLightType(t) {
@@ -1062,12 +1077,12 @@ function isPlayerSpawnType(t) {
 }
 
 function isZombieType(t) {
-  return ['zombie-spawn','zom-wallbuy','zom-perk','zom-mystery','zom-pap','zom-ammo','zom-power','zom-door','zom-drop'].includes(t);
+  return ['zombie-spawn','zom-wallbuy','zom-perk','zom-mystery','zom-pap','zom-ammo','zom-power','zom-door','zom-drop','zom-jackpot'].includes(t);
 }
 
 function zombieTypeColor(t) {
   return ({'zombie-spawn':0x44ff44,'zom-wallbuy':0xffaa33,'zom-perk':0xff3333,'zom-mystery':0xffdd00,
-           'zom-pap':0xdd44ff,'zom-ammo':0x44ddff,'zom-power':0xffffff,'zom-door':0xaa6622,'zom-drop':0x88ff44})[t] ?? 0xffffff;
+           'zom-pap':0xdd44ff,'zom-ammo':0x44ddff,'zom-power':0xffffff,'zom-door':0xaa6622,'zom-drop':0x88ff44,'zom-jackpot':0xffcc00})[t] ?? 0xffffff;
 }
 
 const LIGHT_DEFAULTS = {
@@ -1083,6 +1098,7 @@ const GEOM_DEFAULTS = {
   sphere:   { wSegs: 16, hSegs: 12, phi: 360, theta: 180 },
   cylinder: { radSegs: 16, hSegs: 1, radTop: 1, open: false },
   plane:    { wSegs: 1, hSegs: 1 },
+  rope:     { ropeLength: 1.2, ropeRadius: 0.015, ropeSegs: 12, ropeSag: 0.5, ropeDamping: 0.985, anchorBOffset: [0, -0.5, 0], anchorBId: null },
 };
 
 // Build the correct BufferGeometry from a primitive type + params
@@ -1109,8 +1125,32 @@ function buildGeometry(type, p = {}) {
   if (type === 'plane') {
     return new THREE.PlaneGeometry(1, 1, p.wSegs ?? d.wSegs, p.hSegs ?? d.hSegs);
   }
+  if (type === 'rope') {
+    return _buildRopeCatenaryGeo(p);
+  }
   // Triggers / unsupported — return as-is
   return PRIM_GEOS[type]?.() ?? new THREE.BoxGeometry(1, 1, 1);
+}
+
+function _buildRopeCatenaryGeo(p) {
+  const d = GEOM_DEFAULTS.rope;
+  const segs   = Math.max(2, Math.round(p.ropeSegs   ?? d.ropeSegs));
+  const radius = Math.max(0.001, p.ropeRadius ?? d.ropeRadius);
+  const sag    = p.ropeSag   ?? d.ropeSag;
+  const bOff   = p.anchorBOffset ?? d.anchorBOffset;
+  const B      = new THREE.Vector3(bOff[0], bOff[1], bOff[2]);
+  const len    = B.length() || 1;
+  const pts    = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    pts.push(new THREE.Vector3(
+      B.x * t,
+      B.y * t - sag * len * 0.25 * 4 * t * (1 - t),
+      B.z * t
+    ));
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  return new THREE.TubeGeometry(curve, segs, radius, 6, false);
 }
 
 // Swap geometry on an existing mesh (preserves material, position, scale etc.)
@@ -1134,7 +1174,7 @@ function refreshGeomPanel(obj) {
   const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
 
   // Hide all sub-sections, show the right one
-  ['box','sphere','cylinder','plane'].forEach(t => {
+  ['box','sphere','cylinder','plane','rope'].forEach(t => {
     const el = document.getElementById('geom-' + t);
     if (el) el.style.display = (t === type) ? '' : 'none';
   });
@@ -1158,6 +1198,45 @@ function refreshGeomPanel(obj) {
   } else if (type === 'plane') {
     set('geom-plane-ws', p.wSegs ?? d.wSegs);
     set('geom-plane-hs', p.hSegs ?? d.hSegs);
+  } else if (type === 'rope') {
+    set('geom-rope-len',  p.ropeLength  ?? d.ropeLength);
+    set('geom-rope-rad',  p.ropeRadius  ?? d.ropeRadius);
+    set('geom-rope-segs', p.ropeSegs    ?? d.ropeSegs);
+    set('geom-rope-sag',  p.ropeSag     ?? d.ropeSag);
+    set('geom-rope-damp', p.ropeDamping ?? d.ropeDamping);
+    const bOff = p.anchorBOffset ?? d.anchorBOffset;
+    set('geom-rope-bx', bOff[0]);
+    set('geom-rope-by', bOff[1]);
+    set('geom-rope-bz', bOff[2]);
+    const el = document.getElementById('geom-rope-bid');
+    if (el && document.activeElement !== el) el.value = (p.anchorBId != null) ? p.anchorBId : '';
+
+    const aLabel  = document.getElementById('geom-rope-aid-label');
+    const detachA = document.getElementById('btn-rope-detach-a');
+    if (aLabel && detachA) {
+      if (p.anchorAId != null) {
+        let name = '#' + p.anchorAId;
+        obj.parent?.traverse(o => { if (o.userData.editorId === p.anchorAId && o.name) name = o.name; });
+        aLabel.textContent = name;
+        detachA.style.display = '';
+      } else {
+        aLabel.textContent = '(free)';
+        detachA.style.display = 'none';
+      }
+    }
+    const bLabel  = document.getElementById('geom-rope-bid-label');
+    const detachB = document.getElementById('btn-rope-detach-b');
+    if (bLabel && detachB) {
+      if (p.anchorBId != null) {
+        let name = '#' + p.anchorBId;
+        obj.parent?.traverse(o => { if (o.userData.editorId === p.anchorBId && o.name) name = o.name; });
+        bLabel.textContent = name;
+        detachB.style.display = '';
+      } else {
+        bLabel.textContent = '(free)';
+        detachB.style.display = 'none';
+      }
+    }
   }
 }
 
@@ -1648,6 +1727,7 @@ function getMeshOpacity(obj) {
 function setMeshOpacity(obj, v) {
   if (!obj.material) return;
   obj.userData._opacity = v;
+  if (isZombieType(obj.userData.primType) || isTriggerType(obj.userData.primType) || isPlayerSpawnType(obj.userData.primType)) return;
   const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
   mats.forEach(m => { m.transparent = v < 1; m.opacity = v; m.needsUpdate = true; });
 }
@@ -1934,7 +2014,6 @@ function spawnPrimFromEntry(entry) {
       mesh.userData.weaponPool     = entry.weaponPool ? [...entry.weaponPool] : [];
     } else if (entry.type === 'zom-pap') {
       mesh.userData.tierCount    = entry.papTierCount ?? null;
-      mesh.userData.tierCosts    = entry.papTierCosts ? [...entry.papTierCosts] : [];
       mesh.userData.requirePower = entry.requirePower !== false;
     } else if (entry.type === 'zom-ammo') {
       mesh.userData.ammoCost = entry.ammoCost ?? 500;
@@ -1947,6 +2026,7 @@ function spawnPrimFromEntry(entry) {
     if (entry.opacity !== undefined) {
       mesh.userData._opacity = entry.opacity;
       setMeshOpacity(mesh, entry.opacity);
+      syncOpacityWireframe(mesh);
     }
     if (entry.emissiveIntensity > 0 && mesh.material) {
       mesh.userData.emissiveIntensity = entry.emissiveIntensity;
@@ -2186,6 +2266,23 @@ function commitPlace(worldPos) {
       actorVariants:      [],
     };
     mesh.name = 'ActorSpawn_' + id;
+    pushUndo();
+    E.placedGroup.add(mesh);
+    selectObj(mesh); updateSceneList(); markDirty();
+  } else if (E.placingType === 'rope') {
+    const d = GEOM_DEFAULTS.rope;
+    const mesh = makePrimMesh('rope', '#222222');
+    mesh.position.copy(worldPos);
+    mesh.userData = {
+      primType:   'rope',
+      editorId:   id,
+      label:      '',
+      collidable: false,
+      _baseColor: '#222222',
+      geomParams: { ...d, anchorBOffset: [...d.anchorBOffset] },
+    };
+    mesh.name = 'rope_' + id;
+    rebuildGeometry(mesh, true);
     pushUndo();
     E.placedGroup.add(mesh);
     selectObj(mesh); updateSceneList(); markDirty();
@@ -2772,7 +2869,6 @@ function updateProps(obj) {
     if (isPAP) {
       const setV = (id, val) => { const el = document.getElementById(id); if (el && document.activeElement !== el) el.value = val ?? ''; };
       setV('pap-tiers',      obj.userData.tierCount ?? '');
-      setV('pap-tier-costs', (obj.userData.tierCosts ?? []).join(', '));
       const el = document.getElementById('pap-require-power');
       if (el) el.checked = obj.userData.requirePower !== false;
     }
@@ -4260,9 +4356,23 @@ function openMeshEditor() {
     chk.checked = ovr.visible !== false;
     chk.style.cursor = 'pointer';
     chk.addEventListener('change', () => {
-      mesh.visible = chk.checked;
       if (!overrides[key]) overrides[key] = {};
       overrides[key].visible = chk.checked;
+      if (chk.checked) {
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map(m => { const n = m.clone(); n.visible = true; return n; });
+        } else if (mesh.material) {
+          mesh.material = mesh.material.clone();
+          mesh.material.visible = true;
+        }
+      } else {
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map(m => { const n = m.clone(); n.visible = false; return n; });
+        } else if (mesh.material) {
+          mesh.material = mesh.material.clone();
+          mesh.material.visible = false;
+        }
+      }
       markDirty();
     });
 
@@ -4856,24 +4966,57 @@ function _ensureModelPbr(obj) {
   }
 }
 
+let _ibLoader = null;
+function _getIBLoader() {
+  if (!_ibLoader) { _ibLoader = new THREE.ImageBitmapLoader(); _ibLoader.setOptions({ imageOrientation: 'flipY' }); }
+  return _ibLoader;
+}
+function _loadTexIB(url) {
+  return new Promise(r => _getIBLoader().load(url, bmp => { const t = new THREE.Texture(bmp); t.flipY = false; t.needsUpdate = true; r(t); }, undefined, () => r(null)));
+}
+const _texInitQueue = [];
+let _texInitRunning = false;
+function _scheduleTexInit(tex) {
+  _texInitQueue.push(tex);
+  if (!_texInitRunning) { _texInitRunning = true; requestAnimationFrame(_drainTexInit); }
+}
+function _drainTexInit() {
+  const tex = _texInitQueue.shift();
+  if (tex && E.renderer) E.renderer.initTexture(tex);
+  if (_texInitQueue.length) requestAnimationFrame(_drainTexInit);
+  else _texInitRunning = false;
+}
 async function _applyModelMapsToObj(obj, maps) {
   if (!maps) return;
-  const loader = new THREE.TextureLoader();
-  const tryLoad = url => new Promise(r => loader.load(url, r, undefined, () => r(null)));
-  for (const [slot, texName] of Object.entries(maps)) {
-    if (!texName) continue;
-    const matKey = MODEL_MAP_SLOTS[slot];
-    if (!matKey) continue;
-    let tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.png`);
-    if (!tex) tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.jpg`);
-    if (!tex) continue;
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    obj.traverse(c => {
-      if (!c.isMesh) return;
-      const mats = Array.isArray(c.material) ? c.material : [c.material];
-      mats.forEach(m => { if (m) { m[matKey] = tex; m.needsUpdate = true; } });
-    });
-  }
+  const res = obj.userData.modelMapRes || {};
+  const entries = Object.entries(maps).filter(([, v]) => v);
+  await Promise.all(entries.map(async ([slot, texName]) => {
+    const matKey = MODEL_MAP_SLOTS[slot]; if (!matKey) return;
+    const colorSpace = slot === 'diffuse' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+    const resCap = res[slot] || null;
+    let blob = null;
+    for (const ext of ['png', 'jpg']) {
+      try { const r = await fetch(`${ASSET_ROOT}textures/${texName}.${ext}`); if (r.ok) { blob = await r.blob(); break; } } catch {}
+    }
+    if (!blob) return;
+    const applyTex = tex => {
+      tex.colorSpace = colorSpace;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      obj.traverse(c => {
+        if (!c.isMesh) return;
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(m => { if (m) { m[matKey] = tex; m.needsUpdate = true; } });
+      });
+    };
+    const smallBmp = await createImageBitmap(blob, { resizeWidth: 64, resizeHeight: 64, resizeQuality: 'low', imageOrientation: 'flipY' });
+    const smallTex = new THREE.Texture(smallBmp); smallTex.flipY = false; smallTex.needsUpdate = true;
+    applyTex(smallTex);
+    const fullOpts = resCap ? { resizeWidth: resCap, resizeHeight: resCap, resizeQuality: 'high', imageOrientation: 'flipY' } : { imageOrientation: 'flipY' };
+    const fullBmp = await createImageBitmap(blob, fullOpts);
+    const fullTex = new THREE.Texture(fullBmp); fullTex.flipY = false; fullTex.needsUpdate = true;
+    _scheduleTexInit(fullTex);
+    applyTex(fullTex);
+  }));
 }
 
 async function applyModelMapSlot(obj, slot, texName) {
@@ -4889,12 +5032,18 @@ async function applyModelMapSlot(obj, slot, texName) {
   }
   if (slot !== 'diffuse') _ensureModelPbr(obj);
   const matKey = MODEL_MAP_SLOTS[slot]; if (!matKey) return;
-  const loader = new THREE.TextureLoader();
-  const tryLoad = url => new Promise(r => loader.load(url, r, undefined, () => r(null)));
-  let tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.png`);
-  if (!tex) tex = await tryLoad(`${ASSET_ROOT}textures/${texName}.jpg`);
-  if (!tex) { setStatus(`Texture "${texName}" not found`); return; }
+  const resCap = obj.userData.modelMapRes?.[slot] || null;
+  let blob = null;
+  for (const ext of ['png', 'jpg']) {
+    try { const r = await fetch(`${ASSET_ROOT}textures/${texName}.${ext}`); if (r.ok) { blob = await r.blob(); break; } } catch {}
+  }
+  if (!blob) { setStatus(`Texture "${texName}" not found`); return; }
+  const bmpOpts = resCap ? { resizeWidth: resCap, resizeHeight: resCap, resizeQuality: 'high', imageOrientation: 'flipY' } : { imageOrientation: 'flipY' };
+  const bmp = await createImageBitmap(blob, bmpOpts);
+  const tex = new THREE.Texture(bmp); tex.flipY = false; tex.needsUpdate = true;
+  tex.colorSpace = slot === 'diffuse' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  _scheduleTexInit(tex);
   obj.traverse(c => {
     if (!c.isMesh) return;
     const mats = Array.isArray(c.material) ? c.material : [c.material];
@@ -4911,9 +5060,12 @@ function refreshModelMapsPanel(obj) {
   if (dl && E.availableTextures) {
     dl.innerHTML = E.availableTextures.map(t => `<option value="${t}">`).join('');
   }
+  const res = obj?.userData?.modelMapRes || {};
   ['diffuse','normal','roughness','metalness'].forEach(slot => {
     const el = document.getElementById(`mmap-${slot}`);
     if (el) el.value = maps[slot] || '';
+    const rel = document.getElementById(`mmap-res-${slot}`);
+    if (rel) rel.value = res[slot] ? String(res[slot]) : '';
   });
 }
 
@@ -5144,6 +5296,74 @@ function applyPivot(worldPoint) {
   document.getElementById('btn-reset-pivot').style.display = '';
   markDirty();
   setStatus(`Pivot set to (${localHit.x.toFixed(2)}, ${localHit.y.toFixed(2)}, ${localHit.z.toFixed(2)}) in local space`);
+}
+
+// ─── Rope anchor attach ───────────────────────────────────────────────────────
+function beginRopeAnchor(end) {
+  const obj = E.selected;
+  if (!obj || obj.userData.primType !== 'rope') {
+    setStatus('Select a rope first');
+    return;
+  }
+  E.ropeAnchorMode   = end;
+  E.ropeAnchorSource = obj;
+  document.getElementById('rope-anchor-hint').style.display = '';
+  document.getElementById('btn-rope-attach-a').classList.toggle('active', end === 'A');
+  document.getElementById('btn-rope-attach-b').classList.toggle('active', end === 'B');
+  setStatus(`Rope End ${end} — click any surface to attach (Esc cancels)`);
+}
+
+function cancelRopeAnchor() {
+  if (!E.ropeAnchorMode) return;
+  E.ropeAnchorMode   = null;
+  E.ropeAnchorSource = null;
+  document.getElementById('rope-anchor-hint').style.display = 'none';
+  document.getElementById('btn-rope-attach-a').classList.remove('active');
+  document.getElementById('btn-rope-attach-b').classList.remove('active');
+  setStatus('Rope attach cancelled');
+}
+
+function applyRopeAnchor(worldPoint, hitObj) {
+  const end  = E.ropeAnchorMode;
+  const rope = E.ropeAnchorSource;
+  cancelRopeAnchor();
+  if (!rope || !end) return;
+  const p = rope.userData.geomParams ??= {};
+  if (end === 'A') {
+    const prevPos = rope.position.clone();
+    const delta   = worldPoint.clone().sub(prevPos);
+    rope.position.copy(worldPoint);
+    if (rope.userData._restPos) rope.userData._restPos.copy(worldPoint);
+    const bOff = p.anchorBOffset ? [...p.anchorBOffset] : [0, -0.5, 0];
+    bOff[0] -= delta.x; bOff[1] -= delta.y; bOff[2] -= delta.z;
+    p.anchorBOffset = bOff;
+    if (hitObj && hitObj.userData.editorId !== undefined) {
+      const objWPos = new THREE.Vector3();
+      hitObj.getWorldPosition(objWPos);
+      p.anchorAId     = hitObj.userData.editorId;
+      p.anchorAOffset = worldPoint.clone().sub(objWPos).toArray();
+    } else {
+      delete p.anchorAId;
+      delete p.anchorAOffset;
+    }
+  } else {
+    const rWPos = rope.position.clone();
+    p.anchorBOffset = [worldPoint.x - rWPos.x, worldPoint.y - rWPos.y, worldPoint.z - rWPos.z];
+    if (hitObj && hitObj.userData.editorId !== undefined) {
+      const objWPos = new THREE.Vector3();
+      hitObj.getWorldPosition(objWPos);
+      p.anchorBId          = hitObj.userData.editorId;
+      p.anchorBWorldOffset = worldPoint.clone().sub(objWPos).toArray();
+    } else {
+      delete p.anchorBId;
+      delete p.anchorBWorldOffset;
+    }
+  }
+  rebuildGeometry(rope);
+  updateProps(rope);
+  markDirty();
+  const objLabel = hitObj?.name || (hitObj ? '#' + hitObj.userData.editorId : 'free');
+  setStatus(`Rope End ${end} attached to ${objLabel} at (${worldPoint.x.toFixed(2)}, ${worldPoint.y.toFixed(2)}, ${worldPoint.z.toFixed(2)})`);
 }
 
 function resetPivot() {
@@ -7213,14 +7433,69 @@ function setupUI() {
     ['geom-cyl-hs',     'hSegs',    false],
     ['geom-cyl-rt',     'radTop',   false],
     ['geom-cyl-open',   'open',     true],
-    ['geom-plane-ws',   'wSegs',    false],
-    ['geom-plane-hs',   'hSegs',    false],
+    ['geom-plane-ws',   'wSegs',      false],
+    ['geom-plane-hs',   'hSegs',      false],
+    ['geom-rope-len',   'ropeLength', false],
+    ['geom-rope-rad',   'ropeRadius', false],
+    ['geom-rope-segs',  'ropeSegs',   false],
+    ['geom-rope-sag',   'ropeSag',    false],
+    ['geom-rope-damp',  'ropeDamping',false],
   ];
   geomBindings.forEach(([id, key, isChk]) => {
     const el = document.getElementById(id);
     if (!el) return;
     const ev = isChk ? 'change' : 'change';
     el.addEventListener(ev, () => setGeomParam(key, isChk ? el.checked : el.value, isChk));
+  });
+
+  ['geom-rope-bx', 'geom-rope-by', 'geom-rope-bz'].forEach((id, axis) => {
+    document.getElementById(id)?.addEventListener('change', () => {
+      const obj = E.selected;
+      if (!obj || obj.userData.primType !== 'rope') return;
+      const p = obj.userData.geomParams ??= {};
+      const d = GEOM_DEFAULTS.rope;
+      const off = p.anchorBOffset ? [...p.anchorBOffset] : [...d.anchorBOffset];
+      off[axis] = parseFloat(document.getElementById(id).value) || 0;
+      p.anchorBOffset = off;
+      rebuildGeometry(obj);
+    });
+  });
+
+  document.getElementById('geom-rope-bid')?.addEventListener('change', e => {
+    const obj = E.selected;
+    if (!obj || obj.userData.primType !== 'rope') return;
+    const v = e.target.value.trim();
+    (obj.userData.geomParams ??= {}).anchorBId = v ? parseInt(v) : null;
+    markDirty();
+  });
+
+  document.getElementById('btn-rope-attach-a')?.addEventListener('click', () => {
+    if (E.ropeAnchorMode === 'A') cancelRopeAnchor();
+    else beginRopeAnchor('A');
+  });
+  document.getElementById('btn-rope-attach-b')?.addEventListener('click', () => {
+    if (E.ropeAnchorMode === 'B') cancelRopeAnchor();
+    else beginRopeAnchor('B');
+  });
+  document.getElementById('btn-rope-detach-a')?.addEventListener('click', () => {
+    const obj = E.selected;
+    if (!obj || obj.userData.primType !== 'rope') return;
+    pushUndo();
+    const p = obj.userData.geomParams ??= {};
+    delete p.anchorAId;
+    delete p.anchorAOffset;
+    refreshGeomPanel(obj);
+    markDirty();
+  });
+  document.getElementById('btn-rope-detach-b')?.addEventListener('click', () => {
+    const obj = E.selected;
+    if (!obj || obj.userData.primType !== 'rope') return;
+    pushUndo();
+    const p = obj.userData.geomParams ??= {};
+    delete p.anchorBId;
+    delete p.anchorBWorldOffset;
+    refreshGeomPanel(obj);
+    markDirty();
   });
 
   // Save trigger inputs
@@ -7306,6 +7581,18 @@ function setupUI() {
     });
     document.getElementById(`mmap-${slot}`)?.addEventListener('change', async e => {
       if (E.selected) { pushUndo(); await applyModelMapSlot(E.selected, slot, e.target.value.trim()); }
+    });
+    document.getElementById(`mmap-res-${slot}`)?.addEventListener('change', async e => {
+      if (!E.selected) return;
+      pushUndo();
+      const val = parseInt(e.target.value) || null;
+      if (!E.selected.userData.modelMapRes) E.selected.userData.modelMapRes = {};
+      if (val) E.selected.userData.modelMapRes[slot] = val;
+      else delete E.selected.userData.modelMapRes[slot];
+      if (!Object.keys(E.selected.userData.modelMapRes).length) delete E.selected.userData.modelMapRes;
+      const texName = E.selected.userData.modelMaps?.[slot];
+      if (texName) await applyModelMapSlot(E.selected, slot, texName);
+      markDirty();
     });
   });
 
@@ -7896,11 +8183,6 @@ function setupUI() {
     E.selected.userData.tierCount = isNaN(v) ? null : v;
     markDirty();
   });
-  document.getElementById('pap-tier-costs')?.addEventListener('input', e => {
-    if (E.selected?.userData.primType !== 'zom-pap') return;
-    E.selected.userData.tierCosts = e.target.value.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
-    markDirty();
-  });
   document.getElementById('pap-require-power')?.addEventListener('change', e => {
     if (E.selected?.userData.primType !== 'zom-pap') return;
     E.selected.userData.requirePower = e.target.checked;
@@ -7972,9 +8254,11 @@ function setupUI() {
     setV('zms-revive-time',    cfg.reviveTime);
 
     const DEFAULT_PAP_TIERS = [
-      { cost: 2500, damageMult: 2.0 },
-      { cost: 5000, damageMult: 3.5 },
-      { cost: 10000, damageMult: 6.0 },
+      { cost: 5000,  damageMult: 2.0 },
+      { cost: 10000, damageMult: 3.5 },
+      { cost: 20000, damageMult: 6.0 },
+      { cost: 40000, damageMult: 10.0 },
+      { cost: 80000, damageMult: 16.0 },
     ];
     const papTiers = cfg.papTiers?.length ? cfg.papTiers : DEFAULT_PAP_TIERS;
     const tiersEl = document.getElementById('zms-pap-tiers');
@@ -7986,28 +8270,10 @@ function setupUI() {
         row.style.cssText = 'gap:6px';
         row.innerHTML = `<label style="font-size:10px;color:#666688;min-width:54px">Tier ${i + 1}</label>`
           + `<input class="prop-input pap-cost" type="number" step="500" placeholder="Cost" value="${t.cost ?? ''}" style="flex:1;font-size:11px">`
-          + `<input class="prop-input pap-dmg" type="number" step="0.25" placeholder="DmgMult" value="${t.damageMult ?? ''}" style="flex:1;font-size:11px">`;
+          + `<input class="prop-input pap-dmg" type="number" step="0.25" placeholder="DmgMult" value="${t.damageMult ?? ''}" style="flex:1;font-size:11px">`
+          + `<input class="prop-input pap-clip" type="number" step="0.25" placeholder="ClipMult" value="${t.clipMult ?? ''}" style="flex:1;font-size:11px">`;
         tiersEl.appendChild(row);
       });
-    }
-
-    const clipMults = cfg.weaponClipMults ?? {};
-    const slugs = [];
-    E.placedGroup.traverse(obj => {
-      if (obj.userData.primType === 'zom-wallbuy' && obj.userData.weaponSlug && !slugs.includes(obj.userData.weaponSlug))
-        slugs.push(obj.userData.weaponSlug);
-    });
-    const clipEl = document.getElementById('zms-clip-mults');
-    if (clipEl) {
-      clipEl.innerHTML = slugs.length
-        ? slugs.map(slug => {
-            const val = clipMults[slug] ?? '';
-            return `<div class="prop-row clip-mult-row" data-slug="${slug}" style="gap:6px">`
-              + `<label style="font-size:10px;color:#aaaacc;min-width:100px;overflow:hidden;text-overflow:ellipsis">${slug}</label>`
-              + `<input class="prop-input" type="number" step="0.5" min="1" placeholder="1 (no change)" value="${val}" style="flex:1;font-size:11px">`
-              + `</div>`;
-          }).join('')
-        : '<div style="font-size:10px;color:#444466;padding:4px">No wallbuys in this level.</div>';
     }
 
     modal.style.display = 'flex';
@@ -8021,7 +8287,8 @@ function setupUI() {
     row.style.cssText = 'gap:6px';
     row.innerHTML = `<label style="font-size:10px;color:#666688;min-width:54px">Tier ${i + 1}</label>`
       + `<input class="prop-input pap-cost" type="number" step="500" placeholder="Cost" style="flex:1;font-size:11px">`
-      + `<input class="prop-input pap-dmg" type="number" step="0.25" placeholder="DmgMult" style="flex:1;font-size:11px">`;
+      + `<input class="prop-input pap-dmg" type="number" step="0.25" placeholder="DmgMult" style="flex:1;font-size:11px">`
+      + `<input class="prop-input pap-clip" type="number" step="0.25" placeholder="ClipMult" style="flex:1;font-size:11px">`;
     tiersEl.appendChild(row);
   });
   document.getElementById('btn-zms-remove-tier')?.addEventListener('click', () => {
@@ -8065,22 +8332,18 @@ function setupUI() {
     papTierRows.forEach(row => {
       const cost    = parseFloat(row.querySelector('.pap-cost')?.value);
       const dmgMult = parseFloat(row.querySelector('.pap-dmg')?.value);
-      if (!isNaN(cost) && !isNaN(dmgMult)) papTiers.push({ cost, damageMult: dmgMult });
+      const clipMult = parseFloat(row.querySelector('.pap-clip')?.value);
+      if (!isNaN(cost) && !isNaN(dmgMult)) {
+        const tier = { cost, damageMult: dmgMult };
+        if (!isNaN(clipMult)) tier.clipMult = clipMult;
+        papTiers.push(tier);
+      }
     });
     if (papTiers.length > 0) cfg.papTiers = papTiers; else delete cfg.papTiers;
 
-    const clipMultRows = document.querySelectorAll('#zms-clip-mults .clip-mult-row');
-    const weaponClipMults = {};
-    clipMultRows.forEach(row => {
-      const slug = row.dataset.slug;
-      const mult = parseFloat(row.querySelector('input')?.value);
-      if (slug && !isNaN(mult) && mult > 1) weaponClipMults[slug] = mult;
-    });
-    if (Object.keys(weaponClipMults).length > 0) cfg.weaponClipMults = weaponClipMults; else delete cfg.weaponClipMults;
-
     E.zombiesConfig = Object.keys(cfg).length ? cfg : null;
     if (modal) modal.style.display = 'none';
-    saveLevel();
+    markDirty();
   }
   document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
   document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
@@ -8191,6 +8454,7 @@ function setupKeys() {
       if (E.facePickMode){ cancelFacePick(); return; }
       if (E.pivotMode)   { cancelPivot(); return; }
       if (E.linkMode)    { cancelLink(); return; }
+      if (E.ropeAnchorMode) { cancelRopeAnchor(); return; }
       if (E.cutMode)     { cancelCut(); return; }
       if (E.placingType) { cancelPlace(); return; }
       if (E.groupPivot)  { finalizeGroupTransform(); return; }
@@ -8474,6 +8738,24 @@ function setupMouse() {
         applyPivot(pivotHits[0].point);
       } else {
         setStatus('Pivot mode — click any surface to set pivot (Esc cancels)');
+      }
+      return;
+    }
+
+    // Rope anchor attach mode — click any surface to set the endpoint
+    if (E.ropeAnchorMode) {
+      const allCandidates = [];
+      E.placedGroup.traverse(o => { if (o.isMesh && !o.userData.isEditorHelper && o !== E.ropeAnchorSource) allCandidates.push(o); });
+      allCandidates.push(E.floorPlane);
+      const ropeHits = _ray.intersectObjects(allCandidates, false);
+      if (ropeHits.length) {
+        const hit = ropeHits[0];
+        let hitObj = hit.object;
+        while (hitObj.parent && hitObj.parent !== E.placedGroup) hitObj = hitObj.parent;
+        if (hitObj === E.floorPlane) hitObj = null;
+        applyRopeAnchor(hit.point, hitObj);
+      } else {
+        setStatus(`Rope End ${E.ropeAnchorMode} — click any surface to attach (Esc cancels)`);
       }
       return;
     }

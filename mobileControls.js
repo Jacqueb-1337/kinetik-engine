@@ -1255,10 +1255,6 @@ function _pcEditorMouseDown(e) {
     _pcHideOpacityPanel();
     return;
   }
-  if (_pcEditorOverlay) {
-    const r = _pcEditorOverlay.getBoundingClientRect();
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
-  }
   for (const { key, el } of getZombiesHudEditorElements()) {
     const rect = el.getBoundingClientRect();
     if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
@@ -1277,6 +1273,10 @@ function _pcEditorMouseDown(e) {
       };
       return;
     }
+  }
+  if (_pcEditorOverlay) {
+    const r = _pcEditorOverlay.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return;
   }
 }
 
