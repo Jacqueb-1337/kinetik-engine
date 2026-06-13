@@ -1,0 +1,29 @@
+# Sensitive / credentials
+.vscode/SFTP.json
+.vscode/sftp.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Dependency directories
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+
+# Local data
+saves/
+settings/
+.capacitor/
+android/
+ios/
+*.local
