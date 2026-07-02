@@ -1,6 +1,6 @@
 {
   "name": "kinetik-engine",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Kinetik engine and project initializer for Three.js games",
   "type": "module",
   "main": "./index.js",
@@ -23,6 +23,7 @@
     "./uvDebug.js": "./uvDebug.js",
     "./ccd-ik.js": "./ccd-ik.js",
     "./three-ik.js": "./three-ik.js",
+    "./editor.js": "./editor.js",
     "./game/bootstrap.js": "./scaffold/src/game/bootstrap.js",
     "./game/globals.js": "./scaffold/src/game/globals.js",
     "./game/ground.js": "./scaffold/src/game/ground.js",

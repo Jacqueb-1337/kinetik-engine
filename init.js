@@ -64,7 +64,7 @@ function resolveDefaultTargetRoot() {
 export async function initProject(options = {}) {
   const scaffoldRoot = options.scaffoldRoot || DEFAULT_SCAFFOLD_DIR;
   const targetRoot = options.targetRoot || resolveDefaultTargetRoot();
-  const engineSpec = options.engineSpec || '^0.1.3';
+  const engineSpec = options.engineSpec || '^0.1.5';
   const overwrite = !!options.overwrite;
 
   let created = 0;

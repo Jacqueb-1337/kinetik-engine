@@ -1,3 +1,3 @@
-import { initEditor } from '../core/editor.js';
+import { initEditor } from 'kinetik-engine/editor.js';
 
 initEditor();

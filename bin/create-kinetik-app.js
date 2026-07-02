@@ -5,7 +5,7 @@ import { initProject } from '../init.js';
 
 const args = process.argv.slice(2).filter(Boolean);
 let targetArg = null;
-let engineSpec = '^0.1.3';
+let engineSpec = '^0.1.5';
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
