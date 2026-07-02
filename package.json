@@ -1,0 +1,30 @@
+{
+  "name": "@kinetik/engine",
+  "version": "0.1.0",
+  "description": "Kinetik engine and project initializer for Three.js games",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "kinetik": "./bin/create-kinetik-app.js",
+    "create-kinetik-app": "./bin/create-kinetik-app.js"
+  },
+  "files": [
+    "*.js",
+    "bin/**/*",
+    "scaffold/**/*",
+    "README.md"
+  ],
+  "scripts": {
+    "init": "node init.js"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "three": "^0.163.0",
+    "three-bvh-csg": "^0.0.17",
+    "three-mesh-bvh": "^0.6.8"
+  }
+}
