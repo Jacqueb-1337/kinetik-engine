@@ -35,14 +35,7 @@ function _getAudioCtx() {
       get: () => insertBus,
       configurable: true
     });
-    import('../game/warble.js')
-      .then(mod => {
-        if (typeof mod.initWarble === 'function') {
-          return mod.initWarble(_audioCtx, insertBus, realDest);
-        }
-        return null;
-      })
-      .catch(() => {});
+    globalThis.__kinetikGameHooks?.initWarble?.(_audioCtx, insertBus, realDest);
   }
   if (_audioCtx.state === 'suspended') _audioCtx.resume();
   return _audioCtx;

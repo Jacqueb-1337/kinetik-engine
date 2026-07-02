@@ -1196,10 +1196,7 @@ export async function loadLevel(name = 'main') {
         obj = marker;
       } else if (entry.type === 'zom-wallbuy') {
         if (entry.weaponSlug && entry.weaponDef) {
-          const mod = await import('../game/zombiesWeapons.js').catch(() => null);
-          if (typeof mod?.registerWeapon === 'function') {
-            mod.registerWeapon(entry.weaponSlug, entry.weaponDef);
-          }
+          globalThis.__kinetikGameHooks?.registerWeapon?.(entry.weaponSlug, entry.weaponDef);
         }
         const marker = spawnZombiePrim(entry);
         marker.userData.isZomWallBuy = true;

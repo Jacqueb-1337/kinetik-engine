@@ -5,24 +5,13 @@ import { platformConfig } from './platform.js';
 import { toggleDebugOverlay, toggleFreecam, toggleCameraMode } from './input.js';
 import { readSetting, writeSetting } from './settings.js';
 
-let getZombiesHudEditorElements = () => [];
-let applyZombiesHudLayout = () => {};
-let mobileFireDown = () => {};
-let mobileFireUp = () => {};
-let mobileReload = () => {};
-let mobileSwitchWeapon = () => {};
-
-import('../game/zombiesHUD.js').then(mod => {
-  if (typeof mod.getZombiesHudEditorElements === 'function') getZombiesHudEditorElements = mod.getZombiesHudEditorElements;
-  if (typeof mod.applyZombiesHudLayout === 'function') applyZombiesHudLayout = mod.applyZombiesHudLayout;
-}).catch(() => {});
-
-import('../game/zombiesMode.js').then(mod => {
-  if (typeof mod.mobileFireDown === 'function') mobileFireDown = mod.mobileFireDown;
-  if (typeof mod.mobileFireUp === 'function') mobileFireUp = mod.mobileFireUp;
-  if (typeof mod.mobileReload === 'function') mobileReload = mod.mobileReload;
-  if (typeof mod.mobileSwitchWeapon === 'function') mobileSwitchWeapon = mod.mobileSwitchWeapon;
-}).catch(() => {});
+const gameHooks = globalThis.__kinetikGameHooks ?? (globalThis.__kinetikGameHooks = {});
+const getZombiesHudEditorElements = () => gameHooks.getZombiesHudEditorElements?.() ?? [];
+const applyZombiesHudLayout = (layout) => { gameHooks.applyZombiesHudLayout?.(layout); };
+const mobileFireDown = () => { gameHooks.mobileFireDown?.(); };
+const mobileFireUp = () => { gameHooks.mobileFireUp?.(); };
+const mobileReload = () => { gameHooks.mobileReload?.(); };
+const mobileSwitchWeapon = () => { gameHooks.mobileSwitchWeapon?.(); };
 
 let _pauseToggle = () => {};
 export function setPauseToggleCallback(fn) { _pauseToggle = fn; }
