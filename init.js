@@ -15,7 +15,10 @@ const SCAFFOLD_FILES = [
   { from: 'preload.js',              to: 'preload.js' },
   { from: 'package.json',            to: 'package.json' },
   { from: 'vite.config.js',          to: 'vite.config.js' },
+  { from: 'scripts/run-electron.js',  to: 'scripts/run-electron.js' },
   { from: '.gitignore',              to: '.gitignore' },
+  { from: 'src/index.html',          to: 'src/index.html' },
+  { from: 'src/main.js',             to: 'src/main.js' },
   { from: 'src/editor.html',         to: 'src/editor.html' },
   { from: 'src/game/editorSetup.js', to: 'src/game/editorSetup.js' },
 ];
