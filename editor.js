@@ -86,6 +86,7 @@ const E = {
   groups:         {},         // { gid: { name, ids: Set } }
   groupCollapsed: {},         // { gid: bool } — true = collapsed in panel
   levelVars:      {},         // { "lv_name": { type: "number"|"bool"|"string", initial: value } }
+  sceneScripts:   [],         // top-level scene script module paths
   nextId:         1,
   undoStack:      [],
   redoStack:      [],
@@ -552,6 +553,7 @@ function levelToJSON(options = {}) {
         csgEntry.emissiveIntensity = obj.userData.emissiveIntensity;
         csgEntry.emissiveColor     = obj.userData.emissiveColor ?? '#ffffff';
       }
+      if (obj.userData.scripts?.length) csgEntry.scripts = [...obj.userData.scripts];
       if (obj.userData.roughness !== undefined) csgEntry.roughness = obj.userData.roughness;
       if (obj.userData.metalness !== undefined) csgEntry.metalness = obj.userData.metalness;
       if (obj.userData.faceTextures) csgEntry.faceTextures = obj.userData.faceTextures;
@@ -574,6 +576,7 @@ function levelToJSON(options = {}) {
       if (obj.userData._baseColor) mergedEntry.color = obj.userData._baseColor;
       if (obj.userData.doubleSide) mergedEntry.doubleSide = true;
       if (obj.userData.invertNormals) mergedEntry.invertNormals = true;
+      if (obj.userData.scripts?.length) mergedEntry.scripts = [...obj.userData.scripts];
       if (obj.userData.states?.length) mergedEntry.states = obj.userData.states;
       if (obj.userData.links?.length)  mergedEntry.links  = obj.userData.links;
       if (obj.userData.noSelfInteract) mergedEntry.noSelfInteract = true;
@@ -595,6 +598,7 @@ function levelToJSON(options = {}) {
       };
       if (obj.userData.states?.length) imgEntry.states = obj.userData.states;
       if (obj.userData.links?.length)  imgEntry.links  = obj.userData.links;
+      if (obj.userData.scripts?.length) imgEntry.scripts = [...obj.userData.scripts];
       objects.push(imgEntry);
       return;
     }
@@ -640,6 +644,7 @@ function levelToJSON(options = {}) {
     if (obj.userData.faceTextures)   entry.faceTextures   = obj.userData.faceTextures;
     if (obj.userData.meshOverrides)  entry.meshOverrides  = obj.userData.meshOverrides;
     if (obj.userData.masterTexture)  entry.masterTexture  = obj.userData.masterTexture;
+    if (obj.userData.scripts?.length) entry.scripts        = [...obj.userData.scripts];
     if (obj.userData.roughness !== undefined) entry.roughness = obj.userData.roughness;
     if (obj.userData.metalness !== undefined) entry.metalness = obj.userData.metalness;
     if (obj.userData.doubleSide) entry.doubleSide = true;
@@ -739,6 +744,7 @@ function levelToJSON(options = {}) {
   out.objects = objects;
   out.groups = groups;
   out.vars = E.levelVars;
+  if (E.sceneScripts?.length) out.sceneScripts = E.sceneScripts;
   if (E.fogDensity != null) out.fogDensity = E.fogDensity;
   if (includeEditorUi) {
     out.editorUi = {
@@ -785,11 +791,16 @@ async function loadLevel(name) {
     }
   }
   E.levelVars = data?.vars ? { ...data.vars } : {};
+  E.sceneScripts = Array.isArray(data?.sceneScripts) ? [...data.sceneScripts] : [];
   E.fogDensity = (data?.fogDensity != null) ? data.fogDensity : null;
   E.isZombiesMap = data?.isZombiesMap ?? false;
   E.zombiesMapDisplayName = data?.zombiesMapDisplayName ?? null;
   E.zombiesConfig = data?.zombiesConfig ?? null;
   _updateFogInput();
+  const sceneScriptsEl = document.getElementById('scene-scripts');
+  if (sceneScriptsEl && document.activeElement !== sceneScriptsEl) {
+    sceneScriptsEl.value = _scriptListToText(E.sceneScripts);
+  }
   renderVarsPanel();
 
   if (data?.objects?.length) {
@@ -819,6 +830,7 @@ function clearPlaced() {
   E.selected = null;
   E.selectedFace = null;
   E._stateExpanded = new Set();
+  E.sceneScripts = [];
   _clearFaceOverlay('hover');
   _clearFaceOverlay('select');
   if (E.groupPivot) {
@@ -846,6 +858,10 @@ function clearPlaced() {
   E.zombiesMapDisplayName = null;
   E.zombiesConfig = null;
   _updateFogInput();
+  const sceneScriptsEl = document.getElementById('scene-scripts');
+  if (sceneScriptsEl && document.activeElement !== sceneScriptsEl) {
+    sceneScriptsEl.value = '';
+  }
   updateSceneList();
   updateGroupsPanel();
   renderVarsPanel();
@@ -1983,6 +1999,7 @@ function spawnPrimFromEntry(entry) {
     mesh.name = entry.label || ('ActorSpawn_' + entry.id);
     if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
     if (entry.links?.length)  mesh.userData.links = _normalizeLinks(entry.links);
+    if (entry.scripts?.length) mesh.userData.scripts = [...entry.scripts];
     E.placedGroup.add(mesh);
     return mesh;
   }
@@ -2003,6 +2020,7 @@ function spawnPrimFromEntry(entry) {
     if (entry.states?.length) { group.userData.states = entry.states; group.userData.currentState = 0; }
     if (entry.links?.length)  group.userData.links        = _normalizeLinks(entry.links);
     if (entry.noSelfInteract) group.userData.noSelfInteract = true;
+    if (entry.scripts?.length) group.userData.scripts = [...entry.scripts];
     E.placedGroup.add(group);
     return group;
   }
@@ -2050,6 +2068,7 @@ function spawnPrimFromEntry(entry) {
     mesh.name = entry.label || (entry.type + '_' + entry.id);
     if (entry.states?.length) { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
     if (entry.links?.length)  mesh.userData.links = _normalizeLinks(entry.links);
+    if (entry.scripts?.length) mesh.userData.scripts = [...entry.scripts];
     if (entry.opacity !== undefined) {
       mesh.userData._opacity = entry.opacity;
       setMeshOpacity(mesh, entry.opacity);
@@ -2564,6 +2583,8 @@ function updateProps(obj) {
   const geomProps   = document.getElementById('geom-props');
   const textureSection = document.getElementById('texture-section');
   const triggerProps = document.getElementById('trigger-props');
+  const scriptsSection = document.getElementById('object-scripts-section');
+  const scriptsEl      = document.getElementById('obj-scripts');
 
   if (!obj) {
     if (selName) selName.textContent = 'None';
@@ -2580,6 +2601,8 @@ function updateProps(obj) {
     if (geomProps)        geomProps.style.display        = 'none';
     if (textureSection)   textureSection.style.display   = 'none';
     if (triggerProps) triggerProps.style.display = 'none';
+    if (scriptsSection) scriptsSection.style.display = 'none';
+    if (scriptsEl) scriptsEl.value = '';
     ['zom-wallbuy-section','zombie-spawn-section','zom-perk-section','zom-mystery-section',
      'zom-pap-section','zom-ammo-section','zom-door-section'].forEach(id => {
       const s = document.getElementById(id); if (s) s.style.display = 'none';
@@ -2638,6 +2661,10 @@ function updateProps(obj) {
       const singleEl = document.getElementById('actor-single-instance');
       if (singleEl) singleEl.checked = obj.userData.singleInstance === true;
     }
+  }
+  if (scriptsSection) scriptsSection.style.display = '';
+  if (scriptsEl && document.activeElement !== scriptsEl) {
+    scriptsEl.value = _scriptListToText(obj.userData.scripts || []);
   }
 
   if (selName) selName.textContent = obj.name;
@@ -3012,6 +3039,7 @@ function updateGroupsPanel() {
           if (obj) { selectObj(obj); E.orbit.target.copy(obj.position); }
         });
         row.querySelector('.ge-rm').addEventListener('click', () => {
+          pushUndo();
           g.ids.delete(mid);
           if (g.ids.size === 0) delete E.groups[gid];
           updateGroupsPanel();
@@ -3027,12 +3055,12 @@ function updateGroupsPanel() {
 // â”€â”€â”€ Group transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function beginGroupTransform(gid) {
   if (!gid || !E.groups[gid]) return;
-  pushUndo();
-  E.activeGroupGid = gid;
   const members = [...E.groups[gid].ids]
     .map(id => E.placedGroup.children.find(o => o.userData.editorId === id))
     .filter(Boolean);
   if (!members.length) return;
+  pushUndo();
+  E.activeGroupGid = gid;
 
   const center = new THREE.Vector3();
   members.forEach(m => center.add(m.position));
@@ -3633,11 +3661,11 @@ function _wireBonePropsEvents(obj, selBone) {
   bind('me-b-name', e => { selBone.name = e.target.value; markDirty(); renderModelEditorOverlay(); });
   bind('me-b-tag',  e => { selBone.tag  = e.target.value; markDirty(); });
   const parentEl = document.getElementById('me-b-parent');
-  if (parentEl) parentEl.addEventListener('change', e => { selBone.parentId = e.target.value || null; markDirty(); });
+  if (parentEl) parentEl.addEventListener('change', e => { pushUndo(); selBone.parentId = e.target.value || null; markDirty(); });
   const visEl = document.getElementById('me-b-visible');
-  if (visEl) visEl.addEventListener('change', e => { selBone.visible = e.target.checked; markDirty(); });
+  if (visEl) visEl.addEventListener('change', e => { pushUndo(); selBone.visible = e.target.checked; markDirty(); });
   const meshEl = document.getElementById('me-b-mesh');
-  if (meshEl) meshEl.addEventListener('change', e => { selBone.rigidMeshId = e.target.value || null; markDirty(); });
+  if (meshEl) meshEl.addEventListener('change', e => { pushUndo(); selBone.rigidMeshId = e.target.value || null; markDirty(); });
   for (const ax of ['x', 'y', 'z']) {
     bind(`me-b-rl-${ax}-min`, e => {
       if (!selBone.rotLimits) selBone.rotLimits = {};
@@ -3745,11 +3773,13 @@ function _appendBoneOverridesToStateItem(item, obj, idx) {
           <span class="xyz-lbl">z</span><input class="prop-input" data-key="${key}" data-axis="2" type="number" step="0.01" value="${v[2]}">
         </div>`;
       row.querySelector('[data-enkey]').addEventListener('change', ev => {
+        pushUndo();
         ov[enableKey] = ev.target.checked;
         row.classList.toggle('sf-disabled', !ev.target.checked);
         markDirty();
       });
       row.querySelectorAll('[data-key]').forEach(inp => {
+        inp.addEventListener('focus', () => pushUndo());
         inp.addEventListener('input', ev => {
           if (!ov[key]) ov[key] = [...def];
           ov[key][parseInt(inp.dataset.axis)] = parseFloat(ev.target.value) || 0;
@@ -4287,6 +4317,7 @@ function spawnMergedModel(entry) {
   if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
   if (entry.links?.length)     root.userData.links  = _normalizeLinks(entry.links);
   if (entry.noSelfInteract)    root.userData.noSelfInteract = true;
+  if (entry.scripts?.length)   root.userData.scripts = [...entry.scripts];
   if (entry.meshOverrides) {
     root.userData.meshOverrides = entry.meshOverrides;
     root.traverse(c => {
@@ -4333,6 +4364,7 @@ function spawnImageModel(entry) {
       group.name = entry.label || ('Image_' + entry.id);
       if (entry.states?.length) { group.userData.states = entry.states; group.userData.currentState = 0; }
       if (entry.links?.length)  group.userData.links = _normalizeLinks(entry.links);
+      if (entry.scripts?.length) group.userData.scripts = [...entry.scripts];
       E.placedGroup.add(group);
       resolve(group);
     }, entry.wallColor);
@@ -4347,6 +4379,7 @@ function openMeshEditor() {
   const masterIn = document.getElementById('mesh-master-tex');
   masterIn.value = obj.userData.masterTexture || '';
   masterIn.onchange = () => {
+    pushUndo();
     const texName = masterIn.value.trim() || null;
     obj.userData.masterTexture = texName || undefined;
     _applyMasterTexture(obj, texName);
@@ -4357,12 +4390,14 @@ function openMeshEditor() {
     const name = await window.electron.importTexture();
     if (!name) return;
     await refreshTextureList();
+    pushUndo();
     masterIn.value = name;
     obj.userData.masterTexture = name;
     _applyMasterTexture(obj, name);
     markDirty();
   };
   document.getElementById('btn-mesh-master-clear').onclick = () => {
+    pushUndo();
     masterIn.value = '';
     delete obj.userData.masterTexture;
     _applyMasterTexture(obj, null);
@@ -4390,6 +4425,7 @@ function openMeshEditor() {
     chk.checked = ovr.visible !== false;
     chk.style.cursor = 'pointer';
     chk.addEventListener('change', () => {
+      pushUndo();
       if (!overrides[key]) overrides[key] = {};
       overrides[key].visible = chk.checked;
       if (chk.checked) {
@@ -4426,6 +4462,7 @@ function openMeshEditor() {
     texIn.style.cssText = 'font-size:11px;width:100%';
     texIn.setAttribute('list', 'tex-datalist');
     texIn.addEventListener('change', () => {
+      pushUndo();
       const texName = texIn.value.trim() || null;
       if (!overrides[key]) overrides[key] = {};
       overrides[key].texture = texName;
@@ -4447,6 +4484,7 @@ function openMeshEditor() {
       const name = await window.electron.importTexture();
       if (!name) return;
       await refreshTextureList();
+      pushUndo();
       texIn.value = name;
       if (!overrides[key]) overrides[key] = {};
       overrides[key].texture = name;
@@ -4479,6 +4517,7 @@ function openActorMeshEditor() {
   const masterIn = document.getElementById('actor-mesh-master-tex');
   masterIn.value = obj.userData.masterTexture || '';
   masterIn.onchange = () => {
+    pushUndo();
     const texName = masterIn.value.trim() || null;
     obj.userData.masterTexture = texName || undefined;
     markDirty();
@@ -4488,11 +4527,13 @@ function openActorMeshEditor() {
     const name = await window.electron.importTexture();
     if (!name) return;
     await refreshTextureList();
+    pushUndo();
     masterIn.value = name;
     obj.userData.masterTexture = name;
     markDirty();
   };
   document.getElementById('btn-actor-mesh-master-clear').onclick = () => {
+    pushUndo();
     masterIn.value = '';
     delete obj.userData.masterTexture;
     markDirty();
@@ -4521,6 +4562,7 @@ function openActorMeshEditor() {
       chk.checked = ovr.visible !== false;
       chk.style.cursor = 'pointer';
       chk.addEventListener('change', () => {
+        pushUndo();
         if (!overrides[key]) overrides[key] = {};
         overrides[key].visible = chk.checked;
         markDirty();
@@ -4538,6 +4580,7 @@ function openActorMeshEditor() {
       texIn.style.cssText = 'font-size:11px;width:100%';
       texIn.setAttribute('list', 'tex-datalist');
       texIn.addEventListener('change', () => {
+        pushUndo();
         const texName = texIn.value.trim() || null;
         if (!overrides[key]) overrides[key] = {};
         overrides[key].texture = texName;
@@ -4554,6 +4597,7 @@ function openActorMeshEditor() {
         const name = await window.electron.importTexture();
         if (!name) return;
         await refreshTextureList();
+        pushUndo();
         texIn.value = name;
         if (!overrides[key]) overrides[key] = {};
         overrides[key].texture = name;
@@ -4622,6 +4666,7 @@ function _refreshActorRolesList(obj) {
       if (!window.electron?.importActorAnim) return;
       const filePath = await window.electron.importActorAnim(obj.userData.actorModel);
       if (!filePath) return;
+      pushUndo();
       if (!obj.userData.actorRoles) obj.userData.actorRoles = {};
       obj.userData.actorRoles[role] = filePath;
       inp.value = filePath.split('/').pop() || filePath;
@@ -4635,6 +4680,7 @@ function _refreshActorRolesList(obj) {
     clearBtn.title = 'Clear';
     clearBtn.style.cssText = 'padding:2px 4px;font-size:12px';
     clearBtn.addEventListener('click', () => {
+      pushUndo();
       if (obj.userData.actorRoles) delete obj.userData.actorRoles[role];
       inp.value = '';
       inp.title = '';
@@ -4668,7 +4714,7 @@ function _refreshActorAnimsList(obj) {
     nameIn.value = anim.name || '';
     nameIn.placeholder = 'clip name (key in code)';
     nameIn.style.cssText = 'font-size:11px;width:100%';
-    nameIn.addEventListener('change', () => { anims[i].name = nameIn.value.trim(); markDirty(); });
+    nameIn.addEventListener('change', () => { pushUndo(); anims[i].name = nameIn.value.trim(); markDirty(); });
 
     const fileSpan = document.createElement('span');
     fileSpan.textContent = (anim.file || '').split('/').pop() || '-';
@@ -4680,6 +4726,7 @@ function _refreshActorAnimsList(obj) {
     delBtn.textContent = '\u00d7';
     delBtn.style.cssText = 'padding:2px 4px;font-size:12px';
     delBtn.addEventListener('click', () => {
+      pushUndo();
       anims.splice(i, 1);
       _refreshActorAnimsList(obj);
       markDirty();
@@ -4724,7 +4771,7 @@ function _refreshActorVariantsList(obj) {
       inp.value = val ?? ''; inp.placeholder = ph;
       inp.style.cssText = 'font-size:10px;width:100%;min-width:0';
       inp.min = '0';
-      inp.addEventListener('change', () => { onChange(inp.value === '' ? null : parseFloat(inp.value)); markDirty(); });
+      inp.addEventListener('change', () => { pushUndo(); onChange(inp.value === '' ? null : parseFloat(inp.value)); markDirty(); });
       return inp;
     };
 
@@ -4741,6 +4788,7 @@ function _refreshActorVariantsList(obj) {
     pickBtn.style.cssText = 'padding:1px 4px;font-size:10px;flex-shrink:0';
     pickBtn.addEventListener('click', () => {
       openActorModelPicker(result => {
+        pushUndo();
         v.model = result.model;
         modelSpan.textContent = result.model.split('/').pop();
         modelSpan.title = result.model;
@@ -4758,7 +4806,7 @@ function _refreshActorVariantsList(obj) {
     const delBtn = document.createElement('button');
     delBtn.className = 'btn'; delBtn.textContent = '\u00d7';
     delBtn.style.cssText = 'padding:2px 4px;font-size:12px';
-    delBtn.addEventListener('click', () => { variants.splice(i, 1); _refreshActorVariantsList(obj); markDirty(); });
+    delBtn.addEventListener('click', () => { pushUndo(); variants.splice(i, 1); _refreshActorVariantsList(obj); markDirty(); });
     row.appendChild(delBtn);
 
     listEl.appendChild(row);
@@ -4857,6 +4905,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
     modeSel.appendChild(o);
   });
   modeSel.addEventListener('change', e => {
+    pushUndo();
     soundDef.mode = e.target.value;
     _renderSoundSection(container, soundDef, onUpdate);
     onUpdate();
@@ -4878,7 +4927,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
     nameIn.placeholder = 'sound name';
     nameIn.setAttribute('list', 'sound-datalist');
     nameIn.style.cssText = 'flex:1;font-size:11px';
-    nameIn.addEventListener('change', e => { s.name = e.target.value.trim(); onUpdate(); });
+    nameIn.addEventListener('change', e => { pushUndo(); s.name = e.target.value.trim(); onUpdate(); });
 
     row.appendChild(nameIn);
 
@@ -4891,7 +4940,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
       wtIn.type = 'number'; wtIn.min = '0'; wtIn.step = '0.1';
       wtIn.value = s.weight ?? 1;
       wtIn.style.width = '44px';
-      wtIn.addEventListener('change', e => { s.weight = parseFloat(e.target.value) || 1; onUpdate(); });
+      wtIn.addEventListener('change', e => { pushUndo(); s.weight = parseFloat(e.target.value) || 1; onUpdate(); });
       row.appendChild(wtLbl);
       row.appendChild(wtIn);
     }
@@ -4901,6 +4950,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
     del.style.cssText = 'padding:2px 6px;font-size:11px;flex-shrink:0';
     del.textContent = '×';
     del.addEventListener('click', () => {
+      pushUndo();
       soundDef.sounds.splice(i, 1);
       _renderSoundSection(container, soundDef, onUpdate);
       onUpdate();
@@ -4917,6 +4967,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
   addBtn.style.cssText = 'font-size:11px;padding:2px 10px';
   addBtn.textContent = '+ Add';
   addBtn.addEventListener('click', () => {
+    pushUndo();
     soundDef.sounds.push({ name: '', weight: 1 });
     _renderSoundSection(container, soundDef, onUpdate);
     onUpdate();
@@ -4930,6 +4981,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
     const name = await window.electron.importSound();
     if (!name) return;
     await refreshSoundList();
+    pushUndo();
     soundDef.sounds.push({ name, weight: 1 });
     _renderSoundSection(container, soundDef, onUpdate);
     onUpdate();
@@ -5785,6 +5837,7 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
   if (entry.states?.length)  { result.userData.states = entry.states; result.userData.currentState = 0; }
   if (entry.links?.length)     result.userData.links  = _normalizeLinks(entry.links);
   if (entry.noSelfInteract)    result.userData.noSelfInteract = true;
+  if (entry.scripts?.length)   result.userData.scripts = [...entry.scripts];
   if (entry.emissiveIntensity > 0 && result.material) {
     result.userData.emissiveIntensity = entry.emissiveIntensity;
     result.userData.emissiveColor     = entry.emissiveColor ?? '#ffffff';
@@ -5856,59 +5909,74 @@ function pushUndo() {
   E.redoStack = [];
 }
 
-function undo() {
-  if (!E.undoStack.length) return;
+async function undo() {
+  if (E.isRestoringSnapshot || !E.undoStack.length) return;
   E.redoStack.push(JSON.stringify(levelToJSON({ includeEditorUi: true })));
-  restoreSnapshot(E.undoStack.pop());
+  await restoreSnapshot(E.undoStack.pop());
   setStatus('Undo');
 }
 
-function redo() {
-  if (!E.redoStack.length) return;
+async function redo() {
+  if (E.isRestoringSnapshot || !E.redoStack.length) return;
   E.undoStack.push(JSON.stringify(levelToJSON({ includeEditorUi: true })));
-  restoreSnapshot(E.redoStack.pop());
+  await restoreSnapshot(E.redoStack.pop());
   setStatus('Redo');
 }
 
 async function restoreSnapshot(json) {
+  E.isRestoringSnapshot = true;
   const data = JSON.parse(json);
-  closeModelEditor();
-  clearPlaced();
-  E.nextId = data.nextId || 1;
-  if (data.editorUi?.groupCollapsed) {
-    E.groupCollapsed = { ...data.editorUi.groupCollapsed };
-  }
-  if (data.editorUi?.stateExpanded) {
-    E._stateExpanded = new Set(data.editorUi.stateExpanded);
-  }
-  if (data.groups) {
-    for (const [gid, g] of Object.entries(data.groups)) {
-      E.groups[gid] = { name: g.name, ids: new Set(g.ids) };
+  try {
+    closeModelEditor();
+    clearPlaced();
+    E.nextId = data.nextId || 1;
+    if (data.editorUi?.groupCollapsed) {
+      E.groupCollapsed = { ...data.editorUi.groupCollapsed };
     }
-  }
-  E.levelVars = data.vars ? { ...data.vars } : {};
-  renderVarsPanel();
-  const gltfLoader = new GLTFLoader(), fbxLoader = new FBXLoader();
-  for (const entry of (data.objects || [])) {
-    if (entry.type === 'csg-result')          await spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
-    else if (entry.type === 'model')           await loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
-    else if (entry.type === 'merged-model')    spawnMergedModel(entry);
-    else if (entry.type === 'image-model')     await spawnImageModel(entry);
-    else spawnPrimFromEntry(entry);
-  }
-  const selectedId = data.editorUi?.selectedId ?? null;
-  if (selectedId != null) {
-    const selectedObj = E.placedGroup.children.find(o => o.userData.editorId === selectedId);
-    if (selectedObj) {
-      selectObj(selectedObj);
-      if (data.editorUi?.selectedFace != null) {
-        E.selectedFace = data.editorUi.selectedFace;
-        updateFaceHighlight(E.selected, E.selectedFace);
-        refreshTexPanel(E.selected);
+    if (data.editorUi?.stateExpanded) {
+      E._stateExpanded = new Set(data.editorUi.stateExpanded);
+    }
+    if (data.groups) {
+      for (const [gid, g] of Object.entries(data.groups)) {
+        E.groups[gid] = { name: g.name, ids: new Set(g.ids) };
       }
     }
+    E.levelVars = data.vars ? { ...data.vars } : {};
+    E.sceneScripts = Array.isArray(data.sceneScripts) ? [...data.sceneScripts] : [];
+    E.fogDensity = (data.fogDensity != null) ? data.fogDensity : null;
+    E.isZombiesMap = data.isZombiesMap ?? false;
+    E.zombiesMapDisplayName = data.zombiesMapDisplayName ?? null;
+    E.zombiesConfig = data.zombiesConfig ?? null;
+    _updateFogInput();
+    const sceneScriptsEl = document.getElementById('scene-scripts');
+    if (sceneScriptsEl && document.activeElement !== sceneScriptsEl) {
+      sceneScriptsEl.value = _scriptListToText(E.sceneScripts);
+    }
+    renderVarsPanel();
+    const gltfLoader = new GLTFLoader(), fbxLoader = new FBXLoader();
+    for (const entry of (data.objects || [])) {
+      if (entry.type === 'csg-result')          await spawnCsgResult(entry, gltfLoader, fbxLoader).catch(err => console.warn('CSG spawn failed:', err));
+      else if (entry.type === 'model')           await loadModelIntoPlaced(entry, gltfLoader, fbxLoader);
+      else if (entry.type === 'merged-model')    spawnMergedModel(entry);
+      else if (entry.type === 'image-model')     await spawnImageModel(entry);
+      else spawnPrimFromEntry(entry);
+    }
+    const selectedId = data.editorUi?.selectedId ?? null;
+    if (selectedId != null) {
+      const selectedObj = E.placedGroup.children.find(o => o.userData.editorId === selectedId);
+      if (selectedObj) {
+        selectObj(selectedObj);
+        if (data.editorUi?.selectedFace != null) {
+          E.selectedFace = data.editorUi.selectedFace;
+          updateFaceHighlight(E.selected, E.selectedFace);
+          refreshTexPanel(E.selected);
+        }
+      }
+    }
+    updateSceneList(); updateGroupsPanel(); markDirty();
+  } finally {
+    E.isRestoringSnapshot = false;
   }
-  updateSceneList(); updateGroupsPanel(); markDirty();
 }
 
 // â”€â”€â”€ Dirty / display helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -5936,6 +6004,17 @@ function updatePlacingHint(show) {
 
 function escHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function _scriptListToText(list) {
+  return (list || []).join('\n');
+}
+
+function _textToScriptList(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean);
 }
 
 // â”€â”€â”€ Model list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6266,6 +6345,7 @@ function renderStatesPanel(obj) {
   if (chkNoSelf) {
     chkNoSelf.checked = !!obj.userData.noSelfInteract;
     chkNoSelf.onchange = e => {
+      pushUndo();
       if (e.target.checked) obj.userData.noSelfInteract = true;
       else delete obj.userData.noSelfInteract;
       markDirty();
@@ -6664,7 +6744,7 @@ function renderStatesPanel(obj) {
         };
         keySel.addEventListener('change', _save);
         nameIn.addEventListener('change', _save);
-        delBtn.addEventListener('click', () => { delete st.textures[k]; markDirty(); _renderTexStateList(); });
+        delBtn.addEventListener('click', () => { pushUndo(); delete st.textures[k]; markDirty(); _renderTexStateList(); });
         listEl.appendChild(row);
       }
     };
@@ -6977,6 +7057,7 @@ function renderLinksPanel(obj) {
     item.appendChild(labelInput);
 
     keyBtn.addEventListener('click', () => {
+      pushUndo();
       keyBtn.textContent = 'Press...';
       keyBtn.style.color = '#ffaa44';
       function onKey(e) {
@@ -7010,6 +7091,7 @@ function renderLinksPanel(obj) {
       document.addEventListener('mousedown', onMouse, true);
     });
 
+    labelInput.addEventListener('focus', () => pushUndo());
     labelInput.addEventListener('input', () => {
       const v = labelInput.value.trim();
       if (v) link.label = v; else delete link.label;
@@ -7017,6 +7099,7 @@ function renderLinksPanel(obj) {
     });
 
     delBtn.addEventListener('click', () => {
+      pushUndo();
       obj.userData.links.splice(idx, 1);
       if (!obj.userData.links.length) delete obj.userData.links;
       renderLinksPanel(obj); markDirty();
@@ -7077,16 +7160,19 @@ function renderVarsPanel() {
     };
 
     g('name').addEventListener('change', e => {
+      pushUndo();
       const newFull = rename(e.target.value.trim() || 'var');
       e.target.value = newFull.startsWith('lv_') ? newFull.slice(3) : newFull;
       markDirty();
       refreshVarDropdowns();
     });
     g('type').addEventListener('change', e => {
+      pushUndo();
       E.levelVars[fullName].type = e.target.value;
       markDirty();
     });
     g('initial').addEventListener('change', e => {
+      pushUndo();
       const vd = E.levelVars[fullName];
       if (!vd) return;
       const raw = e.target.value;
@@ -7096,6 +7182,7 @@ function renderVarsPanel() {
       markDirty();
     });
     g('del').addEventListener('click', () => {
+      pushUndo();
       delete E.levelVars[fullName];
       markDirty();
       renderVarsPanel();
@@ -7570,31 +7657,38 @@ function setupUI() {
   // Save trigger inputs
   document.getElementById('trigger-slot')?.addEventListener('input', e => {
     if (E.selected && E.selected.userData.primType === 'save-trigger') {
+      if (!E._triggerSlotUndoActive) { pushUndo(); E._triggerSlotUndoActive = true; }
       E.selected.userData.saveSlot = e.target.value.trim() || 'autosave'; markDirty();
     }
   });
+  document.getElementById('trigger-slot')?.addEventListener('change', () => { E._triggerSlotUndoActive = false; });
   document.getElementById('trigger-once')?.addEventListener('change', e => {
     if (E.selected && E.selected.userData.primType === 'save-trigger') {
+      pushUndo();
       E.selected.userData.onceOnly = e.target.checked; markDirty();
     }
   });
   document.getElementById('trigger-presence-var')?.addEventListener('change', e => {
     if (E.selected && E.selected.userData.primType === 'custom-trigger') {
+      pushUndo();
       E.selected.userData.presenceVar = e.target.value; markDirty();
     }
   });
   document.getElementById('trigger-var-name')?.addEventListener('change', e => {
     if (E.selected && E.selected.userData.primType === 'custom-trigger') {
+      pushUndo();
       E.selected.userData.triggerVar = e.target.value; markDirty();
     }
   });
   document.getElementById('trigger-var-op')?.addEventListener('change', e => {
     if (E.selected && E.selected.userData.primType === 'custom-trigger') {
+      pushUndo();
       E.selected.userData.triggerVarOp = e.target.value; markDirty();
     }
   });
   document.getElementById('trigger-var-value')?.addEventListener('change', e => {
     if (E.selected && E.selected.userData.primType === 'custom-trigger') {
+      pushUndo();
       E.selected.userData.triggerVarValue = e.target.value; markDirty();
     }
   });
@@ -7814,6 +7908,27 @@ function setupUI() {
 
   // UV canvas drag
   _setupUVCanvasDrag();
+
+  const sceneScriptsEl = document.getElementById('scene-scripts');
+  if (sceneScriptsEl) {
+    sceneScriptsEl.value = _scriptListToText(E.sceneScripts);
+    sceneScriptsEl.addEventListener('focus', () => { if (E.levelName) pushUndo(); });
+    sceneScriptsEl.addEventListener('change', e => {
+      E.sceneScripts = _textToScriptList(e.target.value);
+      markDirty();
+    });
+  }
+  const objScriptsEl = document.getElementById('obj-scripts');
+  if (objScriptsEl) {
+    objScriptsEl.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+    objScriptsEl.addEventListener('change', e => {
+      if (!E.selected) return;
+      const scripts = _textToScriptList(e.target.value);
+      if (scripts.length) E.selected.userData.scripts = scripts;
+      else delete E.selected.userData.scripts;
+      markDirty();
+    });
+  }
 
   document.getElementById('obj-label').addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('obj-label').addEventListener('input', e => {

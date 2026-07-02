@@ -45,6 +45,7 @@ export const gameState = {
   statefulObjects: [],   // Level objects with userData.states — checked for interaction
   saveTriggers: [],      // Level save-trigger volumes — checked each frame by saveManager
   currentLevel: 'main',  // Name of the currently loaded level
+  sceneScripts: [],      // Top-level scene script module paths loaded by scriptManager
   flags: {},             // Arbitrary boolean/value flags for mission/story state
   hitboxes: [],  // All collision hitboxes for dev mode visualization
   animationMixer: null,

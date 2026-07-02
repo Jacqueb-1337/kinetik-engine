@@ -282,6 +282,13 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
 
   <div class="panel" id="right-panel">
     <div class="panel-section">
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        Scene Scripts
+      </h3>
+      <textarea id="scene-scripts" rows="4" style="width:100%;box-sizing:border-box;background:#0d0d20;color:#cccce8;border:1px solid #333355;border-radius:3px;padding:4px 6px;font-size:10px;resize:vertical;font-family:monospace" placeholder="scripts/scene.js&#10;scripts/lighting.js"></textarea>
+      <div style="font-size:9px;color:#555577;margin-top:3px">One module path per line. Loaded when the level starts.</div>
+    </div>
+    <div class="panel-section">
       <h3>Selected</h3>
       <div id="sel-name" class="info-text">None</div>
     </div>
@@ -598,6 +605,11 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
     <div class="panel-section">
       <div class="vec3-label">Label</div>
       <input class="prop-input full" id="obj-label" type="text" placeholder="">
+    </div>
+    <div class="panel-section" id="object-scripts-section">
+      <div class="vec3-label">Object Scripts</div>
+      <textarea id="obj-scripts" rows="4" style="width:100%;box-sizing:border-box;background:#0d0d20;color:#cccce8;border:1px solid #333355;border-radius:3px;padding:4px 6px;font-size:10px;resize:vertical;font-family:monospace" placeholder="scripts/door.js&#10;scripts/interact.js"></textarea>
+      <div style="font-size:9px;color:#555577;margin-top:3px">One module path per line. Loaded for this object at runtime.</div>
     </div>
     <div class="panel-section">
       <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:#666688;margin-bottom:4px">

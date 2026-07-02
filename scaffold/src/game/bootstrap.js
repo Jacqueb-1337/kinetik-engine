@@ -3,6 +3,7 @@ import { initInput, updateFreecam } from 'kinetik-engine/input.js';
 import { update } from 'kinetik-engine/physics.js';
 import { loadLevel } from 'kinetik-engine/levelLoader.js';
 import { gameState } from 'kinetik-engine/globals.js';
+import { clearLevelScripts, initLevelScripts, updateLevelScripts } from 'kinetik-engine/scriptManager.js';
 import { initGameGlobals } from 'kinetik-engine/game/globals.js';
 import { createGround } from 'kinetik-engine/game/ground.js';
 import { createPlayer } from 'kinetik-engine/game/player.js';
@@ -30,6 +31,7 @@ export async function startGame() {
   initInput();
 
   createGround();
+  await clearLevelScripts();
 
   try {
     await loadLevel('main');
@@ -39,6 +41,7 @@ export async function startGame() {
 
   await createPlayer();
   positionPlayerFromSpawn();
+  await initLevelScripts();
 
   function animate() {
     requestAnimationFrame(animate);
@@ -46,6 +49,7 @@ export async function startGame() {
     update(delta);
     updateCamera();
     updateFreecam(delta);
+    updateLevelScripts(delta);
     if (gameState.animationMixer) {
       gameState.animationMixer.update(delta);
     }

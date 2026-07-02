@@ -269,7 +269,7 @@ export function advanceObjectState(obj) {
     _startStateAnim(obj, state, duration);
   }
   if (obj.userData.editorId && _objectStateHooks.length) {
-    for (const fn of _objectStateHooks) fn(obj.userData.editorId, nextIdx);
+    for (const fn of _objectStateHooks) fn(obj.userData.editorId, nextIdx, prevIdx);
   }
   // Advance all wired link targets too
   if (obj.userData.linkedObjects?.length) {

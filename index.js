@@ -13,4 +13,5 @@ export * from './playerProfile.js';
 export * from './uvDebug.js';
 export * from './ccd-ik.js';
 export * from './three-ik.js';
+export * from './scriptManager.js';
 export { initProject } from './init.js';

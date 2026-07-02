@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 
 function copyAssetsPlugin() {
@@ -13,7 +13,13 @@ function copyAssetsPlugin() {
         const dest = join(out, dir);
         if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
         for (const f of readdirSync(dir)) {
-          copyFileSync(join(dir, f), join(dest, f));
+          const srcPath = join(dir, f);
+          const destPath = join(dest, f);
+          if (statSync(srcPath).isDirectory()) {
+            cpSync(srcPath, destPath, { recursive: true });
+          } else {
+            copyFileSync(srcPath, destPath);
+          }
         }
       }
       for (const f of readdirSync('.')) {
@@ -32,7 +38,7 @@ export default defineConfig({
     outDir: 'dist-electron',
     emptyOutDir: true,
     rollupOptions: {
-      input: 'index.html',
+      input: 'src/index.html',
     },
   },
   server: {

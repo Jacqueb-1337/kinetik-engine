@@ -11,6 +11,7 @@ export function initGameGlobals() {
   gameState.cameraMode = 0;
   gameState.cameraDistance = 0.5;
   gameState.cameraDistanceThirdPerson = 5;
+  gameState.sceneScripts = [];
 }
 
 initGameGlobals();

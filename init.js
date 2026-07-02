@@ -26,6 +26,8 @@ const SCAFFOLD_FILES = [
   { from: 'src/game/globals.js',     to: 'src/game/globals.js' },
   { from: 'src/game/ground.js',      to: 'src/game/ground.js' },
   { from: 'src/game/player.js',      to: 'src/game/player.js' },
+  { from: 'scripts/scene.js',        to: 'scripts/scene.js' },
+  { from: 'scripts/object.js',       to: 'scripts/object.js' },
   { from: 'levels/main.json',        to: 'levels/main.json' },
 ];
 
@@ -49,6 +51,7 @@ const SCAFFOLD_TEXT_FILES = [
 
 const SCAFFOLD_DIRS = [
   'levels',
+  'scripts',
   'models/editor',
   'models/actors',
   'models/images',
@@ -61,17 +64,24 @@ function resolveDefaultTargetRoot() {
   return path.resolve(__dirname, '..', '..');
 }
 
+function resolveSourcePath(scaffoldRoot, from) {
+  if (from === 'scripts/scene.js' || from === 'scripts/object.js') {
+    return path.join(__dirname, from);
+  }
+  return path.join(scaffoldRoot, from);
+}
+
 export async function initProject(options = {}) {
   const scaffoldRoot = options.scaffoldRoot || DEFAULT_SCAFFOLD_DIR;
   const targetRoot = options.targetRoot || resolveDefaultTargetRoot();
-  const engineSpec = options.engineSpec || '^0.1.5';
+  const engineSpec = options.engineSpec || '^0.1.6';
   const overwrite = !!options.overwrite;
 
   let created = 0;
   let skipped = 0;
 
   for (const { from, to } of SCAFFOLD_FILES) {
-    const src = path.join(scaffoldRoot, from);
+    const src = resolveSourcePath(scaffoldRoot, from);
     const dest = path.join(targetRoot, to);
     if (!overwrite && fs.existsSync(dest)) {
       console.log(`  skip  ${to}  (already exists)`);

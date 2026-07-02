@@ -1088,6 +1088,7 @@ export async function loadLevel(name = 'main') {
   gameState.saveTriggers    = [];  // clear triggers from previous level
   gameState.customTriggers  = [];
   _ropeSimulations.length   = 0;
+  gameState.sceneScripts    = [];
 
   let data = null;
   try {
@@ -1103,9 +1104,9 @@ export async function loadLevel(name = 'main') {
     return;
   }
 
-  if (!data?.objects?.length) {
+  data.objects = Array.isArray(data.objects) ? data.objects : [];
+  if (!data.objects.length) {
     console.log(`[levelLoader] Level "${name}" has no objects`);
-    return;
   }
 
   // Reset zombies-mode placement data
@@ -1121,6 +1122,7 @@ export async function loadLevel(name = 'main') {
   gameState.zombiesJackpot      = [];
   gameState.zombiesConfig          = data.zombiesConfig ?? null;
   gameState.zombiesMapDisplayName   = data.zombiesMapDisplayName ?? null;
+  gameState.sceneScripts            = Array.isArray(data.sceneScripts) ? [...data.sceneScripts] : [];
 
   const spawned = [];
   for (const entry of data.objects) {
@@ -1325,6 +1327,7 @@ export async function loadLevel(name = 'main') {
       console.warn('[levelLoader] Failed to spawn entry:', entry, err);
     }
     if (obj) {
+      if (entry.scripts?.length) obj.userData.scripts = [...entry.scripts];
       obj.name = entry.label || (entry.type + '_' + entry.id);
       gameState.scene.add(obj);
       spawned.push(obj);

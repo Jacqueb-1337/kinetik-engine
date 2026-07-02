@@ -29,7 +29,7 @@ A lightweight 3D game engine built on [Three.js](https://threejs.org/) for deskt
    git submodule add https://github.com/Jacqueb-1337/kinetik-engine.git src/core
    ```
 
-2. **Run the scaffold script** — copies `electron-main.js`, `preload.js`, `package.json`, `vite.config.js`, `.gitignore`, and all required asset directories into the project root:
+2. **Run the scaffold script** — copies `electron-main.js`, `preload.js`, `package.json`, `vite.config.js`, `.gitignore`, starter `scripts/` files, and all required asset directories into the project root:
    ```bash
    node src/core/init.js
    ```
@@ -88,6 +88,7 @@ The editor opens `initEditor()` from `editor.js` instead of the game loop. From 
 - Place, move, rotate, and scale meshes
 - Paint CSG cuts and boolean geometry
 - Add stateful objects with enter/exit sounds and animations
+- Attach per-scene scripts and per-object scripts from the inspector
 - Set level variables and trigger conditions
 - Place player spawn, save triggers, and interact zones
 - Export the scene back to `levels/<name>.json`
@@ -140,6 +141,24 @@ advanceObjectState(myMesh);           // cycle to next state
 fireButtonTrigger(myMesh, 'press');   // fire a named trigger
 setLevelVar('door_open', true);       // set a level variable
 ```
+
+## Scripts
+
+Level JSON can also carry scripts:
+
+- `sceneScripts` for level-wide modules
+- `scripts` on any placed object entry
+
+Modules can export:
+
+- `onLoad(ctx)`
+- `onUpdate(ctx, delta)`
+- `onStateChange(ctx, nextIdx, prevIdx)`
+- `onUnload(ctx)`
+
+The editor stores these as plain module paths, one per line. Starter examples live in `scripts/scene.js` and `scripts/object.js`.
+
+If you build your own main loop, call `initLevelScripts()` after `loadLevel()` and `updateLevelScripts(delta)` once per frame.
 
 ---
 
