@@ -5,7 +5,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
 import { initStatefulObjects, levelVars, setTextureFn } from './stateManager.js';
-import { registerWeapon } from '../game/zombiesWeapons.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
@@ -1196,7 +1195,12 @@ export async function loadLevel(name = 'main') {
         });
         obj = marker;
       } else if (entry.type === 'zom-wallbuy') {
-        if (entry.weaponSlug && entry.weaponDef) registerWeapon(entry.weaponSlug, entry.weaponDef);
+        if (entry.weaponSlug && entry.weaponDef) {
+          const mod = await import('../game/zombiesWeapons.js').catch(() => null);
+          if (typeof mod?.registerWeapon === 'function') {
+            mod.registerWeapon(entry.weaponSlug, entry.weaponDef);
+          }
+        }
         const marker = spawnZombiePrim(entry);
         marker.userData.isZomWallBuy = true;
         if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }

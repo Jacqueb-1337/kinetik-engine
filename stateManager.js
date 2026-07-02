@@ -1,7 +1,6 @@
 ﻿// stateManager.js — Manages object/light state machines for level interactables
 import * as THREE from 'three';
 import { gameState } from './globals.js';
-import { initWarble } from '../game/warble.js';
 
 let _textureFn = null;
 export function setTextureFn(fn) { _textureFn = fn; }
@@ -36,7 +35,14 @@ function _getAudioCtx() {
       get: () => insertBus,
       configurable: true
     });
-    initWarble(_audioCtx, insertBus, realDest).catch(() => {});
+    import('../game/warble.js')
+      .then(mod => {
+        if (typeof mod.initWarble === 'function') {
+          return mod.initWarble(_audioCtx, insertBus, realDest);
+        }
+        return null;
+      })
+      .catch(() => {});
   }
   if (_audioCtx.state === 'suspended') _audioCtx.resume();
   return _audioCtx;
