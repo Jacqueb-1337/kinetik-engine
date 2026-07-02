@@ -18,7 +18,6 @@ const SCAFFOLD_FILES = [
   { from: 'package.json',            to: 'package.json' },
   { from: 'vite.config.js',          to: 'vite.config.js' },
   { from: 'scripts/run-electron.js', to: 'scripts/run-electron.js' },
-  { from: '.gitignore',              to: '.gitignore' },
   { from: 'src/index.html',          to: 'src/index.html' },
   { from: 'src/main.js',             to: 'src/main.js' },
   { from: 'src/editor.html',         to: 'src/editor.html' },
@@ -28,6 +27,24 @@ const SCAFFOLD_FILES = [
   { from: 'src/game/ground.js',      to: 'src/game/ground.js' },
   { from: 'src/game/player.js',      to: 'src/game/player.js' },
   { from: 'levels/main.json',        to: 'levels/main.json' },
+];
+
+const SCAFFOLD_TEXT_FILES = [
+  {
+    to: '.gitignore',
+    contents: [
+      'node_modules/',
+      'dist/',
+      'dist-electron/',
+      'saves/',
+      'settings/',
+      '.capacitor/',
+      'android/',
+      'ios/',
+      '*.local',
+      '',
+    ].join('\n'),
+  },
 ];
 
 const SCAFFOLD_DIRS = [
@@ -47,7 +64,7 @@ function resolveDefaultTargetRoot() {
 export async function initProject(options = {}) {
   const scaffoldRoot = options.scaffoldRoot || DEFAULT_SCAFFOLD_DIR;
   const targetRoot = options.targetRoot || resolveDefaultTargetRoot();
-  const engineSpec = options.engineSpec || '^0.1.0';
+  const engineSpec = options.engineSpec || '^0.1.3';
   const overwrite = !!options.overwrite;
 
   let created = 0;
@@ -67,12 +84,26 @@ export async function initProject(options = {}) {
     if (to === 'package.json') {
       const pkg = JSON.parse(fs.readFileSync(dest, 'utf8'));
       const deps = pkg.dependencies || {};
-      if (deps['@kinetik/engine'] === '__KINETIK_ENGINE_SPEC__') {
-        deps['@kinetik/engine'] = engineSpec;
+      if (deps['kinetik-engine'] === '__KINETIK_ENGINE_SPEC__') {
+        deps['kinetik-engine'] = engineSpec;
         pkg.dependencies = deps;
         fs.writeFileSync(dest, JSON.stringify(pkg, null, 2) + '\n');
       }
     }
+    console.log(`  create  ${to}`);
+    created++;
+  }
+
+  for (const { to, contents } of SCAFFOLD_TEXT_FILES) {
+    const dest = path.join(targetRoot, to);
+    if (!overwrite && fs.existsSync(dest)) {
+      console.log(`  skip  ${to}  (already exists)`);
+      skipped++;
+      continue;
+    }
+    const destDir = path.dirname(dest);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    fs.writeFileSync(dest, contents);
     console.log(`  create  ${to}`);
     created++;
   }

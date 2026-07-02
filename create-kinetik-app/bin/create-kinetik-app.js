@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import path from 'path';
-import { initProject } from '../init.js';
+import { initProject } from 'kinetik-engine/init.js';
 
 const args = process.argv.slice(2).filter(Boolean);
 let targetArg = null;
-let engineSpec = '^0.1.3';
+let engineSpec = null;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -18,7 +18,7 @@ for (let i = 0; i < args.length; i++) {
   if (arg === '--help' || arg === '-h') {
     console.log('Usage: create-kinetik-app [directory]');
     console.log('   or: kinetik init [directory]');
-    console.log('Options: --engine-spec <spec>  Override the @kinetik/engine dependency spec');
+    console.log('Options: --engine-spec <spec>  Override the kinetik-engine dependency spec');
     process.exit(0);
   }
   if (!targetArg) {
@@ -27,4 +27,6 @@ for (let i = 0; i < args.length; i++) {
 }
 
 const targetRoot = targetArg ? path.resolve(process.cwd(), targetArg) : process.cwd();
-await initProject({ targetRoot, overwrite: false, engineSpec });
+const options = { targetRoot, overwrite: false };
+if (engineSpec) options.engineSpec = engineSpec;
+await initProject(options);

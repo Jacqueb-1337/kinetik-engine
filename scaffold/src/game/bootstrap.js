@@ -1,11 +1,11 @@
-import { initScene, updateCamera } from '@kinetik/engine/scene.js';
-import { initInput, updateFreecam } from '@kinetik/engine/input.js';
-import { update } from '@kinetik/engine/physics.js';
-import { loadLevel } from '@kinetik/engine/levelLoader.js';
-import { gameState } from '@kinetik/engine/globals.js';
-import { initGameGlobals } from '@kinetik/engine/game/globals.js';
-import { createGround } from '@kinetik/engine/game/ground.js';
-import { createPlayer } from '@kinetik/engine/game/player.js';
+import { initScene, updateCamera } from 'kinetik-engine/scene.js';
+import { initInput, updateFreecam } from 'kinetik-engine/input.js';
+import { update } from 'kinetik-engine/physics.js';
+import { loadLevel } from 'kinetik-engine/levelLoader.js';
+import { gameState } from 'kinetik-engine/globals.js';
+import { initGameGlobals } from 'kinetik-engine/game/globals.js';
+import { createGround } from 'kinetik-engine/game/ground.js';
+import { createPlayer } from 'kinetik-engine/game/player.js';
 
 function positionPlayerFromSpawn() {
   if (!gameState.player) return;

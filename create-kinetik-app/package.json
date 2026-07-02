@@ -1,0 +1,17 @@
+{
+  "name": "create-kinetik-app",
+  "version": "0.1.3",
+  "description": "Create a new Kinetik game project",
+  "type": "module",
+  "bin": {
+    "create-kinetik-app": "./bin/create-kinetik-app.js",
+    "kinetik": "./bin/create-kinetik-app.js"
+  },
+  "files": [
+    "bin/**/*",
+    "README.md"
+  ],
+  "dependencies": {
+    "kinetik-engine": "^0.1.3"
+  }
+}

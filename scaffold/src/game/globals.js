@@ -1,4 +1,4 @@
-import { gameState } from '@kinetik/engine/globals.js';
+import { gameState } from 'kinetik-engine/globals.js';
 
 export function initGameGlobals() {
   gameState.mainMenuActive = false;

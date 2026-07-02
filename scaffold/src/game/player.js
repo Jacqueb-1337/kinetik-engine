@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { gameState } from '@kinetik/engine/globals.js';
+import { gameState } from 'kinetik-engine/globals.js';
 
 function buildStarterAvatar() {
   const group = new THREE.Group();

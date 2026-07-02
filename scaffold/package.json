@@ -25,7 +25,7 @@
   "dependencies": {
     "@capacitor/android": "^6.0.0",
     "@capacitor/core": "^6.0.0",
-    "@kinetik/engine": "__KINETIK_ENGINE_SPEC__"
+    "kinetik-engine": "__KINETIK_ENGINE_SPEC__"
   },
   "build": {
     "appId": "com.example.mygame",
