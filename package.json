@@ -1,6 +1,6 @@
 {
   "name": "kinetik-engine",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Kinetik engine and project initializer for Three.js games",
   "type": "module",
   "main": "./index.js",
@@ -43,7 +43,8 @@
     "README.md"
   ],
   "scripts": {
-    "init": "node init.js"
+    "init": "node init.js",
+    "postinstall": "node sync-generated-editor-html.js"
   },
   "dependencies": {
     "@capacitor/core": "^6.0.0",

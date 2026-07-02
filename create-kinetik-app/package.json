@@ -12,6 +12,6 @@
     "README.md"
   ],
   "dependencies": {
-    "kinetik-engine": "^0.1.6"
+    "kinetik-engine": "^0.1.7"
   }
 }
