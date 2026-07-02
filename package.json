@@ -6,7 +6,26 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./globals.js": "./globals.js",
+    "./platform.js": "./platform.js",
+    "./scene.js": "./scene.js",
+    "./input.js": "./input.js",
+    "./physics.js": "./physics.js",
+    "./stateManager.js": "./stateManager.js",
+    "./saveManager.js": "./saveManager.js",
+    "./levelLoader.js": "./levelLoader.js",
+    "./mobileControls.js": "./mobileControls.js",
+    "./settings.js": "./settings.js",
+    "./networking.js": "./networking.js",
+    "./playerProfile.js": "./playerProfile.js",
+    "./uvDebug.js": "./uvDebug.js",
+    "./ccd-ik.js": "./ccd-ik.js",
+    "./three-ik.js": "./three-ik.js",
+    "./game/bootstrap.js": "./scaffold/src/game/bootstrap.js",
+    "./game/globals.js": "./scaffold/src/game/globals.js",
+    "./game/ground.js": "./scaffold/src/game/ground.js",
+    "./game/player.js": "./scaffold/src/game/player.js"
   },
   "bin": {
     "kinetik": "./bin/create-kinetik-app.js",

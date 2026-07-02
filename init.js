@@ -47,6 +47,7 @@ function resolveDefaultTargetRoot() {
 export async function initProject(options = {}) {
   const scaffoldRoot = options.scaffoldRoot || DEFAULT_SCAFFOLD_DIR;
   const targetRoot = options.targetRoot || resolveDefaultTargetRoot();
+  const engineSpec = options.engineSpec || '^0.1.0';
   const overwrite = !!options.overwrite;
 
   let created = 0;
@@ -63,6 +64,15 @@ export async function initProject(options = {}) {
     const destDir = path.dirname(dest);
     if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(src, dest);
+    if (to === 'package.json') {
+      const pkg = JSON.parse(fs.readFileSync(dest, 'utf8'));
+      const deps = pkg.dependencies || {};
+      if (deps['@kinetik/engine'] === '__KINETIK_ENGINE_SPEC__') {
+        deps['@kinetik/engine'] = engineSpec;
+        pkg.dependencies = deps;
+        fs.writeFileSync(dest, JSON.stringify(pkg, null, 2) + '\n');
+      }
+    }
     console.log(`  create  ${to}`);
     created++;
   }

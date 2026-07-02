@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { gameState } from '../core/globals.js';
+import { gameState } from '@kinetik/engine/globals.js';
 
 function addWall(room, size, position, color) {
   const mesh = new THREE.Mesh(
