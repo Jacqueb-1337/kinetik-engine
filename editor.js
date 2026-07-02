@@ -507,7 +507,8 @@ function _removedSinisterReferenceScene() {
 }
 
 // â”€â”€â”€ Level save / load â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function levelToJSON() {
+function levelToJSON(options = {}) {
+  const includeEditorUi = options.includeEditorUi === true;
   // If a group pivot is active, temporarily reparent members into placedGroup with
   // their world-space transforms so the serialization loop sees them correctly.
   const _pivotSaved = [];
@@ -739,6 +740,14 @@ function levelToJSON() {
   out.groups = groups;
   out.vars = E.levelVars;
   if (E.fogDensity != null) out.fogDensity = E.fogDensity;
+  if (includeEditorUi) {
+    out.editorUi = {
+      selectedId: E.selected?.userData?.editorId ?? null,
+      selectedFace: E.selectedFace,
+      groupCollapsed: { ...E.groupCollapsed },
+      stateExpanded: [...E._stateExpanded],
+    };
+  }
   return out;
 }
 
@@ -808,6 +817,24 @@ async function loadLevel(name) {
 function clearPlaced() {
   E.transform.detach();
   E.selected = null;
+  E.selectedFace = null;
+  E._stateExpanded = new Set();
+  _clearFaceOverlay('hover');
+  _clearFaceOverlay('select');
+  if (E.groupPivot) {
+    E.scene.remove(E.groupPivot);
+    E.groupPivot = null;
+    E.groupPivotMembers = [];
+    E.activeGroupGid = null;
+  }
+  closeModelEditor();
+  if (E.linkMode) cancelLink();
+  if (E.cutMode) cancelCut();
+  if (E.pivotMode) cancelPivot();
+  if (E.ropeAnchorMode) cancelRopeAnchor();
+  if (E.facePickMode) cancelFacePick();
+  if (E.faceModeActive) exitFaceMode();
+  cancelPlace();
   while (E.placedGroup.children.length) E.placedGroup.remove(E.placedGroup.children[0]);
   E.colHelpers.forEach(h => E.scene.remove(h));
   E.colHelpers = [];
@@ -3218,6 +3245,7 @@ function _panelToFaceConfig() {
 function applyCurrentFaceConfig() {
   const obj = E.selected;
   if (!obj) return;
+  pushUndo();
   let faceKey;
   if (E.faceModeActive && E.faceModeSelected >= 0) {
     faceKey = E.faceModeGroups[E.faceModeSelected]?.key ?? 'all';
@@ -3578,6 +3606,7 @@ function renderModelEditorOverlay() {
   document.getElementById('me-close-btn').addEventListener('click', closeModelEditor);
   document.getElementById('me-add-bone').addEventListener('click', () => addBone(obj));
   document.getElementById('me-bone-mode').addEventListener('change', e => {
+    pushUndo();
     obj.userData.boneMode = e.target.value;
     markDirty();
     renderModelEditorOverlay();
@@ -3595,7 +3624,12 @@ function renderModelEditorOverlay() {
 }
 
 function _wireBonePropsEvents(obj, selBone) {
-  const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('input', fn); };
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('focus', () => pushUndo());
+    el.addEventListener('input', fn);
+  };
   bind('me-b-name', e => { selBone.name = e.target.value; markDirty(); renderModelEditorOverlay(); });
   bind('me-b-tag',  e => { selBone.tag  = e.target.value; markDirty(); });
   const parentEl = document.getElementById('me-b-parent');
@@ -5287,6 +5321,7 @@ function applyPivot(worldPoint) {
   cancelPivot();
   if (!obj) return;
 
+  pushUndo();
   // Convert the clicked world point into object-local space
   const localHit = obj.worldToLocal(worldPoint.clone());
   obj.userData.pivotOffset = localHit.toArray();
@@ -5328,6 +5363,7 @@ function applyRopeAnchor(worldPoint, hitObj) {
   const rope = E.ropeAnchorSource;
   cancelRopeAnchor();
   if (!rope || !end) return;
+  pushUndo();
   const p = rope.userData.geomParams ??= {};
   if (end === 'A') {
     const prevPos = rope.position.clone();
@@ -5815,21 +5851,21 @@ async function _buildEntryObj(e, gltfLoader, fbxLoader) {
 
 // â”€â”€â”€ Undo / Redo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function pushUndo() {
-  E.undoStack.push(JSON.stringify(levelToJSON()));
+  E.undoStack.push(JSON.stringify(levelToJSON({ includeEditorUi: true })));
   if (E.undoStack.length > 20) E.undoStack.shift();
   E.redoStack = [];
 }
 
 function undo() {
   if (!E.undoStack.length) return;
-  E.redoStack.push(JSON.stringify(levelToJSON()));
+  E.redoStack.push(JSON.stringify(levelToJSON({ includeEditorUi: true })));
   restoreSnapshot(E.undoStack.pop());
   setStatus('Undo');
 }
 
 function redo() {
   if (!E.redoStack.length) return;
-  E.undoStack.push(JSON.stringify(levelToJSON()));
+  E.undoStack.push(JSON.stringify(levelToJSON({ includeEditorUi: true })));
   restoreSnapshot(E.redoStack.pop());
   setStatus('Redo');
 }
@@ -5839,6 +5875,12 @@ async function restoreSnapshot(json) {
   closeModelEditor();
   clearPlaced();
   E.nextId = data.nextId || 1;
+  if (data.editorUi?.groupCollapsed) {
+    E.groupCollapsed = { ...data.editorUi.groupCollapsed };
+  }
+  if (data.editorUi?.stateExpanded) {
+    E._stateExpanded = new Set(data.editorUi.stateExpanded);
+  }
   if (data.groups) {
     for (const [gid, g] of Object.entries(data.groups)) {
       E.groups[gid] = { name: g.name, ids: new Set(g.ids) };
@@ -5853,6 +5895,18 @@ async function restoreSnapshot(json) {
     else if (entry.type === 'merged-model')    spawnMergedModel(entry);
     else if (entry.type === 'image-model')     await spawnImageModel(entry);
     else spawnPrimFromEntry(entry);
+  }
+  const selectedId = data.editorUi?.selectedId ?? null;
+  if (selectedId != null) {
+    const selectedObj = E.placedGroup.children.find(o => o.userData.editorId === selectedId);
+    if (selectedObj) {
+      selectObj(selectedObj);
+      if (data.editorUi?.selectedFace != null) {
+        E.selectedFace = data.editorUi.selectedFace;
+        updateFaceHighlight(E.selected, E.selectedFace);
+        refreshTexPanel(E.selected);
+      }
+    }
   }
   updateSceneList(); updateGroupsPanel(); markDirty();
 }
@@ -6615,11 +6669,13 @@ function renderStatesPanel(obj) {
       }
     };
     g('texStateEn')?.addEventListener('change', e => {
+      pushUndo();
       st.textureEnabled = e.target.checked;
       item.querySelector('[data-field="texture"]').classList.toggle('sf-disabled', !e.target.checked);
       markDirty();
     });
     g('texStateAdd')?.addEventListener('click', () => {
+      pushUndo();
       if (!st.textures) st.textures = {};
       if (!st.textures['all']) st.textures['all'] = null;
       _renderTexStateList();
@@ -6629,6 +6685,7 @@ function renderStatesPanel(obj) {
 
     // Condition
     g('condEn').addEventListener('change', e => {
+      pushUndo();
       st.conditionEnabled = e.target.checked;
       item.querySelector('[data-field="condition"]').classList.toggle('sf-disabled', !e.target.checked);
       markDirty();
@@ -6662,10 +6719,11 @@ function renderStatesPanel(obj) {
         const delBtn = row.children[3];
         varSel.value = cond.var || '';
         opSel.value  = cond.op  || 'eq';
-        varSel.addEventListener('change', e => { cond.var = e.target.value; markDirty(); });
-        opSel.addEventListener('change',  e => { cond.op  = e.target.value; markDirty(); });
-        valIn.addEventListener('change',  e => { cond.value = e.target.value; markDirty(); });
+        varSel.addEventListener('change', e => { pushUndo(); cond.var = e.target.value; markDirty(); });
+        opSel.addEventListener('change',  e => { pushUndo(); cond.op  = e.target.value; markDirty(); });
+        valIn.addEventListener('change',  e => { pushUndo(); cond.value = e.target.value; markDirty(); });
         delBtn.addEventListener('click', () => {
+          pushUndo();
           st.conditions.splice(ci, 1);
           _renderCondList();
           markDirty();
@@ -6675,6 +6733,7 @@ function renderStatesPanel(obj) {
     };
 
     g('condAdd').addEventListener('click', () => {
+      pushUndo();
       if (!st.conditions) st.conditions = [];
       if (!st.conditionEnabled) {
         st.conditionEnabled = true;
@@ -6689,6 +6748,7 @@ function renderStatesPanel(obj) {
     _renderCondList();
 
     g('activeVar').addEventListener('change', e => {
+      pushUndo();
       const v = e.target.value.trim();
       if (v) st.activeVar = v; else delete st.activeVar;
       markDirty();
@@ -6698,6 +6758,7 @@ function renderStatesPanel(obj) {
 
     g('goto').addEventListener('click', () => applyStateToEditorObj(obj, obj.userData.states[idx]));
     g('del').addEventListener('click', () => {
+      pushUndo();
       obj.userData.states.splice(idx, 1);
       if (!obj.userData.states.length) delete obj.userData.states;
       renderStatesPanel(obj); markDirty();
@@ -6738,7 +6799,7 @@ function renderStatesPanel(obj) {
           if (b.trigger === v) o.selected = true;
           trigSel.appendChild(o);
         });
-        trigSel.addEventListener('change', e => { b.trigger = e.target.value; markDirty(); });
+        trigSel.addEventListener('change', e => { pushUndo(); b.trigger = e.target.value; markDirty(); });
 
         const opSel = document.createElement('select');
         opSel.className = 'prop-input';
@@ -6749,7 +6810,7 @@ function renderStatesPanel(obj) {
           if (b.varOp === v) o.selected = true;
           opSel.appendChild(o);
         });
-        opSel.addEventListener('change', e => { b.varOp = e.target.value; markDirty(); });
+        opSel.addEventListener('change', e => { pushUndo(); b.varOp = e.target.value; markDirty(); });
 
         const varSel = document.createElement('select');
         varSel.className = 'prop-input';
@@ -6763,20 +6824,21 @@ function renderStatesPanel(obj) {
           if (b.varName === k) o.selected = true;
           varSel.appendChild(o);
         });
-        varSel.addEventListener('change', e => { b.varName = e.target.value; markDirty(); });
+        varSel.addEventListener('change', e => { pushUndo(); b.varName = e.target.value; markDirty(); });
 
         const valInput = document.createElement('input');
         valInput.className = 'prop-input';
         valInput.type = 'number'; valInput.step = '0.01';
         valInput.style.width = '44px';
         valInput.value = b.varValue ?? 0;
-        valInput.addEventListener('change', e => { b.varValue = parseFloat(e.target.value) || 0; markDirty(); });
+        valInput.addEventListener('change', e => { pushUndo(); b.varValue = parseFloat(e.target.value) || 0; markDirty(); });
 
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-del';
         delBtn.style.cssText = 'font-size:10px;padding:2px 5px';
         delBtn.textContent = '\xd7';
         delBtn.addEventListener('click', () => {
+          pushUndo();
           st.buttons.splice(bi, 1);
           if (!st.buttons.length) delete st.buttons;
           renderInputRows();
@@ -6790,6 +6852,7 @@ function renderStatesPanel(obj) {
     };
 
     btnAddInput.addEventListener('click', () => {
+      pushUndo();
       if (!st.buttons) st.buttons = [];
       st.buttons.push({ trigger: 'scrollup', varOp: 'add', varName: '', varValue: 0 });
       renderInputRows();
@@ -6799,6 +6862,10 @@ function renderStatesPanel(obj) {
     renderInputRows();
     { const _sb = item.querySelector('.state-body'); (_sb || item).appendChild(inputsSection); }
     _appendBoneOverridesToStateItem(item, obj, idx);
+
+    item.querySelectorAll('input, select').forEach(el => {
+      el.addEventListener('focus', () => { if (E.selected) pushUndo(); });
+    });
 
     item.setAttribute('draggable', 'true');
     item.addEventListener('dragstart', e => {
@@ -7071,6 +7138,7 @@ function setupUI() {
   document.getElementById('btn-add-state')?.addEventListener('click', () => {
     const obj = E.selected;
     if (!obj) { setStatus('Select an object first'); return; }
+    pushUndo();
     if (!obj.userData.states) obj.userData.states = [];
     obj.userData.states.push(captureStateFromObj(obj));
     renderStatesPanel(obj);
@@ -7079,6 +7147,7 @@ function setupUI() {
 
   // Variables panel — "Add Variable" button
   document.getElementById('btn-add-var')?.addEventListener('click', () => {
+    pushUndo();
     let n = 1;
     while (E.levelVars['lv_var' + n]) n++;
     E.levelVars['lv_var' + n] = { type: 'number', initial: 0 };
@@ -7722,6 +7791,7 @@ function setupUI() {
   document.getElementById('btn-uv-apply')?.addEventListener('click', () => {
     const obj = E.selected;
     if (!obj) { closeUVEditor(); return; }
+    pushUndo();
     const faceKey = E.selectedFace !== null ? String(E.selectedFace) : 'all';
     const existing = getFaceConfig(obj, faceKey) ?? {};
     existing.ox = parseFloat(document.getElementById('uv-ox').value) || 0;
@@ -7776,6 +7846,7 @@ function setupUI() {
     const name = groupNameInput.value.trim();
     hideGroupInputs();
     if (!name) return;
+    pushUndo();
     const gid = 'g_' + Date.now();
     E.groups[gid] = { name, ids: new Set() };
     if (E.selected) {
@@ -7810,6 +7881,7 @@ function setupUI() {
     const gid = groupPickSelect.value;
     hideGroupInputs();
     if (!gid || !E.groups[gid] || !E.selected) return;
+    pushUndo();
     E.groups[gid].ids.add(E.selected.userData.editorId);
     setGroupDisplay(gid); updateGroupsPanel(); markDirty();
   }
@@ -7820,6 +7892,7 @@ function setupUI() {
   });
   document.getElementById('btn-ungroup').addEventListener('click', () => {
     if (!E.selected) return;
+    pushUndo();
     const id = E.selected.userData.editorId;
     for (const g of Object.values(E.groups)) g.ids.delete(id);
     for (const gid of Object.keys(E.groups)) { if (E.groups[gid].ids.size === 0) delete E.groups[gid]; }
@@ -7910,9 +7983,11 @@ function setupUI() {
     const existing = E.placedGroup.children.find(o => o.userData.primType === 'player-spawn');
     const p = E.camera.position;
     if (existing) {
+      pushUndo();
       existing.position.set(p.x, p.y, p.z);
       markDirty();
     } else {
+      pushUndo();
       const id = E.nextId++;
       spawnPrimFromEntry({
         id, label: 'player_spawn', type: 'player-spawn',
@@ -7920,27 +7995,28 @@ function setupUI() {
         rot: [0, 0, 0], size: [1, 1, 1], collidable: false,
       });
       markDirty();
-      pushUndo();
     }
     updateSceneList();
   });
   document.getElementById('btn-clear-spawn')?.addEventListener('click', () => {
     const existing = E.placedGroup.children.find(o => o.userData.primType === 'player-spawn');
     if (existing) {
+      pushUndo();
       E.placedGroup.remove(existing);
       if (E.selected === existing) { E.transform.detach(); E.selected = null; updateProps(null); }
       markDirty();
-      pushUndo();
       updateSceneList();
     }
   });
 
   document.getElementById('fog-density')?.addEventListener('change', (e) => {
+    pushUndo();
     const v = parseFloat(e.target.value);
     E.fogDensity = isNaN(v) || e.target.value.trim() === '' ? null : Math.max(0, v);
     markDirty();
   });
   document.getElementById('btn-fog-clear')?.addEventListener('click', () => {
+    pushUndo();
     E.fogDensity = null;
     _updateFogInput();
     markDirty();
@@ -7965,12 +8041,14 @@ function setupUI() {
   });
   document.getElementById('actor-persistent')?.addEventListener('change', e => {
     if (E.selected?.userData.primType === 'actor-spawn') {
+      pushUndo();
       E.selected.userData.persistent = e.target.checked;
       markDirty();
     }
   });
   document.getElementById('actor-single-instance')?.addEventListener('change', e => {
     if (E.selected?.userData.primType === 'actor-spawn') {
+      pushUndo();
       E.selected.userData.singleInstance = e.target.checked;
       markDirty();
     }
@@ -7987,6 +8065,7 @@ function setupUI() {
     if (!window.electron?.importActorAnim) return;
     const filePath = await window.electron.importActorAnim(obj.userData.actorModel);
     if (!filePath) return;
+    pushUndo();
     if (!obj.userData.animations) obj.userData.animations = [];
     const clipName = filePath.split('/').pop().replace(/\.[^.]+$/, '');
     obj.userData.animations.push({ name: clipName, file: filePath });
@@ -7998,6 +8077,7 @@ function setupUI() {
   document.getElementById('btn-actor-add-variant')?.addEventListener('click', () => {
     const obj = E.selected;
     if (!obj || obj.userData.primType !== 'actor-spawn') return;
+    pushUndo();
     if (!Array.isArray(obj.userData.actorVariants)) obj.userData.actorVariants = [];
     obj.userData.actorVariants.push({ model: obj.userData.actorModel || '', weight: 1 });
     _refreshActorVariantsList(obj);
@@ -8007,6 +8087,7 @@ function setupUI() {
     openActorModelPicker(result => {
       const obj = E.selected;
       if (!obj || obj.userData.primType !== 'actor-spawn') return;
+      pushUndo();
       obj.userData.actorModel   = result.model;
       obj.userData.actorSourceId = result.sourceId;
       const el = document.getElementById('actor-spawn-model-name');
@@ -8093,6 +8174,7 @@ function setupUI() {
   _wbNum('wb-model-opacity', 'weaponModelOpacity', true);
   document.getElementById('wb-auto')?.addEventListener('change', e => {
     if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+    pushUndo();
     if (!E.selected.userData.weaponDef) E.selected.userData.weaponDef = {};
     E.selected.userData.weaponDef.isAuto = e.target.checked;
     markDirty();
@@ -8102,6 +8184,7 @@ function setupUI() {
     if (!window.electron?.importModel) return;
     const p = await window.electron.importModel();
     if (!p) return;
+    pushUndo();
     E.selected.userData.weaponModelPath = p;
     const el = document.getElementById('wb-model-name');
     if (el) el.textContent = p.split('/').pop() || p;
@@ -8110,6 +8193,7 @@ function setupUI() {
   });
   document.getElementById('btn-wb-clear-model')?.addEventListener('click', () => {
     if (E.selected?.userData.primType !== 'zom-wallbuy') return;
+    pushUndo();
     E.selected.userData.weaponModelPath = '';
     const el = document.getElementById('wb-model-name');
     if (el) el.textContent = '-';
@@ -8135,6 +8219,7 @@ function setupUI() {
     if (!window.electron?.importActorModel) return;
     const p = await window.electron.importActorModel();
     if (!p) return;
+    pushUndo();
     E.selected.userData.actorModel = p;
     const el = document.getElementById('zs-model-name');
     if (el) el.textContent = p.split('/').pop() || p;
@@ -8157,6 +8242,7 @@ function setupUI() {
   });
   document.getElementById('perk-require-power')?.addEventListener('change', e => {
     if (E.selected?.userData.primType !== 'zom-perk') return;
+    pushUndo();
     E.selected.userData.requirePower = e.target.checked;
     markDirty();
   });
@@ -8169,6 +8255,7 @@ function setupUI() {
     E.selected.userData.mysteryBoxCost = isNaN(v) ? null : v;
     markDirty();
   });
+  document.getElementById('mystery-pool')?.addEventListener('focus', () => { if (E.selected) pushUndo(); });
   document.getElementById('mystery-pool')?.addEventListener('input', e => {
     if (E.selected?.userData.primType !== 'zom-mystery') return;
     E.selected.userData.weaponPool = e.target.value.split('\n').map(s => s.trim()).filter(Boolean);
@@ -8185,6 +8272,7 @@ function setupUI() {
   });
   document.getElementById('pap-require-power')?.addEventListener('change', e => {
     if (E.selected?.userData.primType !== 'zom-pap') return;
+    pushUndo();
     E.selected.userData.requirePower = e.target.checked;
     markDirty();
   });
@@ -8297,6 +8385,7 @@ function setupUI() {
   });
   function _applyZombiesSettings() {
     const modal = document.getElementById('zombies-settings-modal');
+    pushUndo();
     const getN = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseFloat(el.value); };
     const getI = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseInt(el.value, 10); };
     E.isZombiesMap = document.getElementById('zms-is-zombies-map')?.checked ?? false;
@@ -8701,6 +8790,7 @@ function setupMouse() {
           if (targetId !== undefined) {
             if (!E.linkSource.userData.links) E.linkSource.userData.links = [];
             if (!E.linkSource.userData.links.some(l => l.id === targetId)) {
+              pushUndo();
               E.linkSource.userData.links.push({ id: targetId });
               markDirty();
             }
