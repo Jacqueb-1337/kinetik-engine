@@ -1,0 +1,9 @@
+{
+  "objects": [],
+  "playerSpawn": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+  },
+  "fogDensity": 0.1
+}

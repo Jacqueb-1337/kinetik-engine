@@ -1,11 +1,5 @@
-import { initScene } from './core/scene.js';
-import { gameState } from './core/globals.js';
+import { startGame } from './game/bootstrap.js';
 
-initScene();
-
-function animate() {
-  requestAnimationFrame(animate);
-  gameState.renderer.render(gameState.scene, gameState.camera);
-}
-
-animate();
+startGame().catch((err) => {
+  console.error('[kinetik] failed to start game bootstrap:', err);
+});

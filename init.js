@@ -21,6 +21,11 @@ const SCAFFOLD_FILES = [
   { from: 'src/main.js',             to: 'src/main.js' },
   { from: 'src/editor.html',         to: 'src/editor.html' },
   { from: 'src/game/editorSetup.js', to: 'src/game/editorSetup.js' },
+  { from: 'src/game/bootstrap.js',   to: 'src/game/bootstrap.js' },
+  { from: 'src/game/globals.js',     to: 'src/game/globals.js' },
+  { from: 'src/game/ground.js',      to: 'src/game/ground.js' },
+  { from: 'src/game/player.js',      to: 'src/game/player.js' },
+  { from: 'levels/main.json',        to: 'levels/main.json' },
 ];
 
 const SCAFFOLD_DIRS = [
