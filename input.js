@@ -14,6 +14,132 @@ let savedCameraState = null;
 let debugOverlayElement = null;
 let debugOverlayInterval = null;
 let debugOverlayLastText = '';
+let _gamepadCursorEl = null;
+let _gamepadCursorVisible = false;
+let _gamepadCursorX = 0;
+let _gamepadCursorY = 0;
+let _gamepadClickLatched = false;
+
+function _ensureGamepadCursor() {
+  if (_gamepadCursorEl) return;
+  _gamepadCursorEl = document.createElement('div');
+  _gamepadCursorEl.id = 'gamepad-cursor';
+  _gamepadCursorEl.style.cssText = [
+    'position:fixed',
+    'width:18px',
+    'height:18px',
+    'margin-left:-9px',
+    'margin-top:-9px',
+    'border:2px solid rgba(255,255,255,0.95)',
+    'border-radius:50%',
+    'box-shadow:0 0 12px rgba(255,255,255,0.45)',
+    'pointer-events:none',
+    'z-index:5000',
+    'display:none',
+    'background:rgba(255,255,255,0.15)',
+  ].join(';');
+  document.body.appendChild(_gamepadCursorEl);
+}
+
+function _getGamepadCursorTarget() {
+  const el = document.elementFromPoint(_gamepadCursorX, _gamepadCursorY);
+  if (!el) return null;
+  return el.closest?.('button, [role="button"], input, select, textarea, a, .clickable, [data-clickable="true"]') || el;
+}
+
+export function updateGamepadCursor() {
+  const pads = navigator.getGamepads?.() || [];
+  const pad = pads.find(Boolean);
+  if (!pad) {
+    if (_gamepadCursorEl) _gamepadCursorEl.style.display = 'none';
+    _gamepadCursorVisible = false;
+    gameState.gamepadCursorActive = false;
+    return;
+  }
+
+  _ensureGamepadCursor();
+  const lx = pad.axes?.[0] ?? 0;
+  const ly = pad.axes?.[1] ?? 0;
+  const rx = pad.axes?.[2] ?? 0;
+  const ry = pad.axes?.[3] ?? 0;
+  const dpadLeft = !!pad.buttons?.[14]?.pressed;
+  const dpadRight = !!pad.buttons?.[15]?.pressed;
+  const dpadUp = !!pad.buttons?.[12]?.pressed;
+  const dpadDown = !!pad.buttons?.[13]?.pressed;
+  const moveX = dpadLeft ? -1 : dpadRight ? 1 : lx;
+  const moveY = dpadUp ? -1 : dpadDown ? 1 : ly;
+  const aimX = Math.abs(rx) > 0.12 ? rx : moveX;
+  const aimY = Math.abs(ry) > 0.12 ? ry : moveY;
+  const activeMove = Math.hypot(moveX, moveY) > 0.12 || Math.hypot(aimX, aimY) > 0.12;
+
+  if (activeMove || _gamepadCursorVisible) {
+    _gamepadCursorVisible = true;
+    gameState.gamepadCursorActive = true;
+    if (!_gamepadCursorX) _gamepadCursorX = window.innerWidth / 2;
+    if (!_gamepadCursorY) _gamepadCursorY = window.innerHeight / 2;
+    _gamepadCursorX = Math.max(0, Math.min(window.innerWidth, _gamepadCursorX + (aimX || moveX) * 18));
+    _gamepadCursorY = Math.max(0, Math.min(window.innerHeight, _gamepadCursorY + (aimY || moveY) * 18));
+
+    const target = _getGamepadCursorTarget();
+    if (target?.getBoundingClientRect) {
+      const rect = target.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dx = cx - _gamepadCursorX;
+      const dy = cy - _gamepadCursorY;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 120) {
+        const pull = (120 - dist) / 120 * 0.22;
+        _gamepadCursorX += dx * pull;
+        _gamepadCursorY += dy * pull;
+      }
+    }
+
+    _gamepadCursorEl.style.left = `${_gamepadCursorX}px`;
+    _gamepadCursorEl.style.top = `${_gamepadCursorY}px`;
+    _gamepadCursorEl.style.display = 'block';
+
+    const hoverTarget = _getGamepadCursorTarget();
+    hoverTarget?.dispatchEvent?.(new MouseEvent('mousemove', {
+      bubbles: true,
+      cancelable: true,
+      clientX: _gamepadCursorX,
+      clientY: _gamepadCursorY,
+    }));
+
+    const clickPressed = !!pad.buttons?.[0]?.pressed || !!pad.buttons?.[2]?.pressed;
+    if (clickPressed && !_gamepadClickLatched && hoverTarget) {
+      hoverTarget.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: _gamepadCursorX,
+        clientY: _gamepadCursorY,
+      }));
+      hoverTarget.dispatchEvent(new MouseEvent('mouseup', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: _gamepadCursorX,
+        clientY: _gamepadCursorY,
+      }));
+      hoverTarget.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: _gamepadCursorX,
+        clientY: _gamepadCursorY,
+      }));
+      _gamepadClickLatched = true;
+    } else if (!clickPressed) {
+      _gamepadClickLatched = false;
+    }
+  } else if (_gamepadCursorEl) {
+    _gamepadCursorEl.style.display = 'none';
+    _gamepadCursorVisible = false;
+    gameState.gamepadCursorActive = false;
+  }
+}
 
 export function initInput() {
   document.addEventListener('keydown', (e) => {

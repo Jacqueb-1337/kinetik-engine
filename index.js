@@ -14,4 +14,5 @@ export * from './uvDebug.js';
 export * from './ccd-ik.js';
 export * from './three-ik.js';
 export * from './scriptManager.js';
+export * from './storySystem.js';
 export { initProject } from './init.js';

@@ -24,6 +24,11 @@ export const gameState = {
   cameraDistance: 0.5,  // Distance from character in first person (0.1 to 3)
   cameraDistanceThirdPerson: 5,  // Distance for third person modes
   actualCameraDistance: 5,  // Actual distance after collision detection
+  moveAxisX: 0,
+  moveAxisY: 0,
+  gamepadCursorActive: false,
+  gamepadCursorX: 0,
+  gamepadCursorY: 0,
   smoothedCameraPos: null,  // Smoothed position for first-person camera damping
   debugMode: false,
   pathDebugMode: false,

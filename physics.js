@@ -319,10 +319,17 @@ export function update(delta) {
 
   let moveX = 0;
   let moveZ = 0;
-  if (gameState.keys['KeyW'] || gameState.keys['ArrowUp']) { moveX += forwardX; moveZ += forwardZ; }
-  if (gameState.keys['KeyS'] || gameState.keys['ArrowDown']) { moveX -= forwardX; moveZ -= forwardZ; }
-  if (gameState.keys['KeyA'] || gameState.keys['ArrowLeft']) { moveX -= rightX; moveZ -= rightZ; }
-  if (gameState.keys['KeyD'] || gameState.keys['ArrowRight']) { moveX += rightX; moveZ += rightZ; }
+  const axisX = gameState.moveAxisX ?? 0;
+  const axisY = gameState.moveAxisY ?? 0;
+  if (Math.abs(axisX) > 0.001 || Math.abs(axisY) > 0.001) {
+    moveX += forwardX * (-axisY) + rightX * axisX;
+    moveZ += forwardZ * (-axisY) + rightZ * axisX;
+  } else {
+    if (gameState.keys['KeyW'] || gameState.keys['ArrowUp']) { moveX += forwardX; moveZ += forwardZ; }
+    if (gameState.keys['KeyS'] || gameState.keys['ArrowDown']) { moveX -= forwardX; moveZ -= forwardZ; }
+    if (gameState.keys['KeyA'] || gameState.keys['ArrowLeft']) { moveX -= rightX; moveZ -= rightZ; }
+    if (gameState.keys['KeyD'] || gameState.keys['ArrowRight']) { moveX += rightX; moveZ += rightZ; }
+  }
 
   // Check if player is moving
   const isMoving = Math.abs(moveX) > 0.01 || Math.abs(moveZ) > 0.01;
@@ -333,7 +340,8 @@ export function update(delta) {
   updateWalkingAnimation(isMoving, moveSpeed, delta, gameState);
 
   // Smooth speed ramping (acceleration/deceleration)
-  const targetSpeedMultiplier = !isMoving ? 0 : (isPlayerDowned ? 0.2 : (isSprinting ? 2.0 : 1.0));
+  const analogMagnitude = Math.min(1, Math.sqrt(axisX * axisX + axisY * axisY));
+  const targetSpeedMultiplier = !isMoving ? 0 : (isPlayerDowned ? 0.2 : (isSprinting ? 2.0 : Math.max(0.2, analogMagnitude)));
   const acceleration = 8.0; // How fast to ramp up/down
   gameState.currentSpeed += (targetSpeedMultiplier - gameState.currentSpeed) * Math.min(1, delta * acceleration);
   

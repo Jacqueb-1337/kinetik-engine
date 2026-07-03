@@ -15,6 +15,9 @@ const mobileSwitchWeapon = () => { gameHooks.mobileSwitchWeapon?.(); };
 
 let _pauseToggle = () => {};
 export function setPauseToggleCallback(fn) { _pauseToggle = fn; }
+let _mobileControlMode = 'default';
+export function setMobileControlMode(mode) { _mobileControlMode = mode || 'default'; }
+export function getMobileControlMode() { return _mobileControlMode; }
 
 const HUD_SETTINGS_KEY = 'hud_config';
 const CORE_HUD_KEYS = ['fire', 'reload', 'swap', 'sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5'];
@@ -42,6 +45,8 @@ function _migrateLayout(layout) {
   if (!layout.f3)  layout.f3  = { x: 20,  y: 20, size: 44, opacity: 1.0 };
   if (!layout.cam) layout.cam = { x: 74,  y: 20, size: 44, opacity: 1.0 };
   if (!layout.f5)  layout.f5  = { x: 128, y: 20, size: 44, opacity: 1.0 };
+  if (!layout.retroA) layout.retroA = { x: W - 230, y: H - 320, size: 64, opacity: 1.0 };
+  if (!layout.retroB) layout.retroB = { x: W - 140, y: H - 250, size: 64, opacity: 1.0 };
   _ensureZombiesLayoutDefaults(layout);
   for (const k of Object.keys(layout)) {
     if (layout[k].opacity === undefined) layout[k].opacity = 1.0;
@@ -53,7 +58,7 @@ function _initHudConfigDefaults() {
   if (!gameState.hudConfig) {
     const layout = getDefaultLayout();
     _migrateLayout(layout);
-    gameState.hudConfig = { autoRunLock: true, layout };
+    gameState.hudConfig = { autoRunLock: true, layout, activeProfile: 'default' };
   }
 }
 
@@ -63,6 +68,7 @@ export async function loadHudConfig() {
     if (stored) {
       gameState.hudConfig = stored;
       if (!gameState.hudConfig.layout) gameState.hudConfig.layout = getDefaultLayout();
+      if (!gameState.hudConfig.activeProfile) gameState.hudConfig.activeProfile = 'default';
       _migrateLayout(gameState.hudConfig.layout);
       applyLayout();
       return;
@@ -72,7 +78,7 @@ export async function loadHudConfig() {
   }
   const layout = getDefaultLayout();
   _migrateLayout(layout);
-  gameState.hudConfig = { autoRunLock: true, layout };
+  gameState.hudConfig = { autoRunLock: true, layout, activeProfile: 'default' };
 }
 
 function getDefaultLayout() {
@@ -89,6 +95,8 @@ function getDefaultLayout() {
     f3:       { x: 20,      y: 20,      size: 44, opacity: 1.0 },
     cam:      { x: 74,      y: 20,      size: 44, opacity: 1.0 },
     f5:       { x: 128,     y: 20,      size: 44, opacity: 1.0 },
+    retroA:   { x: W - 230, y: H - 320, size: 64, opacity: 1.0 },
+    retroB:   { x: W - 140, y: H - 250, size: 64, opacity: 1.0 },
   };
 }
 
@@ -139,6 +147,8 @@ const touchState = {
   fireButton: null,
   reloadButton: null,
   swapButton: null,
+  retroAButton: null,
+  retroBButton: null,
   sprintButton: null,
   jumpButton: null,
   interactButton: null,
@@ -294,6 +304,8 @@ function createControlElements() {
   makeHudButton('jump-button', 'jump', btnBase, svgJump);
 
   makeHudButton('interact-button', 'interact', btnBase + `transition: border 0.15s, box-shadow 0.15s, background 0.15s;`, svgInteract);
+  makeHudButton('retro-a-button', 'retroA', btnBase, '<span style="color:rgba(255,255,255,0.95);font:700 26px sans-serif">A</span>');
+  makeHudButton('retro-b-button', 'retroB', btnBase, '<span style="color:rgba(255,255,255,0.95);font:700 26px sans-serif">B</span>');
 
   function makeDebugButton(id, key, label) {
     const cfg = L[key];
@@ -483,6 +495,36 @@ function setupTouchHandlers() {
     e.preventDefault();
     e.stopPropagation();
     mobileSwitchWeapon();
+  }, { passive: false });
+
+  touchState.retroAButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive || _mobileControlMode !== 'retro') return;
+    e.preventDefault();
+    e.stopPropagation();
+    gameState.keys['KeyZ'] = true;
+    gameState.keys['Enter'] = true;
+  }, { passive: false });
+  touchState.retroAButton.addEventListener('touchend', (e) => {
+    if (hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    gameState.keys['KeyZ'] = false;
+    gameState.keys['Enter'] = false;
+  }, { passive: false });
+
+  touchState.retroBButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive || _mobileControlMode !== 'retro') return;
+    e.preventDefault();
+    e.stopPropagation();
+    gameState.keys['Space'] = true;
+    gameState.keys['ArrowUp'] = true;
+  }, { passive: false });
+  touchState.retroBButton.addEventListener('touchend', (e) => {
+    if (hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    gameState.keys['Space'] = false;
+    gameState.keys['ArrowUp'] = false;
   }, { passive: false });
 }
 
@@ -674,7 +716,7 @@ function updateGameInput(dx, dy, distance) {
     return;
   }
   
-  // Convert joystick to WASD
+  // Convert joystick to WASD or a snapped D-pad for retro mode
   const normalizedX = dx / touchState.joystickMaxRadius;
   const normalizedY = dy / touchState.joystickMaxRadius;
   
@@ -687,11 +729,39 @@ function updateGameInput(dx, dy, distance) {
     return;
   }
   
-  // Map to WASD (Y negative = forward/W, X negative = left/A)
-  gameState.keys['KeyW'] = normalizedY < -0.3;
-  gameState.keys['KeyS'] = normalizedY > 0.3;
-  gameState.keys['KeyA'] = normalizedX < -0.3;
-  gameState.keys['KeyD'] = normalizedX > 0.3;
+  if (_mobileControlMode === 'retro') {
+    gameState.keys['KeyW'] = false;
+    gameState.keys['KeyA'] = false;
+    gameState.keys['KeyS'] = false;
+    gameState.keys['KeyD'] = false;
+    const absX = Math.abs(normalizedX);
+    const absY = Math.abs(normalizedY);
+    const snapThreshold = 0.15;
+    if (Math.max(absX, absY) < touchState.joystickDeadzone / touchState.joystickMaxRadius) {
+      gameState.moveAxisX = 0;
+      gameState.moveAxisY = 0;
+    } else if (absX >= absY) {
+      const snapped = normalizedX < 0 ? -Math.min(1, Math.max(snapThreshold, absX)) : Math.min(1, Math.max(snapThreshold, absX));
+      gameState.moveAxisX = snapped;
+      gameState.moveAxisY = 0;
+      gameState.keys['KeyA'] = snapped < 0;
+      gameState.keys['KeyD'] = snapped > 0;
+    } else {
+      const snapped = normalizedY < 0 ? -Math.min(1, Math.max(snapThreshold, absY)) : Math.min(1, Math.max(snapThreshold, absY));
+      gameState.moveAxisX = 0;
+      gameState.moveAxisY = snapped;
+      gameState.keys['KeyW'] = snapped < 0;
+      gameState.keys['KeyS'] = snapped > 0;
+    }
+  } else {
+    gameState.moveAxisX = normalizedX;
+    gameState.moveAxisY = normalizedY;
+    // Map to WASD (Y negative = forward/W, X negative = left/A)
+    gameState.keys['KeyW'] = normalizedY < -0.3;
+    gameState.keys['KeyS'] = normalizedY > 0.3;
+    gameState.keys['KeyA'] = normalizedX < -0.3;
+    gameState.keys['KeyD'] = normalizedX > 0.3;
+  }
   
   // Sprint only when explicitly locked
   gameState.keys['ShiftLeft'] = touchState.sprintLocked;
@@ -749,6 +819,15 @@ export function updateMobileControls() {
       if (label) label.style.color = 'rgba(255,255,255,0.25)';
     }
   }
+  if (touchState.retroAButton) touchState.retroAButton.style.display = _mobileControlMode === 'retro' ? 'flex' : 'none';
+  if (touchState.retroBButton) touchState.retroBButton.style.display = _mobileControlMode === 'retro' ? 'flex' : 'none';
+  if (_mobileControlMode === 'retro') {
+    const mag = Math.min(1, Math.hypot(gameState.moveAxisX ?? 0, gameState.moveAxisY ?? 0));
+    const dim = 0.35 + mag * 0.65;
+    if (touchState.joystickThumb) touchState.joystickThumb.style.filter = `brightness(${dim})`;
+  } else if (touchState.joystickThumb) {
+    touchState.joystickThumb.style.filter = '';
+  }
 }
 
 // Export touch state for debugging
@@ -765,6 +844,7 @@ let editorTarget = null;
 let editorOverlay = null;
 let editorSelectedKey = null;
 let editorOpacityPanel = null;
+let _hudEditorProfile = 'default';
 
 let _pcEditorActive = false;
 let _pcEditorDrag = null;
@@ -777,9 +857,17 @@ function _getEditorElementByKey(key) {
 }
 
 function _getEditorTargets() {
+  if (_hudEditorProfile === 'retro') {
+    return [
+      { key: 'retroA', el: touchState.retroAButton, resizable: true },
+      { key: 'retroB', el: touchState.retroBButton, resizable: true },
+    ].filter(t => !!t.el);
+  }
+  if (_hudEditorProfile === 'zombies') {
+    return [...getZombiesHudEditorElements()].filter(t => !!t.el);
+  }
   return [
     ...CORE_HUD_KEYS.map(key => ({ key, el: touchState[key + 'Button'], resizable: true })),
-    ...getZombiesHudEditorElements(),
   ].filter(t => !!t.el);
 }
 
@@ -877,6 +965,9 @@ export function startHudEditor() {
   const btnRow = document.createElement('div');
   btnRow.style.cssText = `display: flex; gap: 14px; pointer-events: auto;`;
 
+  const tabRow = document.createElement('div');
+  tabRow.style.cssText = `display:flex;gap:10px;pointer-events:auto;flex-wrap:wrap;justify-content:center;`;
+
   function makeEditorBtn(text, bg, fn) {
     const b = document.createElement('div');
     b.textContent = text;
@@ -903,6 +994,31 @@ export function startHudEditor() {
   }));
   btnRow.appendChild(makeEditorBtn('Done', 'rgba(60,180,60,0.9)', stopHudEditor));
 
+  function makeTab(text, profile) {
+    const tab = document.createElement('div');
+    tab.textContent = text;
+    tab.style.cssText = [
+      'padding:6px 14px;font-size:12px;font-weight:bold;border-radius:999px',
+      'border:1px solid rgba(255,255,255,0.25);cursor:pointer;user-select:none',
+      _hudEditorProfile === profile ? 'background:rgba(255,220,80,0.9);color:#111' : 'background:rgba(20,20,20,0.8);color:#fff',
+      'pointer-events:auto',
+    ].join(';');
+    tab.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _hudEditorProfile = profile;
+      const sel = editorSelectedKey;
+      stopHudEditor();
+      startHudEditor();
+      if (sel) selectButton(sel);
+    });
+    return tab;
+  }
+  tabRow.appendChild(makeTab('Default', 'default'));
+  tabRow.appendChild(makeTab('Retro', 'retro'));
+  tabRow.appendChild(makeTab('Zombies', 'zombies'));
+
+  editorOverlay.appendChild(tabRow);
   editorOverlay.appendChild(label);
   editorOverlay.appendChild(btnRow);
   document.body.appendChild(editorOverlay);
