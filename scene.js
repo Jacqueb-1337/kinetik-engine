@@ -411,7 +411,12 @@ export function initScene() {
         }
       }
       // Hardcoded pullstring interact — COMMENTED OUT: use editor-placed state objects instead
-      // if (gameState.interactTarget === 'pullstring' && gameState.pullStringTab) { ... }
+      if (isRight && gameState.interactTarget === 'pullstring') {
+        if (globalThis.__kinetikGameHooks?.handleStoryInteractTarget?.('pullstring')) {
+          refreshInteractTooltip();
+          return;
+        }
+      }
       if (isRight && gameState.interactTarget === 'state-obj' && obj) {
         advanceObjectState(obj);
         refreshInteractTooltip();

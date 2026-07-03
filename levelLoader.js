@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
 import { initStatefulObjects, levelVars, setTextureFn } from './stateManager.js';
+import { registerStoryObject } from '../game/storySystem.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
@@ -484,6 +485,32 @@ function applyTransform(obj, entry) {
   obj.userData._restScale = obj.scale.clone();
 }
 
+function applyStoryData(obj, entry) {
+  if (!obj || !entry) return;
+  const storyPoi = entry.storyPoi || entry.poi || null;
+  const storyBeat = entry.storyBeat || null;
+  if (storyPoi) obj.userData.storyPoi = storyPoi;
+  if (storyBeat) obj.userData.storyBeat = storyBeat;
+  if (entry.storyScene) obj.userData.storyScene = entry.storyScene;
+  if (entry.storyObjective) obj.userData.storyObjective = entry.storyObjective;
+  if (entry.storyIntensity != null) obj.userData.storyIntensity = entry.storyIntensity;
+  if (entry.storyFlags) obj.userData.storyFlags = entry.storyFlags;
+  if (entry.storyOneShot != null) obj.userData.storyOneShot = entry.storyOneShot;
+  if (entry.storyDialogueId) obj.userData.storyDialogueId = entry.storyDialogueId;
+  if (storyPoi || storyBeat) {
+    registerStoryObject(obj, {
+      ...(storyPoi || {}),
+      ...(storyBeat || {}),
+      scene: entry.storyScene || storyPoi?.scene || storyBeat?.scene,
+      objective: entry.storyObjective || storyPoi?.objective || storyBeat?.objective,
+      intensity: entry.storyIntensity ?? storyPoi?.intensity ?? storyBeat?.intensity,
+      oneShot: entry.storyOneShot ?? storyPoi?.oneShot ?? storyBeat?.oneShot,
+      dialogueId: entry.storyDialogueId || storyPoi?.dialogueId || storyBeat?.dialogueId,
+      id: entry.id,
+    });
+  }
+}
+
 function spawnPrim(entry) {
   const geoFn = PRIM_GEO[entry.type];
   if (!geoFn) return null;
@@ -536,6 +563,7 @@ function spawnPrim(entry) {
   if (entry.states?.length)    { mesh.userData.states = entry.states; mesh.userData.currentState = 0; }
   if (entry.noSelfInteract)      mesh.userData.noSelfInteract = true;
   if (entry.pivotOffset)         mesh.userData.pivotOffset = entry.pivotOffset;
+  applyStoryData(mesh, entry);
   return mesh;
 }
 
@@ -577,6 +605,7 @@ function spawnLight(entry) {
   if (entry.states?.length)   { light.userData.states = entry.states; light.userData.currentState = 0; }
   if (entry.noSelfInteract)     light.userData.noSelfInteract = true;
   if (entry.pivotOffset)        light.userData.pivotOffset = entry.pivotOffset;
+  applyStoryData(light, entry);
   return light;
 }
 
@@ -614,6 +643,7 @@ function spawnModel(entry) {
       if (entry.states?.length)   { root.userData.states = entry.states; root.userData.currentState = 0; }
       if (entry.noSelfInteract)     root.userData.noSelfInteract = true;
       if (entry.pivotOffset)        root.userData.pivotOffset = entry.pivotOffset;
+      applyStoryData(root, entry);
       if (entry.meshOverrides) {
         root.userData.meshOverrides = entry.meshOverrides;
         root.traverse(c => {
@@ -775,6 +805,7 @@ async function spawnCsgResult(entry) {
     }
     if (entry.states?.length)  { result.userData.states = entry.states; result.userData.currentState = 0; }
     if (entry.noSelfInteract)    result.userData.noSelfInteract = true;
+    applyStoryData(result, entry);
     // Apply texture if saved from editor
     if (entry.faceTextures) applyFaceTextures(result, entry.faceTextures, entry.color ?? entry.csgRecipe?.base?.color ?? '#aaaacc');
     else {
@@ -827,6 +858,7 @@ function spawnMergedModel(entry) {
   if (entry.states?.length)  { root.userData.states = entry.states; root.userData.currentState = 0; }
   if (entry.noSelfInteract)    root.userData.noSelfInteract = true;
   if (entry.pivotOffset)       root.userData.pivotOffset = entry.pivotOffset;
+  applyStoryData(root, entry);
   if (entry.meshOverrides) {
     root.traverse(c => {
       if (!c.isMesh) return;
