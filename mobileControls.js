@@ -409,6 +409,16 @@ function setupTouchHandlers() {
       }
     }
   });
+  canvas.addEventListener('touchcancel', (e) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier === touchState.joystickTouchId) {
+        endJoystick(touch.clientX, touch.clientY);
+      } else if (touch.identifier === touchState.cameraTouchId) {
+        endCameraRotation();
+      }
+    }
+  }, { passive: false });
   
   // Sprint button specific handlers
   touchState.sprintButton.addEventListener('touchstart', (e) => {
@@ -795,12 +805,17 @@ function endCameraRotation() {
 
 export function updateMobileControls() {
   if (!platformConfig.needsOnScreenControls) return;
-  
   if (touchState.autoRunActive) {
     gameState.keys['KeyW'] = true;
     gameState.keys['ShiftLeft'] = true;
   }
-
+  if (!touchState.joystickActive && !touchState.autoRunActive) {
+    gameState.keys['KeyW'] = false;
+    gameState.keys['KeyA'] = false;
+    gameState.keys['KeyS'] = false;
+    gameState.keys['KeyD'] = false;
+    gameState.keys['ShiftLeft'] = touchState.sprintLocked;
+  }
   if (touchState.interactButton) {
     const svgs = touchState.interactButton.querySelectorAll('svg *');
     const label = touchState.interactButton.querySelector('span');
