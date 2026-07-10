@@ -790,8 +790,25 @@ function levelToJSON(options = {}) {
 
 async function saveLevel() {
   if (!E.levelName) { setStatus('No level open'); return; }
-  if (!window.electron) { setStatus('Not running in Electron - cannot save to disk'); return; }
   const data = levelToJSON();
+  if (!window.electron) {
+    // Browser fallback: download the level JSON so it can be dropped into levels/
+    try {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${E.levelName}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      E.isDirty = false;
+      refreshLevelNameDisplay();
+      setStatus(`Downloaded "${E.levelName}.json" — place it in your project's levels/ folder`);
+    } catch (err) {
+      setStatus('Save failed: ' + err.message);
+    }
+    return;
+  }
   try {
     await window.electron.saveLevel(E.levelName, data);
     E.isDirty = false;
@@ -811,6 +828,15 @@ async function loadLevel(name) {
   let data = null;
   if (window.electron) {
     try { data = await window.electron.readLevel(name); } catch { /* new */ }
+  } else {
+    // Browser fallback: fetch from levels/ like the runtime level loader does.
+    // Try a few locations to cover different dev-server root layouts.
+    for (const base of ['./levels/', '../levels/', '/levels/']) {
+      try {
+        const res = await fetch(`${base}${name}.json`);
+        if (res.ok) { data = await res.json(); break; }
+      } catch { /* keep trying */ }
+    }
   }
 
   E.nextId = data?.nextId || 1;
@@ -3259,6 +3285,7 @@ function refreshTexPanel(obj) {
     }
   }
 
+  const storySection = document.getElementById('story-section');
   if (storySection) {
     const hasStory = !!(obj.userData.storyPoi || obj.userData.storyBeat || obj.userData.storyScene || obj.userData.storyObjective || obj.userData.storyIntensity != null);
     storySection.style.display = hasStory ? '' : '';

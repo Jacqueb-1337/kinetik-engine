@@ -107,19 +107,39 @@ export function splitMeshIntoIslands(mesh) {
   return result;
 }
 
-export function initScene() {
+/**
+ * Create the renderer, scene, camera, lights, and pointer-lock mouse look.
+ *
+ * Options (all optional, defaults preserve historical behavior):
+ *   background:      hex color for scene background + fog (default 0x000000)
+ *   fogDensity:      FogExp2 density (default 0.1); pass 0/false to disable fog
+ *   fogColor:        hex color for fog (defaults to background)
+ *   antialias:       renderer antialiasing (default false)
+ *   autoFullscreen:  request fullscreen on click (default true)
+ *   autoPointerLock: request pointer lock on click (default true)
+ *   lockKeyboard:    capture Escape via the Keyboard Lock API (default true)
+ */
+export function initScene(options = {}) {
+  const backgroundColor = options.background ?? 0x000000;
+  const fogColor = options.fogColor ?? backgroundColor;
+  const fogDensity = options.fogDensity ?? 0.1;
+  gameState.autoFullscreen = options.autoFullscreen !== false;
+  gameState.autoPointerLock = options.autoPointerLock !== false;
+  gameState.lockKeyboardOnClick = options.lockKeyboard !== false;
+
   gameState.scene = new THREE.Scene();
-  gameState.scene.background = new THREE.Color(0x000000);
-  
+  gameState.scene.background = new THREE.Color(backgroundColor);
+
   // Much lighter fog on mobile to prevent blackout
-  const fogDensity = 0.1;
-  gameState.scene.fog = new THREE.FogExp2(0x000000, fogDensity);
+  if (fogDensity) {
+    gameState.scene.fog = new THREE.FogExp2(fogColor, fogDensity);
+  }
   
   gameState.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
   gameState.camera.position.set(0, 5, 10);
   gameState.camera.lookAt(0, 1, 0);
 
-  gameState.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+  gameState.renderer = new THREE.WebGLRenderer({ antialias: !!options.antialias, alpha: false });
   gameState.renderer.sortObjects = true;
   gameState.renderer.outputColorSpace = THREE.SRGBColorSpace;
   const { w: rw, h: rh } = platformConfig.getRendererSize(window.innerWidth, window.innerHeight);
@@ -150,17 +170,17 @@ export function initScene() {
   if (!isEditorMode) {
     document.addEventListener('click', async () => {
       if (!gameState.isPaused && !gameState.mainMenuActive) {
-        if (!document.pointerLockElement) {
+        if (gameState.autoPointerLock && !document.pointerLockElement) {
           document.body.requestPointerLock().catch?.(() => {});
         }
-        if (!document.fullscreenElement) {
+        if (gameState.autoFullscreen && !document.fullscreenElement) {
           try {
             await document.documentElement.requestFullscreen();
           } catch (e) {
             console.log('Fullscreen not available:', e);
           }
         }
-        if (navigator.keyboard && navigator.keyboard.lock) {
+        if (gameState.lockKeyboardOnClick && navigator.keyboard && navigator.keyboard.lock) {
           try {
             await navigator.keyboard.lock(['Escape']);
             gameState.keyboardLocked = true;
@@ -464,6 +484,25 @@ export function onResize() {
   }
 }
 
+// Head-bone lookup cache — traversing the player hierarchy every frame is
+// expensive; invalidate automatically when gameState.player changes.
+let _headBonePlayer = null;
+let _headBone = null;
+
+function _findHeadBone(player) {
+  if (player === _headBonePlayer) return _headBone;
+  _headBonePlayer = player;
+  _headBone = null;
+  player.traverse((child) => {
+    if (child.isBone && (child.name.includes('Head') || child.name.includes('head'))) {
+      if (!child.name.includes('Top_End')) { // Skip end bones
+        _headBone = child;
+      }
+    }
+  });
+  return _headBone;
+}
+
 export function updateCamera() {
   // Skip normal camera updates when paused
   if (gameState.isPaused) return;
@@ -477,14 +516,7 @@ export function updateCamera() {
   const headPos = new THREE.Vector3();
   
   if (gameState.player) {
-    let headBone = null;
-    gameState.player.traverse((child) => {
-      if (child.isBone && (child.name.includes('Head') || child.name.includes('head'))) {
-        if (!child.name.includes('Top_End')) { // Skip end bones
-          headBone = child;
-        }
-      }
-    });
+    const headBone = _findHeadBone(gameState.player);
     
     if (headBone) {
       // Get head bone world position (follows animation)

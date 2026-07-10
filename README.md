@@ -71,7 +71,55 @@ A lightweight 3D game engine built on [Three.js](https://threejs.org/) for deskt
    ```bash
    npm start          # Electron desktop (game)
    npm run editor     # Electron desktop (visual editor)
+   npm run dev        # Browser dev server (open /src/index.html)
    ```
+
+---
+
+## Scene & Input Options
+
+Both `initScene()` and `initInput()` accept an options object. All options are
+optional and defaults preserve the historical behavior.
+
+```js
+initScene({
+  background: 0x17142a,     // scene background color
+  fogDensity: 0.016,        // FogExp2 density — pass 0 to disable fog
+  fogColor: 0x17142a,       // defaults to background
+  antialias: true,          // renderer antialiasing (default false)
+  autoFullscreen: false,    // don't request fullscreen on click (default true)
+  autoPointerLock: true,    // request pointer lock on click (default true)
+  lockKeyboard: true,       // capture Escape via Keyboard Lock API (default true)
+});
+
+initInput({
+  // Disable or remap the built-in hotkeys (pause/debug/camera/export/freecam).
+  // Pass hotkeys: false to disable all of them, or override individually:
+  hotkeys: { freecam: false, export: false, cameraMode: 'F6' },
+});
+```
+
+### Edge-triggered input
+
+`initInput()` also tracks per-frame pressed/released state so games don't have
+to build their own edge detection:
+
+```js
+import { initInput, endInputFrame } from 'kinetik-engine/input.js';
+
+initInput();
+
+function loop(delta) {
+  if (gameState.keysPressed['Space']) jump();       // true only on the press frame
+  if (gameState.mousePressed[0]) attack();          // left mouse button edge
+  if (gameState.keysReleased['KeyE']) stopChannel();
+  // ... game update + render ...
+  endInputFrame();  // clear edge state — call once at the END of each frame
+}
+```
+
+`gameState.keys` (held keys) and `gameState.mouseButtons` (held buttons) remain
+available for continuous input.
 
 ---
 
@@ -94,6 +142,11 @@ The editor opens `initEditor()` from `editor.js` instead of the game loop. From 
 - Export the scene back to `levels/<name>.json`
 
 To open the editor in a new project, follow the Quick Start above and use `npm run editor`.
+
+The editor also runs in a plain browser (e.g. `npm run dev`, then open
+`/src/editor.html`). Outside Electron it loads levels over HTTP from `levels/`
+and **Save** downloads the level JSON so you can drop it into your project's
+`levels/` folder. Model/actor import still requires Electron.
 
 ---
 

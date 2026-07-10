@@ -1127,9 +1127,16 @@ export async function loadLevel(name = 'main') {
     if (window.electron) {
       data = await window.electron.readLevel(name);
     } else {
-      const res = await fetch(`./levels/${name}.json`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      data = await res.json();
+      // Try a few locations to cover different dev-server root layouts
+      let lastErr = null;
+      for (const base of ['./levels/', '../levels/', '/levels/']) {
+        try {
+          const res = await fetch(`${base}${name}.json`);
+          if (res.ok) { data = await res.json(); break; }
+          lastErr = new Error(`HTTP ${res.status}`);
+        } catch (e) { lastErr = e; }
+      }
+      if (!data && lastErr) throw lastErr;
     }
   } catch (err) {
     console.log(`[levelLoader] Level "${name}" not found or unreadable:`, err.message);

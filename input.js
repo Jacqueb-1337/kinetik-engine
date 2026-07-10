@@ -141,22 +141,58 @@ export function updateGamepadCursor() {
   }
 }
 
-export function initInput() {
+let _inputInitialized = false;
+
+/**
+ * Initialize keyboard + mouse input.
+ *
+ * Options (all optional, defaults preserve historical behavior):
+ *   hotkeys: false                 — disable ALL built-in hotkeys, or an object:
+ *   hotkeys: {
+ *     pause:      'Escape' | false — toggle pause menu
+ *     debug:      'F3'     | false — debug overlay (Shift = pathfinding debug)
+ *     cameraMode: 'F5'     | false — cycle first/third person camera
+ *     export:     'F9'     | false — export scene as GLTF
+ *     freecam:    'KeyC'   | false — toggle freecam
+ *   }
+ *   trackEdges: true               — record per-frame pressed/released state in
+ *                                    gameState.keysPressed / keysReleased /
+ *                                    mouseButtons / mousePressed / mouseReleased.
+ *                                    Call endInputFrame() once at the END of each
+ *                                    game-loop frame to clear edge state.
+ */
+export function initInput(options = {}) {
+  if (_inputInitialized) return;
+  _inputInitialized = true;
+
+  const hotkeyDefaults = { pause: 'Escape', debug: 'F3', cameraMode: 'F5', export: 'F9', freecam: 'KeyC' };
+  const hotkeys = options.hotkeys === false
+    ? { pause: false, debug: false, cameraMode: false, export: false, freecam: false }
+    : { ...hotkeyDefaults, ...(options.hotkeys || {}) };
+  const trackEdges = options.trackEdges !== false;
+
+  gameState.keysPressed = {};
+  gameState.keysReleased = {};
+  gameState.mouseButtons = {};
+  gameState.mousePressed = {};
+  gameState.mouseReleased = {};
+
   document.addEventListener('keydown', (e) => {
     const tag = e.target?.tagName;
     const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable;
 
+    if (!gameState.keys[e.code] && trackEdges && !e.repeat) gameState.keysPressed[e.code] = true;
     gameState.keys[e.code] = true;
     
-    // Handle Escape key to toggle pause menu (Keyboard Lock API captures it)
-    if (e.code === 'Escape') {
+    // Toggle pause menu (Keyboard Lock API captures Escape)
+    if (hotkeys.pause && e.code === hotkeys.pause) {
       e.preventDefault();
       _pauseToggle();
       return;
     }
 
-    // Handle F3 key to toggle debug overlay (Shift+F3 = pathfinding debug only)
-    if (e.code === 'F3') {
+    // Debug overlay (Shift = pathfinding debug only)
+    if (hotkeys.debug && e.code === hotkeys.debug) {
       e.preventDefault();
       if (e.shiftKey) {
         togglePathDebug();
@@ -165,39 +201,56 @@ export function initInput() {
       }
     }
     
-    // Handle F5 key to cycle camera mode
-    if (e.code === 'F5') {
+    // Cycle camera mode
+    if (hotkeys.cameraMode && e.code === hotkeys.cameraMode) {
       e.preventDefault();
       toggleCameraMode();
     }
     
-    // Handle F9 key to export scene
-    if (e.code === 'F9') {
+    // Export scene
+    if (hotkeys.export && e.code === hotkeys.export) {
       e.preventDefault();
       exportScene();
       console.log('Exporting scene...');
     }
     
-    // Handle C key to toggle freecam
-    if (e.code === 'KeyC' && !isTyping) {
+    // Toggle freecam
+    if (hotkeys.freecam && e.code === hotkeys.freecam && !isTyping) {
       e.preventDefault();
       toggleFreecam();
     }
-    
-    // // Handle C key to toggle screen calibration mode
-    // if (e.code === 'KeyC' && gameState.isPaused) {
-    //   gameState.isCalibrating = !gameState.isCalibrating;
-    //   if (gameState.isCalibrating) {
-    //     gameState.calibrationCorner1 = null;
-    //     gameState.calibrationCorner2 = null;
-    //     console.log('CALIBRATION MODE: Click first corner of TV screen');
-    //   } else {
-    //     console.log('Calibration mode off');
-    //   }
-    // }
-    
   });
-  document.addEventListener('keyup', (e) => { gameState.keys[e.code] = false; });
+  document.addEventListener('keyup', (e) => {
+    gameState.keys[e.code] = false;
+    if (trackEdges) gameState.keysReleased[e.code] = true;
+  });
+
+  if (trackEdges) {
+    document.addEventListener('mousedown', (e) => {
+      if (!gameState.mouseButtons[e.button]) gameState.mousePressed[e.button] = true;
+      gameState.mouseButtons[e.button] = true;
+    });
+    document.addEventListener('mouseup', (e) => {
+      gameState.mouseButtons[e.button] = false;
+      gameState.mouseReleased[e.button] = true;
+    });
+    window.addEventListener('blur', () => {
+      gameState.keys = {};
+      gameState.mouseButtons = {};
+    });
+  }
+}
+
+/**
+ * Clear per-frame pressed/released edge state. Call once at the END of each
+ * frame if you use gameState.keysPressed / keysReleased / mousePressed /
+ * mouseReleased for edge-triggered input.
+ */
+export function endInputFrame() {
+  gameState.keysPressed = {};
+  gameState.keysReleased = {};
+  gameState.mousePressed = {};
+  gameState.mouseReleased = {};
 }
 
 function toggleDebugOverlay() {

@@ -6,6 +6,9 @@
   "scripts": {
     "start":         "node scripts/run-electron.js",
     "editor":        "node scripts/run-electron.js --editor",
+    "dev":           "vite",
+    "build":         "vite build",
+    "preview":       "vite preview",
     "build:win":     "vite build && electron-builder --windows",
     "build:mac":     "vite build && electron-builder --mac",
     "build:linux":   "vite build && electron-builder --linux",
