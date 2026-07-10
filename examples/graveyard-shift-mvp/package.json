@@ -1,0 +1,51 @@
+{
+  "name": "graveyard-shift-mvp",
+  "version": "0.1.0",
+  "description": "Low-poly Graveyard Shift vertical slice built with Kinetik Engine.",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node scripts/run-electron.js",
+    "build:win": "vite build && electron-builder --windows",
+    "build:mac": "vite build && electron-builder --mac",
+    "build:linux": "vite build && electron-builder --linux",
+    "build:android": "vite build && npx cap sync android",
+    "android:init": "npx cap add android",
+    "android:open": "npx cap open android",
+    "android:sync": "npx cap sync android",
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "author": "Jacqueb Briley",
+  "license": "MIT",
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1",
+    "vite": "^5.0.11"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "kinetik-engine": "0.1.24"
+  },
+  "build": {
+    "appId": "com.jacqueb.graveyardshift",
+    "productName": "Graveyard Shift MVP",
+    "files": [
+      "**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
