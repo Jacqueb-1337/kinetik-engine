@@ -26,3 +26,10 @@ assert.match(source, /isEditorHelper \|\| obj\.userData\.isCsgCutterProxy/, 'tem
 assert.match(source, /function convertSelectedToCsgCutter[\s\S]*?pushUndo\(\)/, 'cutter conversion must create an undo snapshot');
 assert.match(source, /E\.placedGroup\.add\(result\);\s*E\.placedGroup\.remove\(oldResult\);/, 'live CSG replacement must insert the rebuilt target before removing its source');
 console.log('Live editable CSG cutters are capability-checked');
+
+assert.match(source, /function updateBatchProps\(objects = E\.selectedObjects\)/, 'multi-selection must switch to batch properties');
+assert.match(source, /function bindBatchTransform\(id, kind, axis\)/, 'batch transforms must use dedicated relative bindings');
+assert.match(source, /baseline\.values\[index\] \* Math\.max\(0\.001, value\)/, 'batch scale must multiply each original scale');
+assert.match(source, /batchTargets\(\)\.forEach\(obj => \{ obj\.userData\.collidable = event\.target\.checked;/, 'batch collision must update every selected object');
+assert.match(source, /function pushBatchUndo\(\).*pushUndo\(\)/, 'batch property edits must create undo snapshots');
+console.log('Multi-selection batch properties are capability-checked');

@@ -2515,6 +2515,7 @@ function deselect() {
 
 // â”€â”€â”€ Properties panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function syncPropsFromSelected() {
+  if (E.selectedObjects.length > 1) return;
   const obj = E.selected;
   if (!obj) return;
   setVec3Inputs('p', obj.position);
@@ -2676,17 +2677,119 @@ function _applyColor(obj, hex) {
     if (obj.userData.faceTextures) {
       applyFaceTextures(obj);
     } else {
-      const mats = Array.isArray(obj.material) ? obj.material : (obj.material ? [obj.material] : []);
-      mats.forEach(m => { if (m.color) m.color.set(hex); });
       obj.traverse(c => {
-        if (c !== obj && c.isMesh && c.material && !Array.isArray(c.material) && c.material.color) c.material.color.set(hex);
+        if (!c.isMesh || !c.material) return;
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach(material => { if (material?.color) material.color.set(hex); });
       });
     }
   }
   markDirty();
 }
 
+function _batchMeshes(obj) {
+  const meshes = [];
+  obj.traverse(child => { if (child.isMesh && !child.userData.isEditorHelper) meshes.push(child); });
+  return meshes;
+}
+
+function _batchMaterials(obj) {
+  return _batchMeshes(obj).flatMap(mesh => Array.isArray(mesh.material) ? mesh.material : (mesh.material ? [mesh.material] : []));
+}
+
+function _commonBatchValue(values, epsilon = 0) {
+  if (!values.length) return null;
+  const first = values[0];
+  return values.every(value => typeof first === 'number' && typeof value === 'number'
+    ? Math.abs(value - first) <= epsilon
+    : value === first) ? first : null;
+}
+
+function _batchDisplayColor(obj) {
+  if (isLightType(obj.userData.primType)) return obj.userData.lightColor || '#ffffff';
+  if (obj.userData.primType === 'image-model') return obj.userData.wallColor || '#888888';
+  if (obj.userData._baseColor) return obj.userData._baseColor;
+  const material = _batchMaterials(obj).find(item => item?.color);
+  return material?.color ? '#' + material.color.getHexString() : null;
+}
+
+function updateBatchProps(objects = E.selectedObjects) {
+  const batch = document.getElementById('batch-selection-props');
+  if (!batch) return;
+  document.getElementById('batch-selection-count').textContent = `${objects.length} objects`;
+  for (const axis of ['x', 'y', 'z']) {
+    for (const prefix of ['p', 's', 'r']) {
+      const input = document.getElementById(`batch-${prefix}${axis}`);
+      if (input && document.activeElement !== input) input.value = prefix === 's' ? 1 : 0;
+    }
+  }
+
+  const colorSupported = objects.every(obj => !isTriggerType(obj.userData.primType) && _batchDisplayColor(obj));
+  const opacitySupported = objects.every(obj => !isLightType(obj.userData.primType) &&
+    !isTriggerType(obj.userData.primType) && !isZombieType(obj.userData.primType) &&
+    !isPlayerSpawnType(obj.userData.primType) && _batchMaterials(obj).length);
+  const collisionSupported = objects.every(obj => !isLightType(obj.userData.primType) && !isTriggerType(obj.userData.primType));
+  const shadowSupported = objects.every(obj => !isTriggerType(obj.userData.primType));
+  const pbrSupported = objects.every(obj => _batchMaterials(obj).some(material => material && 'roughness' in material && 'metalness' in material));
+
+  document.getElementById('batch-color-row').style.display = colorSupported ? '' : 'none';
+  document.getElementById('batch-opacity-row').style.display = opacitySupported ? '' : 'none';
+  document.getElementById('batch-collidable-row').style.display = collisionSupported ? '' : 'none';
+  document.getElementById('batch-shadow-row').style.display = shadowSupported ? '' : 'none';
+  document.getElementById('batch-pbr-row').style.display = pbrSupported ? '' : 'none';
+
+  if (colorSupported) {
+    const colors = objects.map(_batchDisplayColor);
+    const common = _commonBatchValue(colors);
+    const hex = document.getElementById('batch-color-hex');
+    const picker = document.getElementById('batch-color');
+    if (document.activeElement !== hex) hex.value = common || '';
+    if (document.activeElement !== picker) picker.value = common || colors[0] || '#888888';
+  }
+  if (opacitySupported) {
+    const input = document.getElementById('batch-opacity');
+    const common = _commonBatchValue(objects.map(getMeshOpacity), 0.001);
+    if (document.activeElement !== input) input.value = common == null ? '' : +common.toFixed(3);
+  }
+  if (collisionSupported) {
+    const input = document.getElementById('batch-collidable');
+    const values = objects.map(obj => obj.userData.collidable !== false);
+    const common = _commonBatchValue(values);
+    input.indeterminate = common == null;
+    input.checked = common ?? false;
+  }
+  if (shadowSupported) {
+    const input = document.getElementById('batch-shadow');
+    const values = objects.map(obj => isLightType(obj.userData.primType)
+      ? obj.userData.castShadow !== false : obj.castShadow !== false);
+    const common = _commonBatchValue(values);
+    input.indeterminate = common == null;
+    input.checked = common ?? false;
+  }
+  if (pbrSupported) {
+    const roughness = document.getElementById('batch-roughness');
+    const metalness = document.getElementById('batch-metalness');
+    const roughCommon = _commonBatchValue(objects.map(obj => obj.userData.roughness ?? _batchMaterials(obj).find(mat => 'roughness' in mat)?.roughness ?? 1), 0.001);
+    const metalCommon = _commonBatchValue(objects.map(obj => obj.userData.metalness ?? _batchMaterials(obj).find(mat => 'metalness' in mat)?.metalness ?? 0), 0.001);
+    if (document.activeElement !== roughness) roughness.value = roughCommon == null ? '' : +roughCommon.toFixed(3);
+    if (document.activeElement !== metalness) metalness.value = metalCommon == null ? '' : +metalCommon.toFixed(3);
+    const side = document.getElementById('batch-double-side');
+    const sideCommon = _commonBatchValue(objects.map(obj => obj.userData.doubleSide === true));
+    side.indeterminate = sideCommon == null;
+    side.checked = sideCommon ?? false;
+  }
+}
+
 function updateProps(obj) {
+  const isBatch = E.selectedObjects.length > 1;
+  const singlePanel = document.getElementById('single-selection-props');
+  const batchPanel = document.getElementById('batch-selection-props');
+  if (singlePanel) singlePanel.style.display = isBatch ? 'none' : '';
+  if (batchPanel) batchPanel.style.display = isBatch ? '' : 'none';
+  if (isBatch) {
+    updateBatchProps();
+    return;
+  }
   const selName   = document.getElementById('sel-name');
   const pathRow   = document.getElementById('model-path-row');
   const pathText  = document.getElementById('model-path-text');
@@ -7699,6 +7802,149 @@ function setupUI() {
   });
 
   // Right-panel property inputs - live sync to selected object
+  const batchTargets = () => E.selectedObjects.length > 1 ? [...E.selectedObjects] : [];
+  const batchTransformBaselines = new Map();
+  const batchAxisIndex = { x: 0, y: 1, z: 2 };
+
+  function bindBatchTransform(id, kind, axis) {
+    const input = document.getElementById(id);
+    if (!input) return;
+    const neutral = kind === 'scale' ? 1 : 0;
+    input.addEventListener('focus', () => {
+      const objects = batchTargets();
+      if (!objects.length) return;
+      pushUndo();
+      batchTransformBaselines.set(id, {
+        pivot: kind === 'position' && E.groupPivot?.position ? E.groupPivot.position[axis] : null,
+        values: objects.map(obj => kind === 'position' ? obj.position[axis]
+          : kind === 'scale' ? obj.scale[axis] : obj.rotation[axis]),
+      });
+    });
+    input.addEventListener('input', () => {
+      const objects = batchTargets();
+      const baseline = batchTransformBaselines.get(id);
+      if (!objects.length || !baseline) return;
+      const parsed = parseFloat(input.value);
+      const value = Number.isFinite(parsed) ? parsed : neutral;
+      if (kind === 'position' && baseline.pivot != null && E.groupPivot) {
+        E.groupPivot.position[axis] = baseline.pivot + value;
+      } else {
+        objects.forEach((obj, index) => {
+          if (kind === 'position') obj.position[axis] = baseline.values[index] + value;
+          else if (kind === 'scale') obj.scale[axis] = Math.max(0.001, baseline.values[index] * Math.max(0.001, value));
+          else obj.rotation[axis] = baseline.values[index] + value * RAD;
+        });
+      }
+      if (E.groupPivot) E.groupPivot.updateMatrixWorld(true);
+      objects.forEach(obj => {
+        obj.updateMatrixWorld(true);
+        if (kind === 'position' && obj.userData._restPos) obj.getWorldPosition(obj.userData._restPos);
+        if (kind === 'scale' && obj.userData._restScale) obj.userData._restScale.copy(obj.scale);
+        if (kind === 'rotation' && obj.userData._restRot) obj.userData._restRot[batchAxisIndex[axis]] = obj.rotation[axis] * DEG;
+      });
+      if (objects.some(obj => obj.userData.isCsgCutterProxy)) scheduleCsgRebuild();
+      updateSelectionHelpers();
+      markDirty();
+    });
+    input.addEventListener('blur', () => {
+      batchTransformBaselines.delete(id);
+      input.value = neutral;
+    });
+  }
+
+  for (const axis of ['x', 'y', 'z']) {
+    bindBatchTransform(`batch-p${axis}`, 'position', axis);
+    bindBatchTransform(`batch-s${axis}`, 'scale', axis);
+    bindBatchTransform(`batch-r${axis}`, 'rotation', axis);
+  }
+
+  function pushBatchUndo() { if (batchTargets().length) pushUndo(); }
+  function applyBatchColor(hex) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+    batchTargets().forEach(obj => _applyColor(obj, hex));
+    const picker = document.getElementById('batch-color');
+    const text = document.getElementById('batch-color-hex');
+    if (picker && document.activeElement !== picker) picker.value = hex;
+    if (text && document.activeElement !== text) text.value = hex;
+  }
+
+  document.getElementById('batch-color')?.addEventListener('focus', pushBatchUndo);
+  document.getElementById('batch-color')?.addEventListener('input', event => applyBatchColor(event.target.value));
+  document.getElementById('batch-color-hex')?.addEventListener('focus', pushBatchUndo);
+  document.getElementById('batch-color-hex')?.addEventListener('input', event => applyBatchColor(event.target.value.trim()));
+
+  document.getElementById('batch-opacity')?.addEventListener('focus', pushBatchUndo);
+  document.getElementById('batch-opacity')?.addEventListener('input', event => {
+    const value = Math.max(0, Math.min(1, parseFloat(event.target.value)));
+    if (!Number.isFinite(value)) return;
+    batchTargets().forEach(obj => {
+      obj.userData._opacity = value;
+      _batchMaterials(obj).forEach(material => {
+        material.transparent = value < 1;
+        material.opacity = value;
+        material.needsUpdate = true;
+      });
+      syncOpacityWireframe(obj);
+    });
+    markDirty();
+  });
+
+  document.getElementById('batch-collidable')?.addEventListener('mousedown', pushBatchUndo);
+  document.getElementById('batch-collidable')?.addEventListener('change', event => {
+    batchTargets().forEach(obj => { obj.userData.collidable = event.target.checked; });
+    event.target.indeterminate = false;
+    markDirty();
+  });
+
+  document.getElementById('batch-shadow')?.addEventListener('mousedown', pushBatchUndo);
+  document.getElementById('batch-shadow')?.addEventListener('change', event => {
+    const value = event.target.checked;
+    batchTargets().forEach(obj => {
+      obj.userData.castShadow = value;
+      obj.castShadow = value;
+      obj.traverse(child => {
+        if (child.isMesh || child.isLight) child.castShadow = value;
+      });
+    });
+    event.target.indeterminate = false;
+    markDirty();
+  });
+
+  function bindBatchMaterialNumber(id, key) {
+    const input = document.getElementById(id);
+    input?.addEventListener('focus', pushBatchUndo);
+    input?.addEventListener('input', event => {
+      const value = Math.max(0, Math.min(1, parseFloat(event.target.value)));
+      if (!Number.isFinite(value)) return;
+      batchTargets().forEach(obj => {
+        obj.userData[key] = value;
+        _batchMaterials(obj).forEach(material => {
+          if (key in material) { material[key] = value; material.needsUpdate = true; }
+        });
+      });
+      markDirty();
+    });
+  }
+  bindBatchMaterialNumber('batch-roughness', 'roughness');
+  bindBatchMaterialNumber('batch-metalness', 'metalness');
+
+  document.getElementById('batch-double-side')?.addEventListener('mousedown', pushBatchUndo);
+  document.getElementById('batch-double-side')?.addEventListener('change', event => {
+    const value = event.target.checked;
+    batchTargets().forEach(obj => {
+      obj.userData.doubleSide = value || undefined;
+      _batchMaterials(obj).forEach(material => {
+        material.side = value ? THREE.DoubleSide : THREE.FrontSide;
+        material.needsUpdate = true;
+      });
+    });
+    event.target.indeterminate = false;
+    markDirty();
+  });
+
+  document.getElementById('btn-batch-clone')?.addEventListener('click', cloneSelected);
+  document.getElementById('btn-batch-delete')?.addEventListener('click', deleteSelected);
+
   function bindProp(id, apply) {
     const el = document.getElementById(id);
     if (!el) return;

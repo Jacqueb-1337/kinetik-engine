@@ -21,6 +21,9 @@ try {
   assert.match(editorSource, /id="btn-cut-add"/, 'cut mode must allow primitive cutters');
   assert.match(editorSource, /id="btn-cut-convert"/, 'cut mode must allow converting scene objects');
   assert.match(editorSource, /Red wireframes are subtractive cutters/, 'cut mode must explain its live cutter preview');
+  assert.match(editorSource, /id="batch-selection-props"/, 'multi-select must expose a dedicated batch properties panel');
+  assert.match(editorSource, /id="batch-sx"/, 'batch properties must expose relative scale controls');
+  assert.match(editorSource, /id="batch-collidable"/, 'batch properties must expose common collision controls');
   const pkg = JSON.parse(fs.readFileSync(path.join(targetRoot, 'package.json'), 'utf8'));
   assert.ok(pkg.scripts?.editor, 'scaffold package.json must expose npm run editor');
   console.log('Scaffold includes editor HTML, setup module, and editor command');

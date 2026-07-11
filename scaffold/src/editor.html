@@ -289,6 +289,64 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
       <textarea id="scene-scripts" rows="4" style="width:100%;box-sizing:border-box;background:#0d0d20;color:#cccce8;border:1px solid #333355;border-radius:3px;padding:4px 6px;font-size:10px;resize:vertical;font-family:monospace" placeholder="scripts/scene.js&#10;scripts/lighting.js"></textarea>
       <div style="font-size:9px;color:#555577;margin-top:3px">One module path per line. Loaded when the level starts.</div>
     </div>
+    <div id="batch-selection-props" style="display:none">
+      <div class="panel-section">
+        <h3>Batch Selection</h3>
+        <div id="batch-selection-count" class="info-text">0 objects</div>
+        <div style="font-size:9px;color:#666688;margin-top:3px">Position and rotation are offsets. Scale multiplies each object's current scale.</div>
+      </div>
+      <div class="panel-section">
+        <div class="vec3-group">
+          <div class="vec3-label">Position Offset</div>
+          <div class="prop-row"><label>X</label><input class="prop-input batch-transform" id="batch-px" type="number" step="0.1" value="0"></div>
+          <div class="prop-row"><label>Y</label><input class="prop-input batch-transform" id="batch-py" type="number" step="0.1" value="0"></div>
+          <div class="prop-row"><label>Z</label><input class="prop-input batch-transform" id="batch-pz" type="number" step="0.1" value="0"></div>
+        </div>
+        <div class="vec3-group">
+          <div class="vec3-label">Scale Multiplier</div>
+          <div class="prop-row"><label>X</label><input class="prop-input batch-transform" id="batch-sx" type="number" step="0.1" min="0.001" value="1"></div>
+          <div class="prop-row"><label>Y</label><input class="prop-input batch-transform" id="batch-sy" type="number" step="0.1" min="0.001" value="1"></div>
+          <div class="prop-row"><label>Z</label><input class="prop-input batch-transform" id="batch-sz" type="number" step="0.1" min="0.001" value="1"></div>
+        </div>
+        <div class="vec3-group">
+          <div class="vec3-label">Rotation Offset &deg;</div>
+          <div class="prop-row"><label>X</label><input class="prop-input batch-transform" id="batch-rx" type="number" step="1" value="0"></div>
+          <div class="prop-row"><label>Y</label><input class="prop-input batch-transform" id="batch-ry" type="number" step="1" value="0"></div>
+          <div class="prop-row"><label>Z</label><input class="prop-input batch-transform" id="batch-rz" type="number" step="1" value="0"></div>
+        </div>
+      </div>
+      <div class="panel-section" id="batch-material-section">
+        <div class="color-row" id="batch-color-row">
+          <label>Color</label>
+          <input type="text" id="batch-color-hex" maxlength="7" placeholder="mixed" style="width:60px;font-size:11px;font-family:monospace;background:#0d0d20;color:#aaaacc;border:1px solid #333360;border-radius:3px;padding:2px 4px;">
+          <input type="color" id="batch-color" value="#888888">
+        </div>
+        <div class="prop-row" id="batch-opacity-row">
+          <label>Opacity</label>
+          <input class="prop-input" id="batch-opacity" type="number" step="0.05" min="0" max="1" placeholder="mixed">
+        </div>
+        <div class="toggle-row" id="batch-collidable-row">
+          <input type="checkbox" id="batch-collidable">
+          <label for="batch-collidable">Collidable</label>
+        </div>
+        <div class="toggle-row" id="batch-shadow-row">
+          <input type="checkbox" id="batch-shadow">
+          <label for="batch-shadow">Cast Shadow</label>
+        </div>
+        <div id="batch-pbr-row" style="display:none;margin-top:4px">
+          <div class="prop-row"><label>Roughness</label><input class="prop-input" id="batch-roughness" type="number" step="0.05" min="0" max="1" placeholder="mixed"></div>
+          <div class="prop-row"><label>Metalness</label><input class="prop-input" id="batch-metalness" type="number" step="0.05" min="0" max="1" placeholder="mixed"></div>
+          <div class="toggle-row"><input type="checkbox" id="batch-double-side"><label for="batch-double-side">Double-sided</label></div>
+        </div>
+      </div>
+      <div class="panel-section">
+        <div class="action-btns">
+          <button class="btn" id="btn-batch-clone">Clone Selected</button>
+          <button class="btn btn-del" id="btn-batch-delete">Delete Selected</button>
+        </div>
+      </div>
+    </div>
+    <div id="single-selection-props">
     <div class="panel-section">
       <h3>Selected</h3>
       <div id="sel-name" class="info-text">None</div>
@@ -717,6 +775,7 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         </span>
       </h3>
       <div id="states-list" style="margin-top:4px"></div>
+    </div>
     </div>
     <div class="panel-section" style="flex-shrink:0">
       <h3 style="display:flex;align-items:center">
