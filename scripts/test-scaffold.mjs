@@ -18,6 +18,9 @@ try {
   assert.match(editorSource, /data-prim="cone"/, 'scaffold editor must expose the cone primitive');
   assert.match(editorSource, /id="geom-cone-rs"/, 'cone must expose radial side controls');
   assert.match(editorSource, /id="geom-cone-hs"/, 'cone must expose vertical subdivision controls');
+  assert.match(editorSource, /id="btn-cut-add"/, 'cut mode must allow primitive cutters');
+  assert.match(editorSource, /id="btn-cut-convert"/, 'cut mode must allow converting scene objects');
+  assert.match(editorSource, /Red wireframes are subtractive cutters/, 'cut mode must explain its live cutter preview');
   const pkg = JSON.parse(fs.readFileSync(path.join(targetRoot, 'package.json'), 'utf8'));
   assert.ok(pkg.scripts?.editor, 'scaffold package.json must expose npm run editor');
   console.log('Scaffold includes editor HTML, setup module, and editor command');

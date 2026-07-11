@@ -18,3 +18,10 @@ assert.match(levelLoaderSource, /cone:\s*\(p = \{\}\)\s*=>\s*new THREE\.ConeGeom
 assert.match(levelLoaderSource, /geoFn\(entry\.geomParams \?\? \{\}\)/, 'runtime must honor primitive geometry parameters');
 assert.match(source, /function setGeomParam[\s\S]*?pushUndo\(\)/, 'geometry edits must create undo snapshots');
 console.log('Cone primitive is available in editor and runtime');
+
+assert.match(source, /function scheduleCsgRebuild\(\)/, 'cutters must trigger live CSG rebuilds');
+assert.match(source, /function convertSelectedToCsgCutter\(\)/, 'scene objects must be convertible to cutters');
+assert.match(source, /isCsgCutterProxy/, 'editable cutter proxies must be tracked separately');
+assert.match(source, /isEditorHelper \|\| obj\.userData\.isCsgCutterProxy/, 'temporary cutters must not be saved as scene objects');
+assert.match(source, /function convertSelectedToCsgCutter[\s\S]*?pushUndo\(\)/, 'cutter conversion must create an undo snapshot');
+console.log('Live editable CSG cutters are capability-checked');

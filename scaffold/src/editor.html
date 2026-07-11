@@ -659,7 +659,7 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <button class="btn btn-del" id="btn-del">Delete</button>
       </div>
       <div class="action-btns" style="margin-top:4px">
-        <button class="btn" id="btn-cut" title="Use selected object to cut (subtract) from another object"> Cut into...</button>
+        <button class="btn" id="btn-cut" title="Edit the selected object's subtractive cutter volumes">Edit Cutters...</button>
         <button class="btn" id="btn-set-pivot" title="Click a point on another object to set this object's rotation/scale pivot"> Set Pivot</button>
       </div>
       <div class="action-btns" style="margin-top:4px">
@@ -687,7 +687,18 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <button class="btn" id="btn-reset-pivot" title="Reset pivot back to object centre" style="display:none"> Reset Pivot</button>
       </div>
       <div id="pivot-hint" style="display:none;margin-top:4px;padding:4px 6px;background:#001a2e;border:1px solid #44aaff;border-radius:4px;font-size:11px;color:#88ccff">Click any surface to set pivot point &middot; Esc cancels</div>
-      <div id="cut-hint" style="display:none;margin-top:4px;padding:4px 6px;background:#2a1a00;border:1px solid #e94560;border-radius:4px;font-size:11px;color:#ffaa44">Click the target object to cut into it &middot; Esc cancels</div>
+      <div id="cut-hint" style="display:none;margin-top:4px;padding:5px 6px;background:#2a1014;border:1px solid #e94560;border-radius:4px;font-size:11px;color:#ff9a9a">
+        Red wireframes are subtractive cutters. Transform them to update the result live.
+        <div style="display:flex;gap:4px;margin-top:5px">
+          <select class="prop-input" id="cut-add-type" style="flex:1">
+            <option value="box">Box</option><option value="sphere">Sphere</option>
+            <option value="cylinder">Cylinder</option><option value="cone">Cone</option>
+          </select>
+          <button class="btn" id="btn-cut-add" type="button">+ Cutter</button>
+          <button class="btn" id="btn-cut-convert" type="button" title="Convert the selected scene object into a cutter">Convert Selected</button>
+          <button class="btn" id="btn-cut-done" type="button">Done</button>
+        </div>
+      </div>
     </div>
     <div class="panel-section" id="links-section" style="display:none">
       <h3 style="display:flex;align-items:center;justify-content:space-between">

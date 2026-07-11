@@ -126,7 +126,8 @@ const E = {
 
   // CSG cut mode
   cutMode:       false,
-  cutSource:     null,   // the cutter mesh (selected when Cut was initiated)
+  cutSource:     null,   // current CSG result while cutter editing is active
+  csgEdit:       null,   // live cutter proxies + current CSG result
   csgEvaluator:  null,   // lazy-created Evaluator instance
 
   // Link pick mode
@@ -220,6 +221,7 @@ async function init() {
       snapToNearestFace(E.groupPivot || E.selected);
     }
     syncPropsFromSelected();
+    if (E.cutMode && E.selected?.userData.isCsgCutterProxy) scheduleCsgRebuild();
     E.selectionHelpers.forEach(helper => helper.update());
     E.renderer.render(E.scene, E.camera);
   });
@@ -553,7 +555,7 @@ function levelToJSON(options = {}) {
 
   const objects = [];
   E.placedGroup.children.forEach(obj => {
-    if (obj.userData.isEditorHelper) return;
+    if (obj.userData.isEditorHelper || obj.userData.isCsgCutterProxy) return;
     // CSG result: store the recipe, not pos/rot/size (result lives at world origin)
     if (obj.userData.primType === 'csg-result') {
       const matColor = Array.isArray(obj.material) ? obj.material[0]?.color : obj.material?.color;
@@ -799,6 +801,7 @@ function levelToJSON(options = {}) {
 
 async function saveLevel() {
   if (!E.levelName) { setStatus('No level open'); return; }
+  await flushCsgRebuild();
   const data = levelToJSON();
   if (!hasElectronMethod('saveLevel')) {
     // Browser fallback: download the level JSON so it can be dropped into levels/
@@ -3275,6 +3278,21 @@ function finalizeGroupTransform(markChange = true) {
 // â”€â”€â”€ Clone / Delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function cloneSelected() {
   if (!E.selected || E.selected.userData.isRef) return;
+  if (E.selected.userData.isCsgCutterProxy) {
+    const edit = E.csgEdit;
+    if (!edit) return;
+    pushUndo();
+    const sourceEntry = _entryFromCutterProxy(E.selected);
+    const clone = E.selected.clone(true);
+    clone.position.x += 1;
+    sourceEntry.pos = [clone.position.x, clone.position.y, clone.position.z];
+    _prepareCutterProxy(clone, sourceEntry);
+    _syncCsgRecipeFromProxies();
+    selectObj(clone);
+    updateSceneList();
+    scheduleCsgRebuild();
+    return;
+  }
   const sources = (E.selectedObjects.length ? [...E.selectedObjects] : [E.selected])
     .filter(obj => obj && !obj.userData.isRef);
   pushUndo();
@@ -3359,6 +3377,19 @@ function cloneGroup(gid) {
 
 function deleteSelected() {
   if (!E.selected || E.selected.userData.isRef) return;
+  if (E.selected.userData.isCsgCutterProxy) {
+    const edit = E.csgEdit;
+    if (!edit) return;
+    pushUndo();
+    const index = edit.proxies.indexOf(E.selected);
+    if (index >= 0) edit.proxies.splice(index, 1);
+    E.placedGroup.remove(E.selected);
+    _syncCsgRecipeFromProxies();
+    selectObj(edit.result);
+    updateSceneList();
+    scheduleCsgRebuild();
+    return;
+  }
   const targets = (E.selectedObjects.length ? [...E.selectedObjects] : [E.selected])
     .filter(obj => obj && !obj.userData.isRef);
   pushUndo();
@@ -5691,140 +5722,262 @@ function _updatePivotDot() {
   dot.visible = true;
 }
 
-function beginCut() {
+async function beginCut() {
   if (!E.selected || E.selected.userData.isRef) {
-    setStatus('Select a placed object first to use as the cutter');
+    setStatus('Select the object whose cutters you want to edit');
     return;
   }
   if (isLightType(E.selected.userData.primType)) {
-    setStatus('Lights cannot be used as CSG cutters');
+    setStatus('Lights cannot be edited with CSG');
     return;
   }
   if (!E.levelName) { setStatus('Open a level first'); return; }
-  E.cutMode   = true;
-  E.cutSource = E.selected;
-  // Highlight the cutter in orange so it's clearly distinguishable
-  _tintCutter(E.cutSource, true);
+  if (E.groupPivot) finalizeGroupTransform(false);
+
+  const target = E.selected;
+  const recipe = target.userData.primType === 'csg-result' && target.userData.csgRecipe
+    ? JSON.parse(JSON.stringify(target.userData.csgRecipe))
+    : { base: _entryFromObj(target), cutters: [] };
+
+  E.cutMode = true;
+  E.cutSource = target;
+  E.csgEdit = {
+    result: target,
+    recipe,
+    proxies: [],
+    generation: 0,
+    rebuildTimer: null,
+    rebuilding: null,
+    ready: false,
+  };
   document.getElementById('cut-hint').style.display = '';
   document.getElementById('btn-cut').classList.add('active');
-  setStatus('Cut mode — click the object you want to cut into (Esc cancels)');
+  document.getElementById('btn-cut').textContent = 'Finish Cutters';
+  setStatus('Loading editable cutter volumes...');
+
+  const gltfLoader = new GLTFLoader();
+  const fbxLoader = new FBXLoader();
+  E.csgEdit.baseObj = target.userData.primType === 'csg-result'
+    ? await _buildEntryObj(recipe.base, gltfLoader, fbxLoader)
+    : target.clone(true);
+  if (!E.cutMode || E.csgEdit?.recipe !== recipe) return;
+  if (!E.csgEdit.baseObj) {
+    cancelCut('Could not load the base geometry for cutter editing');
+    return;
+  }
+  E.csgEdit.baseObj.updateMatrixWorld(true);
+  for (const entry of recipe.cutters || []) {
+    const proxy = await _buildEntryObj(entry, gltfLoader, fbxLoader);
+    if (!E.cutMode || E.csgEdit?.recipe !== recipe) return;
+    if (!proxy) continue;
+    _prepareCutterProxy(proxy, entry);
+  }
+  E.csgEdit.ready = true;
+  updateSceneList();
+  setStatus('Cutter edit mode - transform red cutters, add one, or convert a selected scene object');
 }
 
-function cancelCut() {
+function cancelCut(status = 'Cutter editing finished') {
   if (!E.cutMode) return;
-  _tintCutter(E.cutSource, false);
-  E.cutMode   = false;
+  const edit = E.csgEdit;
+  if (edit?.rebuildTimer) clearTimeout(edit.rebuildTimer);
+  if (edit) {
+    _syncCsgRecipeFromProxies();
+    edit.proxies.forEach(proxy => E.placedGroup.remove(proxy));
+  }
+  const result = edit?.result;
+  E.cutMode = false;
   E.cutSource = null;
+  E.csgEdit = null;
   document.getElementById('cut-hint').style.display = 'none';
   document.getElementById('btn-cut').classList.remove('active');
-  setStatus('Cut cancelled');
+  document.getElementById('btn-cut').textContent = 'Edit Cutters...';
+  if (result?.parent === E.placedGroup) selectObj(result);
+  updateSceneList();
+  setStatus(status);
 }
 
-// Temporarily tint the cutter mesh orange / restore original material
-function _tintCutter(obj, on) {
-  if (!obj) return;
-  obj.traverse(c => {
-    if (!c.isMesh) return;
-    if (on) {
-      c.userData._savedMaterial = c.material;
-      const tinted = c.material.clone();
-      if (tinted.color) tinted.color.setHex(0xff6600);
-      c.material = tinted;
-    } else {
-      if (c.userData._savedMaterial) {
-        c.material = c.userData._savedMaterial;
-        delete c.userData._savedMaterial;
-      }
-    }
+function _prepareCutterProxy(proxy, sourceEntry) {
+  const edit = E.csgEdit;
+  if (!edit) return null;
+  proxy.userData = {
+    ...proxy.userData,
+    primType: sourceEntry.type,
+    modelPath: sourceEntry.modelPath || proxy.userData.modelPath,
+    geomParams: sourceEntry.geomParams ? JSON.parse(JSON.stringify(sourceEntry.geomParams)) : proxy.userData.geomParams,
+    isCsgCutterProxy: true,
+    csgSourceEntry: JSON.parse(JSON.stringify(sourceEntry)),
+    editorId: `cutter-${Date.now()}-${edit.proxies.length}`,
+    label: `Cutter: ${sourceEntry.label || sourceEntry.type}`,
+  };
+  proxy.name = proxy.userData.label;
+  proxy.traverse(child => {
+    if (!child.isMesh) return;
+    child.material = new THREE.MeshBasicMaterial({
+      color: 0xff3344,
+      transparent: true,
+      opacity: 0.28,
+      wireframe: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    child.renderOrder = 20;
+    child.frustumCulled = false;
   });
+  E.placedGroup.add(proxy);
+  edit.proxies.push(proxy);
+  return proxy;
 }
 
-async function performCut(targetObj) {
-  const cutter = E.cutSource;
-  cancelCut(); // clear state / tint
+function _entryFromCutterProxy(proxy) {
+  const entry = JSON.parse(JSON.stringify(proxy.userData.csgSourceEntry || _entryFromObj(proxy)));
+  const transform = _entryFromObj(proxy);
+  entry.pos = transform.pos;
+  entry.rot = transform.rot;
+  entry.size = transform.size;
+  if (proxy.userData.geomParams) entry.geomParams = JSON.parse(JSON.stringify(proxy.userData.geomParams));
+  return entry;
+}
 
-  // Both must be placed (not isRef)
-  if (!cutter || !targetObj || cutter === targetObj) {
-    setStatus('Invalid cut targets');
-    return;
-  }
-  if (targetObj.userData.isRef) {
-    setStatus('Cannot cut into reference scene objects — place a box wall instead');
-    return;
-  }
-  if (isLightType(targetObj.userData.primType)) {
-    setStatus('Cannot cut into a light object');
-    return;
-  }
-  if (!cutter.isMesh && !cutter.isGroup) {
-    setStatus('Cutter must be a simple primitive or model for CSG');
-    return;
-  }
+function _syncCsgRecipeFromProxies() {
+  const edit = E.csgEdit;
+  if (!edit) return null;
+  edit.recipe.cutters = edit.proxies.map(_entryFromCutterProxy);
+  if (edit.result) edit.result.userData.csgRecipe = edit.recipe;
+  return edit.recipe;
+}
 
-  setStatus('Running CSG subtraction…');
+function scheduleCsgRebuild() {
+  const edit = E.csgEdit;
+  if (!E.cutMode || !edit?.ready) return;
+  _syncCsgRecipeFromProxies();
+  clearTimeout(edit.rebuildTimer);
+  edit.rebuildTimer = setTimeout(() => rebuildCsgEdit(), 60);
+  markDirty();
+}
 
-  // Lazy-create evaluator
-  if (!E.csgEvaluator) E.csgEvaluator = new Evaluator();
-
+async function rebuildCsgEdit() {
+  const edit = E.csgEdit;
+  if (!E.cutMode || !edit?.ready) return null;
+  clearTimeout(edit.rebuildTimer);
+  edit.rebuildTimer = null;
+  const generation = ++edit.generation;
+  const oldResult = edit.result;
+  const recipe = _syncCsgRecipeFromProxies();
+  setStatus('Updating CSG preview...');
+  const rebuilding = Promise.resolve().then(() => {
+    if (!E.csgEvaluator) E.csgEvaluator = new Evaluator();
+    let brushA = _meshToBrush(edit.baseObj);
+    if (!brushA) throw new Error('base object has no mesh geometry');
+    for (const proxy of edit.proxies) {
+      const brushB = _meshToBrush(proxy);
+      if (!brushB) continue;
+      brushA.updateMatrixWorld(true);
+      brushB.updateMatrixWorld(true);
+      brushA = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
+      brushA.updateMatrixWorld(true);
+    }
+    brushA.geometry.computeBoundingBox();
+    const center = new THREE.Vector3();
+    brushA.geometry.boundingBox.getCenter(center);
+    brushA.geometry.translate(-center.x, -center.y, -center.z);
+    brushA.position.copy(center);
+    brushA.rotation.set(0, 0, 0);
+    brushA.scale.setScalar(1);
+    brushA.castShadow = oldResult.castShadow !== false;
+    brushA.receiveShadow = true;
+    return brushA;
+  });
+  edit.rebuilding = rebuilding;
   try {
-    // Build Brush objects. Brush is a Mesh, so for groups we need a merged geometry.
-    const brushA = _meshToBrush(targetObj);
-    const brushB = _meshToBrush(cutter);
-
-    if (!brushA || !brushB) {
-      setStatus('CSG failed: object has no mesh geometry');
-      return;
+    const result = await rebuilding;
+    if (!result) throw new Error('source geometry could not be rebuilt');
+    if (!E.cutMode || E.csgEdit !== edit || generation !== edit.generation) {
+      E.placedGroup.remove(result);
+      return null;
     }
-
-    brushA.updateMatrixWorld(true);
-    brushB.updateMatrixWorld(true);
-
-    // Perform subtraction: A minus B
-    const result = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
-
-    // Center the geometry at its bounding box midpoint so the gizmo and
-    // orbit target land on the wall, not at world origin.
-    result.geometry.computeBoundingBox();
-    const _csgCenter = new THREE.Vector3();
-    result.geometry.boundingBox.getCenter(_csgCenter);
-    result.geometry.translate(-_csgCenter.x, -_csgCenter.y, -_csgCenter.z);
-    result.position.copy(_csgCenter);
-    result.rotation.set(0, 0, 0);
-    result.scale.setScalar(1);
-    result.castShadow    = targetObj.castShadow;
-    result.receiveShadow = true;
+    E.placedGroup.remove(oldResult);
     result.userData = {
-      ...targetObj.userData,
-      primType:  'csg-result',
-      csgRecipe: {
-        base:    _entryFromObj(targetObj),
-        cutters: [ _entryFromObj(cutter) ],
-      },
+      ...oldResult.userData,
+      ...result.userData,
+      primType: 'csg-result',
+      csgRecipe: edit.recipe,
+      editorId: oldResult.userData.editorId,
     };
-    // Carry forward any existing cutters only if base is a plain prim (not itself a csg-result).
-    // If targetObj is already a csg-result its full recipe is embedded in base via _entryFromObj.
-    if (targetObj.userData.csgRecipe && targetObj.userData.primType !== 'csg-result') {
-      result.userData.csgRecipe.cutters.push(...targetObj.userData.csgRecipe.cutters);
-    }
-    result.name = targetObj.name;
-
-    E.placedGroup.remove(targetObj);
-    E.placedGroup.add(result);
-
-    // Remove the cutter from the scene
-    const cutterId = cutter.userData.editorId;
-    for (const g of Object.values(E.groups)) g.ids.delete(cutterId);
-    for (const gid of Object.keys(E.groups)) { if (E.groups[gid].ids.size === 0) delete E.groups[gid]; }
-    E.placedGroup.remove(cutter);
-
-    selectObj(result);
-    pushUndo(); updateSceneList(); updateGroupsPanel(); markDirty();
-    setStatus(`Cut complete — "${result.name}" geometry updated`);
-
+    result.name = oldResult.name;
+    edit.result = result;
+    E.cutSource = result;
+    if (E.selected === oldResult) selectObj(result);
+    updateSceneList();
+    updateSelectionHelpers();
+    setStatus(`Live cut updated - ${edit.proxies.length} cutter(s)`);
+    return result;
   } catch (err) {
-    setStatus('CSG error: ' + err.message);
-    console.error(err);
+    console.error('Live CSG rebuild failed:', err);
+    setStatus('CSG preview failed: ' + err.message);
+    return null;
+  } finally {
+    if (edit.rebuilding === rebuilding) edit.rebuilding = null;
   }
+}
+
+async function flushCsgRebuild() {
+  const edit = E.csgEdit;
+  if (!edit) return;
+  if (edit.rebuildTimer) await rebuildCsgEdit();
+  if (edit.rebuilding) await edit.rebuilding.catch(() => null);
+}
+
+function addCsgPrimitiveCutter() {
+  const edit = E.csgEdit;
+  if (!E.cutMode || !edit?.ready) return;
+  pushUndo();
+  const type = document.getElementById('cut-add-type')?.value || 'box';
+  const bounds = new THREE.Box3().setFromObject(edit.result);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const entry = {
+    type,
+    pos: center.toArray(),
+    rot: [0, 0, 0],
+    size: [Math.max(0.25, size.x * 0.5), Math.max(0.25, size.y * 0.5), Math.max(0.25, size.z * 0.5)],
+    color: '#ff3344',
+  };
+  const proxy = makePrimMesh(type, 0xff3344);
+  applyEntryTransform(proxy, entry);
+  _prepareCutterProxy(proxy, entry);
+  _syncCsgRecipeFromProxies();
+  selectObj(proxy);
+  updateSceneList();
+  scheduleCsgRebuild();
+}
+
+function convertSelectedToCsgCutter() {
+  const edit = E.csgEdit;
+  const obj = E.selected;
+  if (!E.cutMode || !edit?.ready || !obj) return;
+  if (obj === edit.result) { setStatus('Select another scene object to convert into a cutter'); return; }
+  if (obj.userData.isCsgCutterProxy) { setStatus('That object is already a cutter'); return; }
+  if (obj.userData.isRef || isLightType(obj.userData.primType) || isTriggerType(obj.userData.primType)) {
+    setStatus('That object type cannot be used as a cutter');
+    return;
+  }
+  if (!_meshToBrush(obj)) { setStatus('Selected object has no mesh geometry'); return; }
+  pushUndo();
+  if (E.groupPivot) finalizeGroupTransform(false);
+  const entry = _entryFromObj(obj);
+  const id = obj.userData.editorId;
+  for (const group of Object.values(E.groups)) group.ids.delete(id);
+  for (const gid of Object.keys(E.groups)) if (!E.groups[gid].ids.size) delete E.groups[gid];
+  E.placedGroup.remove(obj);
+  _prepareCutterProxy(obj, entry);
+  _syncCsgRecipeFromProxies();
+  selectObj(obj);
+  updateSceneList();
+  updateGroupsPanel();
+  scheduleCsgRebuild();
+  setStatus(`Converted "${entry.label || obj.name}" to an editable cutter`);
 }
 
 // Build a Brush (Mesh with world transform baked) from a possibly-grouped object.
@@ -5946,6 +6099,7 @@ function _entryFromObj(obj) {
   if (obj.userData.primType === 'merged-model') {
     entry.mergedMeshes = _serializeMergedMeshes(obj);
   }
+  if (obj.userData.geomParams) entry.geomParams = JSON.parse(JSON.stringify(obj.userData.geomParams));
   return entry;
 }
 
@@ -6068,6 +6222,11 @@ async function _buildEntryObj(e, gltfLoader, fbxLoader) {
   const mesh = makePrimMesh(e.type, e.color);
   if (!mesh) return null;
   applyEntryTransform(mesh, e);
+  mesh.userData.primType = e.type;
+  if (e.geomParams) {
+    mesh.userData.geomParams = JSON.parse(JSON.stringify(e.geomParams));
+    rebuildGeometry(mesh, true);
+  }
   mesh.updateMatrixWorld(true);
   return mesh;
 }
@@ -7541,7 +7700,12 @@ function setupUI() {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('focus', () => { if (E.selected) pushUndo(); });
-    const cb = () => { if (E.selected) { apply(parseFloat(el.value) || 0); markDirty(); } };
+    const cb = () => {
+      if (!E.selected) return;
+      apply(parseFloat(el.value) || 0);
+      if (E.selected.userData.isCsgCutterProxy) scheduleCsgRebuild();
+      markDirty();
+    };
     el.addEventListener('input',  cb);
     el.addEventListener('change', cb);
   }
@@ -7733,6 +7897,7 @@ function setupUI() {
     rebuildGeometry(obj);
     // If per-face textures exist, re-apply since the geometry groups are the same
     if (obj.userData.faceTextures) applyFaceTextures(obj);
+    if (obj.userData.isCsgCutterProxy) scheduleCsgRebuild();
   }
   const geomBindings = [
     // [inputId, paramKey, isCheckbox]
@@ -8228,6 +8393,9 @@ function setupUI() {
     if (E.cutMode) cancelCut();
     else beginCut();
   });
+  document.getElementById('btn-cut-add')?.addEventListener('click', addCsgPrimitiveCutter);
+  document.getElementById('btn-cut-convert')?.addEventListener('click', convertSelectedToCsgCutter);
+  document.getElementById('btn-cut-done')?.addEventListener('click', () => cancelCut());
   document.getElementById('btn-set-pivot').addEventListener('click', () => {
     if (E.pivotMode) cancelPivot();
     else beginPivot();
@@ -9171,17 +9339,6 @@ function setupMouse() {
       } else {
         setStatus(`Rope End ${E.ropeAnchorMode} — click any surface to attach (Esc cancels)`);
       }
-      return;
-    }
-
-    // Cut mode — click target to subtract cutter from it
-    if (E.cutMode) {
-      if (hits.length) {
-        let obj = hits[0].object;
-        while (obj.parent && obj.parent !== E.placedGroup) obj = obj.parent;
-        if (obj !== E.cutSource) { performCut(obj); return; }
-      }
-      setStatus('Click a different object to cut into it \u2014 Esc cancels');
       return;
     }
 
