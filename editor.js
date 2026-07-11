@@ -324,7 +324,9 @@ async function init() {
   updateProps(null);
 
   // Open level picker, or auto-load if --level arg was provided
-  const startupLevel = window.electron?.getStartupLevel ? await window.electron.getStartupLevel() : null;
+  const startupLevel = hasElectronMethod('getStartupLevel')
+    ? await invokeElectron('getStartupLevel', 'Startup level lookup')
+    : null;
   if (startupLevel) {
     const levelName = startupLevel.replace(/\.json$/i, '');
     await loadLevel(levelName);
@@ -798,7 +800,7 @@ function levelToJSON(options = {}) {
 async function saveLevel() {
   if (!E.levelName) { setStatus('No level open'); return; }
   const data = levelToJSON();
-  if (!window.electron) {
+  if (!hasElectronMethod('saveLevel')) {
     // Browser fallback: download the level JSON so it can be dropped into levels/
     try {
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -817,7 +819,8 @@ async function saveLevel() {
     return;
   }
   try {
-    await window.electron.saveLevel(E.levelName, data);
+    const result = await invokeElectron('saveLevel', 'Level save', E.levelName, data);
+    if (result == null) return;
     E.isDirty = false;
     refreshLevelNameDisplay();
     setStatus(`Saved "${E.levelName}" - ${data.objects.length} object(s)`);
@@ -833,7 +836,7 @@ async function loadLevel(name) {
   E.levelName = name;
 
   let data = null;
-  if (window.electron) {
+  if (hasElectronMethod('readLevel')) {
     try { data = await window.electron.readLevel(name); } catch { /* new */ }
   } else {
     // Browser fallback: fetch from levels/ like the runtime level loader does.
@@ -4081,8 +4084,7 @@ function exportGroupGLB() {
   const defaultName = (g.name.replace(/[^a-z0-9_-]/gi, '_') || 'group') + '.glb';
   const exporter = new GLTFExporter();
   exporter.parse(exportGroup, async result => {
-    if (!window.electron?.saveGlb) { setStatus('GLB export not available outside Electron'); return; }
-    const res = await window.electron.saveGlb(defaultName, result);
+    const res = await invokeElectron('saveGlb', 'GLB export', defaultName, result);
     if (res?.ok) setStatus(`Exported group "${g.name}" as GLB`);
   }, err => { setStatus('GLB export failed: ' + err); }, { binary: true });
 }
@@ -4570,8 +4572,7 @@ function openMeshEditor() {
     markDirty();
   };
   document.getElementById('btn-mesh-master-import').onclick = async () => {
-    if (!window.electron?.importTexture) return;
-    const name = await window.electron.importTexture();
+    const name = await invokeElectron('importTexture', 'Texture import');
     if (!name) return;
     await refreshTextureList();
     masterIn.value = name;
@@ -4660,8 +4661,7 @@ function openMeshEditor() {
     impBtn.title = 'Import texture';
     impBtn.style.cssText = 'padding:2px 4px;font-size:11px';
     impBtn.addEventListener('click', async () => {
-      if (!window.electron?.importTexture) return;
-      const name = await window.electron.importTexture();
+      const name = await invokeElectron('importTexture', 'Texture import');
       if (!name) return;
       await refreshTextureList();
       texIn.value = name;
@@ -4701,8 +4701,7 @@ function openActorMeshEditor() {
     markDirty();
   };
   document.getElementById('btn-actor-mesh-master-import').onclick = async () => {
-    if (!window.electron?.importTexture) return;
-    const name = await window.electron.importTexture();
+    const name = await invokeElectron('importTexture', 'Texture import');
     if (!name) return;
     await refreshTextureList();
     masterIn.value = name;
@@ -4767,8 +4766,7 @@ function openActorMeshEditor() {
       impBtn.title = 'Import texture';
       impBtn.style.cssText = 'padding:2px 4px;font-size:11px';
       impBtn.addEventListener('click', async () => {
-        if (!window.electron?.importTexture) return;
-        const name = await window.electron.importTexture();
+        const name = await invokeElectron('importTexture', 'Texture import');
         if (!name) return;
         await refreshTextureList();
         texIn.value = name;
@@ -4836,8 +4834,7 @@ function _refreshActorRolesList(obj) {
     impBtn.title = 'Import animation FBX for this role';
     impBtn.style.cssText = 'padding:2px 4px;font-size:11px';
     impBtn.addEventListener('click', async () => {
-      if (!window.electron?.importActorAnim) return;
-      const filePath = await window.electron.importActorAnim(obj.userData.actorModel);
+      const filePath = await invokeElectron('importActorAnim', 'Actor animation import', obj.userData.actorModel);
       if (!filePath) return;
       if (!obj.userData.actorRoles) obj.userData.actorRoles = {};
       obj.userData.actorRoles[role] = filePath;
@@ -5143,8 +5140,7 @@ function _renderSoundSection(container, soundDef, onUpdate) {
   impBtn.style.cssText = 'font-size:11px;padding:2px 10px';
   impBtn.textContent = '+ Import';
   impBtn.addEventListener('click', async () => {
-    if (!window.electron?.importSound) return;
-    const name = await window.electron.importSound();
+    const name = await invokeElectron('importSound', 'Sound import');
     if (!name) return;
     await refreshSoundList();
     soundDef.sounds.push({ name, weight: 1 });
@@ -6154,6 +6150,25 @@ function setStatus(msg) {
   if (el) el.textContent = msg;
 }
 
+function hasElectronMethod(method) {
+  return typeof window.electron?.[method] === 'function';
+}
+
+async function invokeElectron(method, label, ...args) {
+  const fn = window.electron?.[method];
+  if (typeof fn !== 'function') {
+    setStatus(`${label} is unavailable in this editor mode`);
+    return null;
+  }
+  try {
+    return await fn(...args);
+  } catch (error) {
+    console.error(`[editor] ${label} failed`, error);
+    setStatus(`${label} failed: ${error?.message || error}`);
+    return null;
+  }
+}
+
 function updatePlacingHint(show) {
   const el = document.getElementById('placing-hint');
   if (el) el.style.display = show ? 'block' : 'none';
@@ -6165,17 +6180,16 @@ function escHtml(str) {
 
 // â”€â”€â”€ Model list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function refreshModelList() {
-  if (!window.electron) return;
-  try { E.importedModels = await window.electron.listModels(); } catch { E.importedModels = []; }
+  try { E.importedModels = hasElectronMethod('listModels') ? await window.electron.listModels() : []; } catch { E.importedModels = []; }
   renderModelList();
-  try { E.importedImages = await window.electron.listImageModels(); } catch { E.importedImages = []; }
+  try { E.importedImages = hasElectronMethod('listImageModels') ? await window.electron.listImageModels() : []; } catch { E.importedImages = []; }
   renderImageModelList();
   await refreshTextureList();
   await refreshSoundList();
 }
 
 async function refreshActorList() {
-  if (!window.electron?.listActors) return;
+  if (!hasElectronMethod('listActors')) return;
   try { E.importedActors = await window.electron.listActors(); } catch { E.importedActors = []; }
   renderActorList();
 }
@@ -6203,7 +6217,7 @@ function renderActorList() {
 }
 
 async function refreshTextureList() {
-  if (!window.electron?.listTextures) return;
+  if (!hasElectronMethod('listTextures')) return;
   try { E.availableTextures = await window.electron.listTextures(); } catch { E.availableTextures = []; }
   const dl = document.getElementById('tex-datalist');
   if (!dl) return;
@@ -6216,7 +6230,7 @@ async function refreshTextureList() {
 }
 
 async function refreshSoundList() {
-  if (!window.electron?.listSounds) return;
+  if (!hasElectronMethod('listSounds')) return;
   let sounds = [];
   try { sounds = await window.electron.listSounds(); } catch { sounds = []; }
   const dl = document.getElementById('sound-datalist');
@@ -6292,7 +6306,7 @@ async function openLevelModal() {
   });
   listDiv.appendChild(mainItem);
 
-  if (window.electron) {
+  if (hasElectronMethod('listLevels')) {
     try {
       const levels = await window.electron.listLevels();
       levels.filter(n => n !== 'main').forEach(name => {
@@ -7474,8 +7488,7 @@ function setupUI() {
 
   // Import model
   document.getElementById('btn-import-model').addEventListener('click', async () => {
-    if (!window.electron) { setStatus('Model import requires Electron'); return; }
-    const p = await window.electron.importModel();
+    const p = await invokeElectron('importModel', 'Model import');
     if (p) {
       await refreshModelList();
       if (E.levelName) {
@@ -7492,14 +7505,12 @@ function setupUI() {
   });
 
   document.getElementById('btn-import-mtl')?.addEventListener('click', async () => {
-    if (!window.electron?.importMtl) { setStatus('MTL import requires Electron'); return; }
-    const name = await window.electron.importMtl();
+    const name = await invokeElectron('importMtl', 'MTL import');
     if (name) setStatus(`Imported MTL: ${name} — re-place your OBJ to apply it`);
   });
 
   document.getElementById('btn-import-image-model')?.addEventListener('click', async () => {
-    if (!window.electron) { setStatus('Image import requires Electron'); return; }
-    const p = await window.electron.importImageModel();
+    const p = await invokeElectron('importImageModel', 'Image import');
     if (p) {
       await refreshModelList();
       if (E.levelName) {
@@ -7860,8 +7871,7 @@ function setupUI() {
   // ─── Model maps panel wiring ──────────────────────────────────────────────
   ['diffuse','normal','roughness','metalness'].forEach(slot => {
     document.getElementById(`btn-mmap-import-${slot}`)?.addEventListener('click', async () => {
-      if (!window.electron?.importTexture) return;
-      const name = await window.electron.importTexture();
+      const name = await invokeElectron('importTexture', 'Texture import');
       if (!name) return;
       await refreshTextureList();
       const el = document.getElementById(`mmap-${slot}`);
@@ -7893,8 +7903,7 @@ function setupUI() {
   // ─── Texture panel wiring ──────────────────────────────────────────────────
   // Import texture
   document.getElementById('btn-import-tex')?.addEventListener('click', async () => {
-    if (!window.electron?.importTexture) return;
-    const name = await window.electron.importTexture();
+    const name = await invokeElectron('importTexture', 'Texture import');
     if (!name) return;
     await refreshTextureList();
     const el = document.getElementById('tex-name');
@@ -7904,8 +7913,7 @@ function setupUI() {
   });
 
   document.getElementById('btn-import-normal')?.addEventListener('click', async () => {
-    if (!window.electron?.importTexture) return;
-    const name = await window.electron.importTexture();
+    const name = await invokeElectron('importTexture', 'Texture import');
     if (!name) return;
     await refreshTextureList();
     const el = document.getElementById('tex-normal-map');
@@ -7915,8 +7923,7 @@ function setupUI() {
   });
 
   document.getElementById('btn-import-roughness')?.addEventListener('click', async () => {
-    if (!window.electron?.importTexture) return;
-    const name = await window.electron.importTexture();
+    const name = await invokeElectron('importTexture', 'Texture import');
     if (!name) return;
     await refreshTextureList();
     const el = document.getElementById('tex-roughness-map');
@@ -7976,8 +7983,7 @@ function setupUI() {
   });
 
   document.getElementById('btn-import-bump')?.addEventListener('click', async () => {
-    if (!window.electron?.importTexture) return;
-    const name = await window.electron.importTexture();
+    const name = await invokeElectron('importTexture', 'Texture import');
     if (!name) return;
     await refreshTextureList();
     const el = document.getElementById('tex-bump-map');
@@ -8310,8 +8316,7 @@ function setupUI() {
   });
 
   document.getElementById('btn-import-actor')?.addEventListener('click', async () => {
-    if (!window.electron?.importActor) { setStatus('Actor import requires Electron'); return; }
-    const p = await window.electron.importActor();
+    const p = await invokeElectron('importActor', 'Actor import');
     if (p) {
       await refreshActorList();
       setStatus(`Imported actor: ${p.split(/[\\/]/).pop()}`);
@@ -8349,8 +8354,7 @@ function setupUI() {
   document.getElementById('btn-actor-import-anim')?.addEventListener('click', async () => {
     const obj = E.selected;
     if (!obj || obj.userData.primType !== 'actor-spawn') return;
-    if (!window.electron?.importActorAnim) return;
-    const filePath = await window.electron.importActorAnim(obj.userData.actorModel);
+    const filePath = await invokeElectron('importActorAnim', 'Actor animation import', obj.userData.actorModel);
     if (!filePath) return;
     pushUndo();
     if (!obj.userData.animations) obj.userData.animations = [];
@@ -8468,8 +8472,7 @@ function setupUI() {
   });
   document.getElementById('btn-wb-pick-model')?.addEventListener('click', async () => {
     if (!E.selected || E.selected.userData.primType !== 'zom-wallbuy') return;
-    if (!window.electron?.importModel) return;
-    const p = await window.electron.importModel();
+    const p = await invokeElectron('importModel', 'Model import');
     if (!p) return;
     pushUndo();
     E.selected.userData.weaponModelPath = p;
@@ -8503,8 +8506,7 @@ function setupUI() {
   _zsNum('zs-round-max', 'roundMax');
   document.getElementById('btn-zs-pick-model')?.addEventListener('click', async () => {
     if (!E.selected || E.selected.userData.primType !== 'zombie-spawn') return;
-    if (!window.electron?.importActorModel) return;
-    const p = await window.electron.importActorModel();
+    const p = await invokeElectron('importActorModel', 'Actor model import');
     if (!p) return;
     pushUndo();
     E.selected.userData.actorModel = p;
@@ -8724,7 +8726,9 @@ function setupUI() {
   document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
   document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
   document.getElementById('btn-zms-apply')?.addEventListener('click',  _applyZombiesSettings);
-  window.electron?.onMenuAction?.('open-zombies-settings', _openZombiesSettings);
+  if (hasElectronMethod('onMenuAction')) {
+    window.electron.onMenuAction('open-zombies-settings', _openZombiesSettings);
+  }
 }
 
 function setTransformMode(mode) {
