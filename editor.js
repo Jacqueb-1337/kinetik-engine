@@ -1204,6 +1204,7 @@ const GEOM_DEFAULTS = {
   box:      { bevel: 0, bevelSegs: 2, wSegs: 1, hSegs: 1, dSegs: 1 },
   sphere:   { wSegs: 16, hSegs: 12, phi: 360, theta: 180 },
   cylinder: { radSegs: 16, hSegs: 1, radTop: 1, open: false },
+  cone:     { radSegs: 16, hSegs: 1, open: false },
   plane:    { wSegs: 1, hSegs: 1 },
   rope:     { ropeLength: 1.2, ropeRadius: 0.015, ropeSegs: 12, ropeSag: 0.5, ropeDamping: 0.985, anchorBOffset: [0, -0.5, 0], anchorBId: null },
 };
@@ -1227,6 +1228,10 @@ function buildGeometry(type, p = {}) {
   if (type === 'cylinder') {
     const radTop = (p.radTop ?? d.radTop) * 0.5; // user sets 0–1, geo uses 0–0.5
     return new THREE.CylinderGeometry(radTop, 0.5, 1,
+      p.radSegs ?? d.radSegs, p.hSegs ?? d.hSegs, p.open ?? d.open);
+  }
+  if (type === 'cone') {
+    return new THREE.ConeGeometry(0.5, 1,
       p.radSegs ?? d.radSegs, p.hSegs ?? d.hSegs, p.open ?? d.open);
   }
   if (type === 'plane') {
@@ -1281,7 +1286,7 @@ function refreshGeomPanel(obj) {
   const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = v; };
 
   // Hide all sub-sections, show the right one
-  ['box','sphere','cylinder','plane','rope'].forEach(t => {
+  ['box','sphere','cylinder','cone','plane','rope'].forEach(t => {
     const el = document.getElementById('geom-' + t);
     if (el) el.style.display = (t === type) ? '' : 'none';
   });
@@ -1302,6 +1307,10 @@ function refreshGeomPanel(obj) {
     set('geom-cyl-hs', p.hSegs   ?? d.hSegs);
     set('geom-cyl-rt', p.radTop  ?? d.radTop);
     setChk('geom-cyl-open', p.open ?? d.open);
+  } else if (type === 'cone') {
+    set('geom-cone-rs', p.radSegs ?? d.radSegs);
+    set('geom-cone-hs', p.hSegs   ?? d.hSegs);
+    setChk('geom-cone-open', p.open ?? d.open);
   } else if (type === 'plane') {
     set('geom-plane-ws', p.wSegs ?? d.wSegs);
     set('geom-plane-hs', p.hSegs ?? d.hSegs);
@@ -7718,6 +7727,7 @@ function setupUI() {
   function setGeomParam(key, rawVal, isCheckbox) {
     const obj = E.selected;
     if (!obj || !GEOM_DEFAULTS[obj.userData.primType]) return;
+    pushUndo();
     if (!obj.userData.geomParams) obj.userData.geomParams = {};
     obj.userData.geomParams[key] = isCheckbox ? rawVal : (parseFloat(rawVal) || 0);
     rebuildGeometry(obj);
@@ -7739,6 +7749,9 @@ function setupUI() {
     ['geom-cyl-hs',     'hSegs',    false],
     ['geom-cyl-rt',     'radTop',   false],
     ['geom-cyl-open',   'open',     true],
+    ['geom-cone-rs',    'radSegs',  false],
+    ['geom-cone-hs',    'hSegs',    false],
+    ['geom-cone-open',  'open',     true],
     ['geom-plane-ws',   'wSegs',      false],
     ['geom-plane-hs',   'hSegs',      false],
     ['geom-rope-len',   'ropeLength', false],
@@ -7758,6 +7771,7 @@ function setupUI() {
     document.getElementById(id)?.addEventListener('change', () => {
       const obj = E.selected;
       if (!obj || obj.userData.primType !== 'rope') return;
+      pushUndo();
       const p = obj.userData.geomParams ??= {};
       const d = GEOM_DEFAULTS.rope;
       const off = p.anchorBOffset ? [...p.anchorBOffset] : [...d.anchorBOffset];
@@ -7770,6 +7784,7 @@ function setupUI() {
   document.getElementById('geom-rope-bid')?.addEventListener('change', e => {
     const obj = E.selected;
     if (!obj || obj.userData.primType !== 'rope') return;
+    pushUndo();
     const v = e.target.value.trim();
     (obj.userData.geomParams ??= {}).anchorBId = v ? parseInt(v) : null;
     markDirty();

@@ -410,6 +410,18 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
             <label for="geom-cyl-open">Open ends</label>
           </div>
         </div>
+        <!-- Cone -->
+        <div id="geom-cone" style="display:none">
+          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+            <label style="font-size:10px;color:#666688;min-width:38px">Sides</label>
+            <input class="prop-input" id="geom-cone-rs" type="number" step="1" min="3" max="64" value="16" style="flex:1" title="Radial sides (3=triangular pyramid, 4=square pyramid)">
+            <input class="prop-input" id="geom-cone-hs" type="number" step="1" min="1" max="32" value="1" style="flex:1" title="Vertical subdivisions">
+          </div>
+          <div class="toggle-row">
+            <input type="checkbox" id="geom-cone-open">
+            <label for="geom-cone-open">Open base</label>
+          </div>
+        </div>
         <!-- Plane -->
         <div id="geom-plane" style="display:none">
           <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">

@@ -261,11 +261,13 @@ setTextureFn((obj, texOverrides) => {
 
 // Primitive geometry factories matching the editor
 const PRIM_GEO = {
-  box:      () => new THREE.BoxGeometry(1, 1, 1),
-  sphere:   () => new THREE.SphereGeometry(0.5, 16, 12),
-  cylinder: () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
-  cone:     () => new THREE.ConeGeometry(0.5, 1, 16),
-  plane:    () => new THREE.PlaneGeometry(1, 1),
+  box:      (p = {}) => new THREE.BoxGeometry(1, 1, 1, p.wSegs ?? 1, p.hSegs ?? 1, p.dSegs ?? 1),
+  sphere:   (p = {}) => new THREE.SphereGeometry(0.5, p.wSegs ?? 16, p.hSegs ?? 12,
+    0, ((p.phi ?? 360) * Math.PI) / 180, 0, ((p.theta ?? 180) * Math.PI) / 180),
+  cylinder: (p = {}) => new THREE.CylinderGeometry((p.radTop ?? 1) * 0.5, 0.5, 1,
+    p.radSegs ?? 16, p.hSegs ?? 1, p.open ?? false),
+  cone:     (p = {}) => new THREE.ConeGeometry(0.5, 1, p.radSegs ?? 16, p.hSegs ?? 1, p.open ?? false),
+  plane:    (p = {}) => new THREE.PlaneGeometry(1, 1, p.wSegs ?? 1, p.hSegs ?? 1),
 };
 
 // Rope physics simulations running each frame
@@ -467,7 +469,7 @@ function spawnZombiePrim(entry) {
     transparent: opacity < 1,
     opacity,
   });
-  const mesh = new THREE.Mesh(geoFn(), mat);
+  const mesh = new THREE.Mesh(geoFn(entry.geomParams ?? {}), mat);
   applyTransform(mesh, entry);
   mesh.castShadow    = entry.castShadow !== false;
   mesh.receiveShadow = true;

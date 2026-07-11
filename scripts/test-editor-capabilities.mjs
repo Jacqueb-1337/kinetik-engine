@@ -14,5 +14,7 @@ for (const action of desktopActions) {
 }
 console.log('Editor desktop actions are capability-checked');
 assert.match(source, /cone:\s*\(\)\s*=>\s*new THREE\.ConeGeometry/);
-assert.match(levelLoaderSource, /cone:\s*\(\)\s*=>\s*new THREE\.ConeGeometry/);
+assert.match(levelLoaderSource, /cone:\s*\(p = \{\}\)\s*=>\s*new THREE\.ConeGeometry/);
+assert.match(levelLoaderSource, /geoFn\(entry\.geomParams \?\? \{\}\)/, 'runtime must honor primitive geometry parameters');
+assert.match(source, /function setGeomParam[\s\S]*?pushUndo\(\)/, 'geometry edits must create undo snapshots');
 console.log('Cone primitive is available in editor and runtime');
