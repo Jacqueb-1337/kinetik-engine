@@ -3,9 +3,12 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../editor.js', import.meta.url), 'utf8');
 const levelLoaderSource = fs.readFileSync(new URL('../levelLoader.js', import.meta.url), 'utf8');
+const preloadSource = fs.readFileSync(new URL('../scaffold/preload.js', import.meta.url), 'utf8');
+const electronMainSource = fs.readFileSync(new URL('../scaffold/electron-main.js', import.meta.url), 'utf8');
 const desktopActions = [
   'importModel', 'importImageModel', 'importMtl', 'importTexture',
   'importActor', 'importActorAnim', 'importActorModel', 'importSound', 'saveGlb',
+  'saveTexture',
 ];
 
 for (const action of desktopActions) {
@@ -40,3 +43,15 @@ assert.match(source, /material\?\.color && !material\.map/, 'base color must onl
 assert.match(levelLoaderSource, /function applyModelBaseColor\(root, entry\)/, 'runtime model loading must restore base colors');
 assert.match(levelLoaderSource, /entry\.baseColorOverride[\s\S]*?applyModelBaseColor\(root, entry\)/, 'runtime must apply explicit model base-color overrides');
 console.log('Untextured model base colors persist through editor and runtime loading');
+
+assert.match(source, /function setupTexturePaintUI\(\)/, 'editor must expose UV texture painting');
+assert.match(source, /globalCompositeOperation = erase \? 'destination-out'/, 'paint erasing must remove only the paint layer');
+assert.match(source, /obj\.userData\.modelMaps = \{ \.\.\.\(obj\.userData\.modelMaps \|\| \{\}\), \.\.\.refs \}/, 'paint save must update model map entries');
+assert.match(source, /existing\.normalMap = refs\.normal[\s\S]*?existing\.bumpMap = refs\.bump/, 'paint save must update primitive map entries');
+assert.match(source, /function _buildDrawnCutObject\(entry\)/, 'cut mode must rebuild serialized drawn cutters');
+assert.match(source, /function setupCsgDrawUI\(\)/, 'cut mode must expose raycast path drawing');
+assert.match(levelLoaderSource, /function buildDrawnCutObject\(entry\)/, 'runtime must rebuild drawn cutters');
+assert.match(levelLoaderSource, /function _recipeCutterBrushes\(obj\)/, 'runtime must subtract drawn path segments independently');
+assert.match(preloadSource, /saveTexture:.*ipcRenderer\.invoke\('save-texture'/, 'desktop bridge must expose generated texture saving');
+assert.match(electronMainSource, /ipcMain\.handle\('save-texture'/, 'Electron must write generated texture PNGs');
+console.log('Texture painting and drawn CSG cutters are capability-checked');

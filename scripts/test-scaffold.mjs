@@ -24,6 +24,9 @@ try {
   assert.match(editorSource, /id="batch-selection-props"/, 'multi-select must expose a dedicated batch properties panel');
   assert.match(editorSource, /id="batch-sx"/, 'batch properties must expose relative scale controls');
   assert.match(editorSource, /id="batch-collidable"/, 'batch properties must expose common collision controls');
+  assert.match(editorSource, /id="texture-paint-section"/, 'editor scaffold must include texture painting');
+  assert.match(editorSource, /id="btn-paint-save"/, 'texture painting must save generated maps');
+  assert.match(editorSource, /id="btn-cut-draw"/, 'cut mode must include raycast path drawing');
   const pkg = JSON.parse(fs.readFileSync(path.join(targetRoot, 'package.json'), 'utf8'));
   assert.ok(pkg.scripts?.editor, 'scaffold package.json must expose npm run editor');
   console.log('Scaffold includes editor HTML, setup module, and editor command');

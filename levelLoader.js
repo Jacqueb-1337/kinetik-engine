@@ -103,6 +103,16 @@ function buildFaceTexMat(baseColor, cfg, side = THREE.FrontSide) {
     mat.roughness = 1.0;
   }
 
+  if (cfg.metalnessMap) {
+    const mTex = getTexLoader().load(
+      `./textures/${cfg.metalnessMap}.png`, undefined, undefined,
+      () => getTexLoader().load(`./textures/${cfg.metalnessMap}.jpg`, t => { applyUV(t); mat.metalnessMap = t; mat.metalness = 1.0; mat.needsUpdate = true; })
+    );
+    applyUV(mTex);
+    mat.metalnessMap = mTex;
+    mat.metalness = 1.0;
+  }
+
   if (cfg.bumpMap) {
     const bScale = cfg.bumpScale ?? 1.0;
     const bTex = getTexLoader().load(
@@ -725,7 +735,7 @@ function spawnModel(entry) {
         });
       }
       if (entry.modelMaps && Object.keys(entry.modelMaps).length) {
-        const MAP_SLOTS = { diffuse: 'map', normal: 'normalMap', roughness: 'roughnessMap', metalness: 'metalnessMap' };
+        const MAP_SLOTS = { diffuse: 'map', normal: 'normalMap', roughness: 'roughnessMap', metalness: 'metalnessMap', bump: 'bumpMap' };
         for (const [slot, texName] of Object.entries(entry.modelMaps)) {
           if (!texName) continue;
           const matKey = MAP_SLOTS[slot];
@@ -792,10 +802,11 @@ async function spawnCsgResult(entry) {
     for (const cutEntry of (recipe.cutters || [])) {
       const cutObj = await _buildRecipeObj(cutEntry);
       if (!cutObj) continue;
-      const brushB = _objToBrush(cutObj, Brush);
-      brushB.updateMatrixWorld(true);
-      brushA = evaluator.evaluate(brushA, brushB, SUBTRACTION);
-      brushA.updateMatrixWorld(true);
+      for (const brushB of _recipeCutterBrushes(cutObj)) {
+        brushB.updateMatrixWorld(true);
+        brushA = evaluator.evaluate(brushA, brushB, SUBTRACTION);
+        brushA.updateMatrixWorld(true);
+      }
     }
 
     const result = brushA;
@@ -1035,7 +1046,42 @@ function spawnImageModel(entry) {
   });
 }
 
+function buildDrawnCutObject(entry) {
+  const params = entry.geomParams || {};
+  const points = (params.points || []).map(point => new THREE.Vector3(...point));
+  const normals = (params.normals || []).map(normal => new THREE.Vector3(...normal).normalize());
+  if (!points.length) return null;
+  const width = Math.max(0.02, params.width || 0.35);
+  const depth = Math.max(0.02, params.depth || 1);
+  const group = new THREE.Group();
+  const material = new THREE.MeshStandardMaterial({ color: 0xff3344 });
+  const stamps = [];
+  for (let index = 0; index < points.length; index++) {
+    if (index === 0) stamps.push({ point: points[index], normal: normals[index] || new THREE.Vector3(0, 1, 0) });
+    else {
+      const previous = points[index - 1], current = points[index];
+      const previousNormal = normals[index - 1] || normals[index] || new THREE.Vector3(0, 1, 0);
+      const currentNormal = normals[index] || previousNormal;
+      const count = Math.max(1, Math.ceil(previous.distanceTo(current) / Math.max(0.02, width * 0.45)));
+      for (let step = 1; step <= count; step++) {
+        const t = step / count;
+        stamps.push({ point: previous.clone().lerp(current, t), normal: previousNormal.clone().lerp(currentNormal, t).normalize() });
+      }
+    }
+  }
+  stamps.slice(0, 96).forEach(({ point, normal }) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, width, depth), material);
+    mesh.position.copy(point).addScaledVector(normal, -depth * 0.5 + width * 0.1);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    group.add(mesh);
+  });
+  group.userData.primType = 'drawn-cut';
+  applyTransform(group, entry);
+  return group;
+}
+
 async function _buildRecipeObj(e) {
+  if (e.type === 'drawn-cut') return buildDrawnCutObject(e);
   if (e.type === 'csg-result') {
     if (e.csgRecipe) return spawnCsgResult(e);
     return null;
@@ -1127,6 +1173,13 @@ function _objToBrush(obj, Brush) {
   const brush = new Brush(geo, Array.isArray(mat) ? mat[0] : mat);
   brush.updateMatrixWorld(true);
   return brush;
+}
+
+function _recipeCutterBrushes(obj) {
+  if (obj?.userData?.primType === 'drawn-cut') {
+    return obj.children.filter(child => child.isMesh).map(child => _objToBrush(child, Brush));
+  }
+  return [_objToBrush(obj, Brush)];
 }
 
 /**

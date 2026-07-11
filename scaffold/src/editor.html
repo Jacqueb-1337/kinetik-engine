@@ -606,6 +606,12 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
           <button class="btn" id="btn-clear-roughness" style="padding:2px 5px;font-size:10px" title="Clear roughness map">X</button>
         </div>
         <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+          <label style="font-size:10px;color:#666688;min-width:38px">Metal</label>
+          <input class="prop-input" id="tex-metalness-map" type="text" list="tex-datalist" placeholder="none" style="flex:1;font-size:11px" title="Metalness map texture name (black=dielectric, white=metal)">
+          <button class="btn" id="btn-import-metalness" style="font-size:10px;padding:2px 6px" title="Import metalness map">+</button>
+          <button class="btn" id="btn-clear-metalness" style="padding:2px 5px;font-size:10px" title="Clear metalness map">X</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
           <label style="font-size:10px;color:#666688;min-width:38px">Bump</label>
           <input class="prop-input" id="tex-bump-map" type="text" list="tex-datalist" placeholder="none" style="flex:1;font-size:11px" title="Bump map (greyscale height map — no conversion needed)">
           <input class="prop-input" id="tex-bump-scale" type="number" step="0.1" min="0" max="10" value="1" style="width:44px;font-size:11px" title="Bump strength">
@@ -643,6 +649,38 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <input class="prop-input" id="mmap-metalness" type="text" list="model-maps-datalist" placeholder="none" style="flex:1;font-size:11px">
         <button class="btn" id="btn-mmap-import-metalness" style="font-size:10px;padding:2px 6px">+</button>
         <button class="btn" id="btn-mmap-clear-metalness" style="padding:2px 5px;font-size:10px">X</button>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <label style="font-size:10px;color:#666688;min-width:44px">Bump</label>
+        <input class="prop-input" id="mmap-bump" type="text" list="model-maps-datalist" placeholder="none" style="flex:1;font-size:11px">
+        <button class="btn" id="btn-mmap-import-bump" style="font-size:10px;padding:2px 6px">+</button>
+        <button class="btn" id="btn-mmap-clear-bump" style="padding:2px 5px;font-size:10px">X</button>
+      </div>
+    </div>
+    <div class="panel-section" id="texture-paint-section" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:5px">
+        <div class="vec3-label" style="margin:0">Texture Paint</div>
+        <button class="btn" id="btn-paint-toggle" style="font-size:10px;padding:3px 8px">Start Painting</button>
+      </div>
+      <div id="texture-paint-controls" style="display:none;margin-top:6px">
+        <div style="display:flex;gap:4px;margin-bottom:5px">
+          <button class="btn active" id="btn-paint-brush" style="flex:1">Brush</button>
+          <button class="btn" id="btn-paint-erase" style="flex:1">Erase Layer</button>
+        </div>
+        <div class="color-row"><label>Color</label><input type="color" id="paint-color" value="#ffffff"></div>
+        <div class="prop-row"><label>Size</label><input class="prop-input" id="paint-size" type="range" min="1" max="256" value="32"><input class="prop-input" id="paint-size-number" type="number" min="1" max="256" value="32" style="width:48px"></div>
+        <div class="prop-row"><label>Hardness</label><input class="prop-input" id="paint-hardness" type="range" min="0" max="1" step="0.05" value="0.8"></div>
+        <div class="prop-row"><label>Opacity</label><input class="prop-input" id="paint-opacity" type="range" min="0.01" max="1" step="0.01" value="1"></div>
+        <div class="prop-row"><label>Roughness</label><input class="prop-input" id="paint-roughness" type="range" min="0" max="1" step="0.01" value="0.8"><span id="paint-roughness-value" style="width:28px;font-size:10px">.80</span></div>
+        <div class="prop-row"><label>Metalness</label><input class="prop-input" id="paint-metalness" type="range" min="0" max="1" step="0.01" value="0"><span id="paint-metalness-value" style="width:28px;font-size:10px">.00</span></div>
+        <div class="prop-row"><label>Height</label><input class="prop-input" id="paint-height" type="range" min="0" max="1" step="0.01" value="0.5"><span id="paint-height-value" style="width:28px;font-size:10px">.50</span></div>
+        <div class="prop-row"><label>Resolution</label><select class="prop-input" id="paint-resolution"><option>256</option><option selected>512</option><option>1024</option><option>2048</option></select></div>
+        <div style="display:flex;gap:4px;margin-top:5px">
+          <button class="btn" id="btn-paint-undo" style="flex:1">Undo Stroke</button>
+          <button class="btn" id="btn-paint-clear" style="flex:1">Clear Layer</button>
+        </div>
+        <button class="btn green" id="btn-paint-save" style="width:100%;margin-top:4px">Save Maps</button>
+        <div style="font-size:9px;color:#666688;margin-top:4px">Paint directly on the model. Erase reveals the object's base color and default material values.</div>
       </div>
     </div>
     <div class="panel-section" id="mesh-edit-section" style="display:none">
@@ -756,6 +794,12 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
           <button class="btn" id="btn-cut-convert" type="button" title="Convert the selected scene object into a cutter">Convert Selected</button>
           <button class="btn" id="btn-cut-done" type="button">Done</button>
         </div>
+        <div style="display:flex;gap:4px;margin-top:5px">
+          <button class="btn" id="btn-cut-draw" type="button" style="flex:1">Draw Cutter</button>
+          <label style="display:flex;align-items:center;gap:3px">Width <input class="prop-input" id="cut-draw-width" type="number" min="0.05" step="0.05" value="0.35" style="width:48px"></label>
+          <label style="display:flex;align-items:center;gap:3px">Depth <input class="prop-input" id="cut-draw-depth" type="number" min="0.05" step="0.1" value="1" style="width:48px"></label>
+        </div>
+        <div id="cut-draw-hint" style="display:none;margin-top:4px;color:#ffcccc">Drag on the target surface to draw the hole path.</div>
       </div>
     </div>
     <div class="panel-section" id="links-section" style="display:none">

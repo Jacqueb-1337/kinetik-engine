@@ -130,6 +130,9 @@ const E = {
   csgEdit:       null,   // live cutter proxies + current CSG result
   csgEvaluator:  null,   // lazy-created Evaluator instance
 
+  // UV texture painting
+  texturePaint:  null,
+
   // Link pick mode
   linkMode:      false,
   linkSource:    null,   // the object whose links we're adding to
@@ -578,6 +581,7 @@ function levelToJSON(options = {}) {
       if (obj.userData.roughness !== undefined) csgEntry.roughness = obj.userData.roughness;
       if (obj.userData.metalness !== undefined) csgEntry.metalness = obj.userData.metalness;
       if (obj.userData.faceTextures) csgEntry.faceTextures = obj.userData.faceTextures;
+      if (obj.userData.texturePaint) csgEntry.texturePaint = obj.userData.texturePaint;
       objects.push(csgEntry);
       return;
     }
@@ -688,6 +692,7 @@ function levelToJSON(options = {}) {
     if (obj.userData.pbrConverted) entry.pbrConverted = true;
     if (obj.userData.modelMaps)    entry.modelMaps = obj.userData.modelMaps;
     if (obj.userData.modelMapRes)  entry.modelMapRes = obj.userData.modelMapRes;
+    if (obj.userData.texturePaint) entry.texturePaint = obj.userData.texturePaint;
     if (obj.userData.geomParams)    entry.geomParams    = obj.userData.geomParams;
     if (obj.userData.isMainFloor)   entry.isMainFloor   = true;
     if (obj.userData.isAdjFloor)    entry.isAdjFloor    = true;
@@ -802,6 +807,7 @@ function levelToJSON(options = {}) {
 
 async function saveLevel() {
   if (!E.levelName) { setStatus('No level open'); return; }
+  if (E.texturePaint?.mapsDirty) await saveTexturePaintMaps();
   await flushCsgRebuild();
   const data = levelToJSON();
   if (!hasElectronMethod('saveLevel')) {
@@ -910,6 +916,7 @@ function clearPlaced() {
     E.multiSelectActive = false;
   }
   closeModelEditor();
+  if (E.texturePaint?.active) stopTexturePaint();
   if (E.linkMode) cancelLink();
   if (E.cutMode) cancelCut();
   if (E.pivotMode) cancelPivot();
@@ -982,6 +989,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         if (entry.pbrConverted)   root.userData.pbrConverted = true;
         if (entry.modelMapRes)    root.userData.modelMapRes = entry.modelMapRes;
         if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
+        if (entry.texturePaint)   root.userData.texturePaint = entry.texturePaint;
         _applyStoryData(root, entry);
         if (entry.baseColorOverride || (entry.color && entry.color.toLowerCase() !== '#aaaacc')) _applyModelBaseColor(root, entry);
         E.placedGroup.add(root);
@@ -1058,6 +1066,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
       if (entry.pbrConverted)   root.userData.pbrConverted = true;
       if (entry.modelMapRes)     root.userData.modelMapRes = entry.modelMapRes;
       if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
+      if (entry.texturePaint)   root.userData.texturePaint = entry.texturePaint;
       if (entry.emissiveIntensity > 0) {
         root.userData.emissiveIntensity = entry.emissiveIntensity;
         root.userData.emissiveColor     = entry.emissiveColor ?? '#ffffff';
@@ -1741,8 +1750,8 @@ function _faceModeClick() {
 }
 
 // Build a texture config object (stored in userData.faceTextures[key])
-function makeFaceTexConfig(name, rx = 1, ry = 1, ox = 0, oy = 0, wrap = 'repeat', tilingMode = 'repeat', worldScale = 1, normalMap = null, roughnessMap = null, bumpMap = null, bumpScale = 1.0) {
-  return { name, rx, ry, ox, oy, wrap, tilingMode, worldScale, normalMap, roughnessMap, bumpMap, bumpScale };
+function makeFaceTexConfig(name, rx = 1, ry = 1, ox = 0, oy = 0, wrap = 'repeat', tilingMode = 'repeat', worldScale = 1, normalMap = null, roughnessMap = null, bumpMap = null, bumpScale = 1.0, metalnessMap = null) {
+  return { name, rx, ry, ox, oy, wrap, tilingMode, worldScale, normalMap, roughnessMap, metalnessMap, bumpMap, bumpScale };
 }
 
 // Create a MeshStandardMaterial from a faceTexConfig and a base color
@@ -1792,6 +1801,18 @@ function makeFaceTexMat(hexColor, config) {
     };
     loader.load(`${ASSET_ROOT}textures/${config.roughnessMap}.png`, applyRoughness, undefined,
       () => loader.load(`${ASSET_ROOT}textures/${config.roughnessMap}.jpg`, applyRoughness)
+    );
+  }
+
+  if (config.metalnessMap) {
+    const applyMetalness = tex => {
+      applyUVSettings(tex);
+      mat.metalnessMap = tex;
+      mat.metalness = 1.0;
+      mat.needsUpdate = true;
+    };
+    loader.load(`${ASSET_ROOT}textures/${config.metalnessMap}.png`, applyMetalness, undefined,
+      () => loader.load(`${ASSET_ROOT}textures/${config.metalnessMap}.jpg`, applyMetalness)
     );
   }
 
@@ -2225,6 +2246,7 @@ function spawnPrimFromEntry(entry) {
     mesh.userData.faceTextures = { all: makeFaceTexConfig(entry.texture, rx, ry) };
     applyFaceTextures(mesh);
   }
+  if (entry.texturePaint) mesh.userData.texturePaint = entry.texturePaint;
   if (mesh.userData._opacity !== undefined) {
     setMeshOpacity(mesh, mesh.userData._opacity);
     syncOpacityWireframe(mesh);
@@ -2464,6 +2486,7 @@ function updateSelectionHelpers() {
 
 function toggleMultiSelection(obj) {
   if (!obj || obj.userData.isRef) return;
+  if (E.texturePaint?.active) stopTexturePaint();
   if (E.groupPivot) finalizeGroupTransform(!E.multiSelectActive);
   const next = E.selectedObjects.length ? [...E.selectedObjects] : (E.selected ? [E.selected] : []);
   const index = next.indexOf(obj);
@@ -2485,6 +2508,7 @@ function toggleMultiSelection(obj) {
 
 function selectObj(obj, additive = false) {
   if (additive) { toggleMultiSelection(obj); return; }
+  if (E.texturePaint?.active && E.texturePaint.obj !== obj) stopTexturePaint();
   // If group transform is active, finalize it first so the object being
   // selected is back in E.placedGroup with correct world-space coordinates.
   // But only if the object we're selecting is NOT a member of the current group
@@ -2844,6 +2868,7 @@ function updateProps(obj) {
   const textureSection = document.getElementById('texture-section');
   const triggerProps = document.getElementById('trigger-props');
   const storySection = document.getElementById('story-section');
+  const texturePaintSection = document.getElementById('texture-paint-section');
 
   if (!obj) {
     if (selName) selName.textContent = 'None';
@@ -2863,6 +2888,7 @@ function updateProps(obj) {
     if (textureSection)   textureSection.style.display   = 'none';
     if (triggerProps) triggerProps.style.display = 'none';
     if (storySection) storySection.style.display = 'none';
+    if (texturePaintSection) texturePaintSection.style.display = 'none';
     ['zom-wallbuy-section','zombie-spawn-section','zom-perk-section','zom-mystery-section',
      'zom-pap-section','zom-ammo-section','zom-door-section'].forEach(id => {
       const s = document.getElementById(id); if (s) s.style.display = 'none';
@@ -2883,9 +2909,19 @@ function updateProps(obj) {
   const isImageModel = obj.userData.primType === 'image-model';
   const isZombie    = isZombieType(obj.userData.primType);
   const isWallBuy   = obj.userData.primType === 'zom-wallbuy';
+  if (obj.userData.primType === 'drawn-cut') {
+    const params = obj.userData.csgSourceEntry?.geomParams || obj.userData.geomParams || {};
+    const widthInput = document.getElementById('cut-draw-width');
+    const depthInput = document.getElementById('cut-draw-depth');
+    if (widthInput && document.activeElement !== widthInput) widthInput.value = params.width ?? 0.35;
+    if (depthInput && document.activeElement !== depthInput) depthInput.value = params.depth ?? 1;
+  }
   const isPrimitive = !isLight && !isTrigger && !isZombie && obj.userData.primType !== 'model' && !isCsgResult && !isMerged && !isActorSpawn && !isImageModel;
   const hasTexture  = isPrimitive || isCsgResult;
   const isModel     = obj.userData.primType === 'model' || isMerged;
+  const canTexturePaint = !isLight && !isTrigger && !isZombie && !isActorSpawn &&
+    !isImageModel && !isMerged && _paintableMeshes(obj).length > 0;
+  if (texturePaintSection) texturePaintSection.style.display = canTexturePaint ? '' : 'none';
 
   const meshEditSection = document.getElementById('mesh-edit-section');
   if (meshEditSection) meshEditSection.style.display = isModel ? '' : 'none';
@@ -3566,6 +3602,7 @@ function refreshTexPanel(obj) {
   set('tex-world-scale', cfg.worldScale ?? 1);
   set('tex-normal-map',    cfg.normalMap    || '');
   set('tex-roughness-map', cfg.roughnessMap || '');
+  set('tex-metalness-map', cfg.metalnessMap || '');
   set('tex-bump-map',      cfg.bumpMap      || '');
   set('tex-bump-scale',    cfg.bumpScale    ?? 1.0);
 
@@ -3641,7 +3678,8 @@ function _panelToFaceConfig() {
     g('tex-normal-map').trim() || null,
     g('tex-roughness-map').trim() || null,
     g('tex-bump-map').trim() || null,
-    Math.max(0, parseFloat(g('tex-bump-scale')) || 1.0)
+    Math.max(0, parseFloat(g('tex-bump-scale')) || 1.0),
+    g('tex-metalness-map').trim() || null
   );
 }
 
@@ -5366,7 +5404,7 @@ function _applyMeshEditorTexture(mesh, texName) {
   })();
 }
 
-const MODEL_MAP_SLOTS = { diffuse: 'map', normal: 'normalMap', roughness: 'roughnessMap', metalness: 'metalnessMap' };
+const MODEL_MAP_SLOTS = { diffuse: 'map', normal: 'normalMap', roughness: 'roughnessMap', metalness: 'metalnessMap', bump: 'bumpMap' };
 
 function _ensureModelPbr(obj) {
   let converted = false;
@@ -5493,11 +5531,378 @@ function refreshModelMapsPanel(obj) {
     dl.innerHTML = E.availableTextures.map(t => `<option value="${t}">`).join('');
   }
   const res = obj?.userData?.modelMapRes || {};
-  ['diffuse','normal','roughness','metalness'].forEach(slot => {
+  ['diffuse','normal','roughness','metalness','bump'].forEach(slot => {
     const el = document.getElementById(`mmap-${slot}`);
     if (el) el.value = maps[slot] || '';
     const rel = document.getElementById(`mmap-res-${slot}`);
     if (rel) rel.value = res[slot] ? String(res[slot]) : '';
+  });
+}
+
+function _paintableMeshes(obj) {
+  if (!obj) return [];
+  const meshes = [];
+  obj.traverse(child => {
+    if (child.isMesh && !child.userData.isEditorHelper && child.geometry?.attributes?.uv) meshes.push(child);
+  });
+  return meshes;
+}
+
+function _makePaintCanvas(resolution, fill = null) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = resolution;
+  if (fill) {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, resolution, resolution);
+  }
+  return canvas;
+}
+
+function _paintRefsForObject(obj) {
+  if (obj.userData.primType === 'model') {
+    const maps = obj.userData.modelMaps || {};
+    return { diffuse: maps.diffuse, normal: maps.normal, roughness: maps.roughness, metalness: maps.metalness, bump: maps.bump };
+  }
+  const cfg = getFaceConfig(obj, 'all') || {};
+  return { diffuse: cfg.name, normal: cfg.normalMap, roughness: cfg.roughnessMap, metalness: cfg.metalnessMap, bump: cfg.bumpMap };
+}
+
+async function _drawTextureNameToCanvas(name, canvas) {
+  if (!name) return false;
+  for (const ext of ['png', 'jpg', 'jpeg', 'webp']) {
+    try {
+      const response = await fetch(`${ASSET_ROOT}textures/${name}.${ext}`);
+      if (!response.ok) continue;
+      const bitmap = await createImageBitmap(await response.blob());
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close?.();
+      return true;
+    } catch { /* try next extension */ }
+  }
+  return false;
+}
+
+function _paintScalarColor(value) {
+  const byte = Math.round(Math.max(0, Math.min(1, value)) * 255);
+  return `rgb(${byte},${byte},${byte})`;
+}
+
+function _compositePaintLayer(output, layer, baseFill) {
+  const ctx = output.getContext('2d');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.clearRect(0, 0, output.width, output.height);
+  ctx.fillStyle = baseFill;
+  ctx.fillRect(0, 0, output.width, output.height);
+  ctx.drawImage(layer, 0, 0);
+}
+
+function _derivePaintNormal(state) {
+  const output = state.outputs.normal;
+  const outCtx = output.getContext('2d');
+  outCtx.clearRect(0, 0, output.width, output.height);
+  outCtx.drawImage(state.baseNormal, 0, 0);
+  const width = output.width, height = output.height;
+  const bump = state.outputs.bump.getContext('2d').getImageData(0, 0, width, height);
+  const mask = state.layers.bump.getContext('2d').getImageData(0, 0, width, height);
+  const normal = outCtx.getImageData(0, 0, width, height);
+  const sample = (x, y) => bump.data[(Math.max(0, Math.min(height - 1, y)) * width + Math.max(0, Math.min(width - 1, x))) * 4] / 255;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * 4;
+      const alpha = mask.data[index + 3] / 255;
+      if (alpha <= 0) continue;
+      const dx = (sample(x - 1, y) - sample(x + 1, y)) * 2;
+      const dy = (sample(x, y - 1) - sample(x, y + 1)) * 2;
+      const inv = 1 / Math.hypot(dx, dy, 1);
+      const nr = Math.round((dx * inv * 0.5 + 0.5) * 255);
+      const ng = Math.round((dy * inv * 0.5 + 0.5) * 255);
+      const nb = Math.round((inv * 0.5 + 0.5) * 255);
+      normal.data[index]     = Math.round(normal.data[index]     * (1 - alpha) + nr * alpha);
+      normal.data[index + 1] = Math.round(normal.data[index + 1] * (1 - alpha) + ng * alpha);
+      normal.data[index + 2] = Math.round(normal.data[index + 2] * (1 - alpha) + nb * alpha);
+      normal.data[index + 3] = 255;
+    }
+  }
+  outCtx.putImageData(normal, 0, 0);
+}
+
+function _refreshPaintOutputs(state, includeNormal = true) {
+  _compositePaintLayer(state.outputs.diffuse, state.layers.diffuse, state.base.color);
+  _compositePaintLayer(state.outputs.roughness, state.layers.roughness, _paintScalarColor(state.base.roughness));
+  _compositePaintLayer(state.outputs.metalness, state.layers.metalness, _paintScalarColor(state.base.metalness));
+  _compositePaintLayer(state.outputs.bump, state.layers.bump, _paintScalarColor(state.base.height));
+  if (includeNormal) _derivePaintNormal(state);
+  Object.values(state.textures).forEach(texture => { texture.needsUpdate = true; });
+}
+
+function _applyPaintTextures(state) {
+  _ensureModelPbr(state.obj);
+  const textures = {};
+  for (const [channel, canvas] of Object.entries(state.outputs)) {
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+    if (channel === 'diffuse') texture.colorSpace = THREE.SRGBColorSpace;
+    textures[channel] = texture;
+  }
+  state.textures = textures;
+  state.obj.traverse(child => {
+    if (!child.isMesh || child.userData.isEditorHelper || !child.material) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach(material => {
+      material.map = textures.diffuse;
+      material.normalMap = textures.normal;
+      material.roughnessMap = textures.roughness;
+      material.metalnessMap = textures.metalness;
+      material.bumpMap = textures.bump;
+      material.color?.set(0xffffff);
+      if ('roughness' in material) material.roughness = 1;
+      if ('metalness' in material) material.metalness = 1;
+      material.bumpScale = 1;
+      material.needsUpdate = true;
+    });
+  });
+}
+
+async function startTexturePaint() {
+  if (E.cutMode) { setStatus('Finish cutter editing before texture painting'); return; }
+  const obj = E.selected;
+  const meshes = _paintableMeshes(obj);
+  if (!obj || !meshes.length) { setStatus('Selected object has no paintable UV coordinates'); return; }
+  if (E.texturePaint?.active) { stopTexturePaint(); return; }
+  const resolution = obj.userData.texturePaint?.resolution || parseInt(document.getElementById('paint-resolution')?.value) || 512;
+  const resolutionInput = document.getElementById('paint-resolution'); if (resolutionInput) resolutionInput.value = String(resolution);
+  const materials = _batchMaterials(obj);
+  const base = {
+    color: obj.userData._baseColor || _batchDisplayColor(obj) || '#aaaacc',
+    roughness: obj.userData.roughness ?? materials.find(material => 'roughness' in material)?.roughness ?? 0.8,
+    metalness: obj.userData.metalness ?? materials.find(material => 'metalness' in material)?.metalness ?? 0,
+    height: 0.5,
+  };
+  const state = {
+    active: true, obj, meshes, resolution, base, tool: 'brush', painting: false, lastUv: null, undo: [], textures: {}, mapsDirty: false,
+    layers: {
+      diffuse: _makePaintCanvas(resolution), roughness: _makePaintCanvas(resolution),
+      metalness: _makePaintCanvas(resolution), bump: _makePaintCanvas(resolution),
+    },
+    outputs: {
+      diffuse: _makePaintCanvas(resolution), roughness: _makePaintCanvas(resolution),
+      metalness: _makePaintCanvas(resolution), bump: _makePaintCanvas(resolution), normal: _makePaintCanvas(resolution),
+    },
+    baseNormal: _makePaintCanvas(resolution, 'rgb(128,128,255)'),
+  };
+  E.texturePaint = state;
+  const refs = _paintRefsForObject(obj);
+  const meta = obj.userData.texturePaint;
+  const layerRefs = meta?.layers || {};
+  await Promise.all([
+    _drawTextureNameToCanvas(layerRefs.diffuse || refs.diffuse, state.layers.diffuse),
+    _drawTextureNameToCanvas(layerRefs.roughness || refs.roughness, state.layers.roughness),
+    _drawTextureNameToCanvas(layerRefs.metalness || refs.metalness, state.layers.metalness),
+    _drawTextureNameToCanvas(layerRefs.bump || refs.bump, state.layers.bump),
+    _drawTextureNameToCanvas(meta?.baseNormal || refs.normal, state.baseNormal),
+  ]);
+  if (E.texturePaint !== state) return;
+  _applyPaintTextures(state);
+  _refreshPaintOutputs(state, true);
+  E.orbit.enabled = false;
+  E.transform.enabled = false;
+  document.getElementById('texture-paint-controls').style.display = '';
+  document.getElementById('btn-paint-toggle').textContent = 'Finish Painting';
+  document.getElementById('btn-paint-toggle').classList.add('active');
+  setStatus('Texture paint active - drag the left mouse button over the selected object');
+}
+
+async function stopTexturePaint() {
+  const state = E.texturePaint;
+  if (!state) return;
+  if (state.mapsDirty) await saveTexturePaintMaps();
+  if (E.texturePaint !== state) return;
+  state.active = false;
+  E.texturePaint = null;
+  E.orbit.enabled = true;
+  E.transform.enabled = true;
+  document.getElementById('texture-paint-controls').style.display = 'none';
+  document.getElementById('btn-paint-toggle').textContent = 'Start Painting';
+  document.getElementById('btn-paint-toggle').classList.remove('active');
+  setStatus('Texture paint finished');
+}
+
+function _paintSnapshot(state) {
+  state.undo.push(Object.fromEntries(Object.entries(state.layers).map(([key, canvas]) => [key, canvas.toDataURL('image/png')])));
+  if (state.undo.length > 8) state.undo.shift();
+}
+
+async function _restorePaintSnapshot(state, snapshot) {
+  await Promise.all(Object.entries(snapshot).map(async ([key, dataUrl]) => {
+    const bitmap = await createImageBitmap(await fetch(dataUrl).then(response => response.blob()));
+    const ctx = state.layers[key].getContext('2d');
+    ctx.clearRect(0, 0, state.resolution, state.resolution);
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+  }));
+  state.mapsDirty = true;
+  _refreshPaintOutputs(state, true);
+}
+
+function _paintStamp(canvas, x, y, radius, hardness, opacity, color, erase) {
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+  const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+  const inner = Math.max(0, Math.min(0.99, hardness));
+  gradient.addColorStop(0, color.replace('ALPHA', String(opacity)));
+  gradient.addColorStop(inner, color.replace('ALPHA', String(opacity)));
+  gradient.addColorStop(1, color.replace('ALPHA', '0'));
+  ctx.fillStyle = gradient;
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function _paintAtUv(state, uv, interpolate = true) {
+  const size = parseFloat(document.getElementById('paint-size')?.value) || 32;
+  const radius = Math.max(0.5, size / 2);
+  const hardness = parseFloat(document.getElementById('paint-hardness')?.value) || 0;
+  const opacity = parseFloat(document.getElementById('paint-opacity')?.value) || 1;
+  const roughness = parseFloat(document.getElementById('paint-roughness')?.value) || 0;
+  const metalness = parseFloat(document.getElementById('paint-metalness')?.value) || 0;
+  const height = parseFloat(document.getElementById('paint-height')?.value) || 0;
+  const color = new THREE.Color(document.getElementById('paint-color')?.value || '#ffffff');
+  const point = { x: uv.x * state.resolution, y: (1 - uv.y) * state.resolution };
+  const previous = state.lastUv;
+  const distance = previous ? Math.hypot(point.x - previous.x, point.y - previous.y) : 0;
+  const steps = interpolate && previous && distance < state.resolution * 0.35 ? Math.max(1, Math.ceil(distance / Math.max(1, radius * 0.3))) : 1;
+  const erase = state.tool === 'erase';
+  for (let index = 1; index <= steps; index++) {
+    const t = steps === 1 || !previous ? 1 : index / steps;
+    const x = previous ? THREE.MathUtils.lerp(previous.x, point.x, t) : point.x;
+    const y = previous ? THREE.MathUtils.lerp(previous.y, point.y, t) : point.y;
+    _paintStamp(state.layers.diffuse, x, y, radius, hardness, opacity, `rgba(${Math.round(color.r*255)},${Math.round(color.g*255)},${Math.round(color.b*255)},ALPHA)`, erase);
+    _paintStamp(state.layers.roughness, x, y, radius, hardness, opacity, `rgba(${Math.round(roughness*255)},${Math.round(roughness*255)},${Math.round(roughness*255)},ALPHA)`, erase);
+    _paintStamp(state.layers.metalness, x, y, radius, hardness, opacity, `rgba(${Math.round(metalness*255)},${Math.round(metalness*255)},${Math.round(metalness*255)},ALPHA)`, erase);
+    _paintStamp(state.layers.bump, x, y, radius, hardness, opacity, `rgba(${Math.round(height*255)},${Math.round(height*255)},${Math.round(height*255)},ALPHA)`, erase);
+  }
+  state.lastUv = point;
+  state.mapsDirty = true;
+  _refreshPaintOutputs(state, false);
+}
+
+function _paintHit(event) {
+  const state = E.texturePaint;
+  if (!state?.active) return null;
+  mouseToNDC(event);
+  _ray.setFromCamera(_ndcM, E.camera);
+  return _ray.intersectObjects(state.meshes, false).find(hit => hit.uv) || null;
+}
+
+function _canvasPng(canvas) { return canvas.toDataURL('image/png'); }
+
+function _resizePaintSession(state, resolution) {
+  if (!state || resolution === state.resolution) return;
+  for (const canvas of [...Object.values(state.layers), ...Object.values(state.outputs), state.baseNormal]) {
+    const copy = _makePaintCanvas(canvas.width);
+    copy.getContext('2d').drawImage(canvas, 0, 0);
+    canvas.width = canvas.height = resolution;
+    canvas.getContext('2d').drawImage(copy, 0, 0, resolution, resolution);
+  }
+  state.resolution = resolution;
+  state.mapsDirty = true;
+  _refreshPaintOutputs(state, true);
+}
+
+async function saveTexturePaintMaps() {
+  const state = E.texturePaint;
+  if (!state?.active) return;
+  if (!hasElectronMethod('saveTexture')) { setStatus('Generated texture saving is unavailable in this editor mode'); return; }
+  _refreshPaintOutputs(state, true);
+  const obj = state.obj;
+  const prefix = (obj.userData.label || `obj_${obj.userData.editorId}`).replace(/[^a-z0-9_-]/gi, '_');
+  const current = _paintRefsForObject(obj);
+  const refs = {
+    diffuse: current.diffuse || `${prefix}_paint_diffuse`, normal: current.normal || `${prefix}_paint_normal`,
+    roughness: current.roughness || `${prefix}_paint_roughness`, metalness: current.metalness || `${prefix}_paint_metalness`,
+    bump: current.bump || `${prefix}_paint_bump`,
+  };
+  const layerRefs = {
+    diffuse: `${prefix}_paint_layer_diffuse`, roughness: `${prefix}_paint_layer_roughness`,
+    metalness: `${prefix}_paint_layer_metalness`, bump: `${prefix}_paint_layer_bump`,
+  };
+  setStatus('Saving painted texture maps...');
+  const saves = [
+    ...Object.entries(refs).map(([key, name]) => invokeElectron('saveTexture', 'Paint map save', `${name}.png`, _canvasPng(state.outputs[key]))),
+    ...Object.entries(layerRefs).map(([key, name]) => invokeElectron('saveTexture', 'Paint layer save', `${name}.png`, _canvasPng(state.layers[key]))),
+    invokeElectron('saveTexture', 'Paint normal base save', `${prefix}_paint_base_normal.png`, _canvasPng(state.baseNormal)),
+  ];
+  const results = await Promise.all(saves);
+  if (results.some(result => result == null)) { setStatus('One or more painted maps failed to save'); return; }
+  pushUndo();
+  if (obj.userData.primType === 'model') {
+    obj.userData.modelMaps = { ...(obj.userData.modelMaps || {}), ...refs };
+    obj.userData.modelMapRes = { ...(obj.userData.modelMapRes || {}), diffuse: state.resolution, normal: state.resolution, roughness: state.resolution, metalness: state.resolution, bump: state.resolution };
+    refreshModelMapsPanel(obj);
+  } else {
+    const existing = getFaceConfig(obj, 'all') || makeFaceTexConfig(null);
+    existing.name = refs.diffuse;
+    existing.normalMap = refs.normal;
+    existing.roughnessMap = refs.roughness;
+    existing.metalnessMap = refs.metalness;
+    existing.bumpMap = refs.bump;
+    existing.bumpScale = 1;
+    obj.userData.faceTextures = { ...(obj.userData.faceTextures || {}), all: existing };
+    refreshTexPanel(obj);
+  }
+  obj.userData.texturePaint = { resolution: state.resolution, layers: layerRefs, baseNormal: `${prefix}_paint_base_normal` };
+  state.mapsDirty = false;
+  await refreshTextureList();
+  markDirty();
+  setStatus(`Saved painted maps for "${obj.name}" and updated the right-panel map entries`);
+}
+
+function setupTexturePaintUI() {
+  const viewport = document.getElementById('viewport');
+  document.getElementById('btn-paint-toggle')?.addEventListener('click', startTexturePaint);
+  document.getElementById('btn-paint-brush')?.addEventListener('click', () => {
+    if (!E.texturePaint) return; E.texturePaint.tool = 'brush';
+    document.getElementById('btn-paint-brush').classList.add('active'); document.getElementById('btn-paint-erase').classList.remove('active');
+  });
+  document.getElementById('btn-paint-erase')?.addEventListener('click', () => {
+    if (!E.texturePaint) return; E.texturePaint.tool = 'erase';
+    document.getElementById('btn-paint-erase').classList.add('active'); document.getElementById('btn-paint-brush').classList.remove('active');
+  });
+  const size = document.getElementById('paint-size'), sizeNumber = document.getElementById('paint-size-number');
+  size?.addEventListener('input', () => { if (sizeNumber) sizeNumber.value = size.value; });
+  sizeNumber?.addEventListener('input', () => { if (size) size.value = Math.max(1, Math.min(256, parseFloat(sizeNumber.value) || 1)); });
+  document.getElementById('paint-resolution')?.addEventListener('change', event => {
+    if (E.texturePaint) _resizePaintSession(E.texturePaint, parseInt(event.target.value) || 512);
+  });
+  for (const channel of ['roughness','metalness','height']) {
+    const input = document.getElementById(`paint-${channel}`), output = document.getElementById(`paint-${channel}-value`);
+    input?.addEventListener('input', () => { if (output) output.textContent = Number(input.value).toFixed(2).replace(/^0/, ''); });
+  }
+  document.getElementById('btn-paint-undo')?.addEventListener('click', async () => {
+    const state = E.texturePaint, snapshot = state?.undo.pop();
+    if (state && snapshot) await _restorePaintSnapshot(state, snapshot);
+  });
+  document.getElementById('btn-paint-clear')?.addEventListener('click', () => {
+    const state = E.texturePaint; if (!state) return; _paintSnapshot(state);
+    Object.values(state.layers).forEach(canvas => canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height));
+    state.mapsDirty = true; _refreshPaintOutputs(state, true); markDirty();
+  });
+  document.getElementById('btn-paint-save')?.addEventListener('click', saveTexturePaintMaps);
+  viewport.addEventListener('mousedown', event => {
+    const state = E.texturePaint; if (!state?.active || event.button !== 0) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const hit = _paintHit(event); if (!hit) return;
+    _paintSnapshot(state); state.painting = true; state.lastUv = null; _paintAtUv(state, hit.uv, false);
+  });
+  viewport.addEventListener('mousemove', event => {
+    const state = E.texturePaint; if (!state?.active || !state.painting) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const hit = _paintHit(event); if (hit) _paintAtUv(state, hit.uv, true); else state.lastUv = null;
+  });
+  window.addEventListener('mouseup', event => {
+    const state = E.texturePaint; if (!state?.active || event.button !== 0) return;
+    if (state.painting) { state.painting = false; state.lastUv = null; _refreshPaintOutputs(state, true); markDirty(); }
   });
 }
 
@@ -5866,6 +6271,138 @@ function _updatePivotDot() {
   dot.visible = true;
 }
 
+function _buildDrawnCutObject(entry) {
+  const params = entry.geomParams || {};
+  const points = (params.points || []).map(point => new THREE.Vector3(...point));
+  const normals = (params.normals || []).map(normal => new THREE.Vector3(...normal).normalize());
+  if (!points.length) return null;
+  const width = Math.max(0.02, params.width || 0.35);
+  const depth = Math.max(0.02, params.depth || 1);
+  const group = new THREE.Group();
+  const material = new THREE.MeshStandardMaterial({ color: 0xff3344 });
+  const stamps = [];
+  for (let index = 0; index < points.length; index++) {
+    if (index === 0) stamps.push({ point: points[index], normal: normals[index] || new THREE.Vector3(0, 1, 0) });
+    else {
+      const previous = points[index - 1], current = points[index];
+      const previousNormal = normals[index - 1] || normals[index] || new THREE.Vector3(0, 1, 0);
+      const currentNormal = normals[index] || previousNormal;
+      const count = Math.max(1, Math.ceil(previous.distanceTo(current) / Math.max(0.02, width * 0.45)));
+      for (let step = 1; step <= count; step++) {
+        const t = step / count;
+        stamps.push({
+          point: previous.clone().lerp(current, t),
+          normal: previousNormal.clone().lerp(currentNormal, t).normalize(),
+        });
+      }
+    }
+  }
+  stamps.slice(0, 96).forEach(({ point, normal }) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, width, depth), material);
+    mesh.position.copy(point).addScaledVector(normal, -depth * 0.5 + width * 0.1);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    group.add(mesh);
+  });
+  group.userData.primType = 'drawn-cut';
+  group.userData.geomParams = JSON.parse(JSON.stringify(params));
+  applyEntryTransform(group, entry);
+  return group;
+}
+
+function beginCsgDraw() {
+  const edit = E.csgEdit;
+  if (!E.cutMode || !edit?.ready) return;
+  edit.drawMode = !edit.drawMode;
+  edit.drawPoints = [];
+  edit.drawNormals = [];
+  document.getElementById('btn-cut-draw').classList.toggle('active', edit.drawMode);
+  document.getElementById('cut-draw-hint').style.display = edit.drawMode ? '' : 'none';
+  setStatus(edit.drawMode ? 'Draw cutter active - drag on the cut target surface' : 'Draw cutter cancelled');
+}
+
+function _finishCsgDraw() {
+  const edit = E.csgEdit;
+  if (!edit?.drawing) return;
+  edit.drawing = false;
+  if (edit.drawLine) { E.scene.remove(edit.drawLine); edit.drawLine.geometry?.dispose(); edit.drawLine.material?.dispose(); edit.drawLine = null; }
+  if (edit.drawPoints.length < 2) return;
+  const center = new THREE.Box3().setFromPoints(edit.drawPoints).getCenter(new THREE.Vector3());
+  const entry = {
+    type: 'drawn-cut', pos: center.toArray(), rot: [0, 0, 0], size: [1, 1, 1], color: '#ff3344',
+    geomParams: {
+      points: edit.drawPoints.map(point => point.clone().sub(center).toArray()),
+      normals: edit.drawNormals.map(normal => normal.toArray()),
+      width: Math.max(0.05, parseFloat(document.getElementById('cut-draw-width')?.value) || 0.35),
+      depth: Math.max(0.05, parseFloat(document.getElementById('cut-draw-depth')?.value) || 1),
+    },
+  };
+  const proxy = _buildDrawnCutObject(entry);
+  if (!proxy) return;
+  _prepareCutterProxy(proxy, entry);
+  _syncCsgRecipeFromProxies();
+  selectObj(proxy);
+  updateSceneList();
+  scheduleCsgRebuild();
+  edit.drawMode = false;
+  document.getElementById('btn-cut-draw').classList.remove('active');
+  document.getElementById('cut-draw-hint').style.display = 'none';
+  E._suppressViewportClick = true;
+}
+
+function _replaceDrawnCutter(proxy) {
+  const edit = E.csgEdit;
+  if (!edit || !proxy?.userData.isCsgCutterProxy || proxy.userData.primType !== 'drawn-cut') return;
+  const entry = _entryFromCutterProxy(proxy);
+  entry.geomParams.width = Math.max(0.05, parseFloat(document.getElementById('cut-draw-width')?.value) || entry.geomParams.width);
+  entry.geomParams.depth = Math.max(0.05, parseFloat(document.getElementById('cut-draw-depth')?.value) || entry.geomParams.depth);
+  const replacement = _buildDrawnCutObject(entry);
+  if (!replacement) return;
+  const index = edit.proxies.indexOf(proxy);
+  if (index >= 0) edit.proxies.splice(index, 1);
+  E.placedGroup.remove(proxy);
+  _prepareCutterProxy(replacement, entry);
+  selectObj(replacement);
+  _syncCsgRecipeFromProxies();
+  updateSceneList();
+  scheduleCsgRebuild();
+}
+
+function setupCsgDrawUI() {
+  const viewport = document.getElementById('viewport');
+  document.getElementById('btn-cut-draw')?.addEventListener('click', beginCsgDraw);
+  for (const id of ['cut-draw-width', 'cut-draw-depth']) {
+    const input = document.getElementById(id);
+    input?.addEventListener('focus', () => { if (E.selected?.userData.primType === 'drawn-cut') pushUndo(); });
+    input?.addEventListener('input', () => { if (E.selected?.userData.primType === 'drawn-cut') _replaceDrawnCutter(E.selected); });
+  }
+  viewport.addEventListener('mousedown', event => {
+    const edit = E.csgEdit;
+    if (!E.cutMode || !edit?.drawMode || event.button !== 0) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    mouseToNDC(event); _ray.setFromCamera(_ndcM, E.camera);
+    const meshes = []; edit.result.traverse(child => { if (child.isMesh && !child.userData.isEditorHelper) meshes.push(child); });
+    const hit = _ray.intersectObjects(meshes, false)[0]; if (!hit?.face) return;
+    pushUndo(); edit.drawing = true; edit.drawPoints = [hit.point.clone()];
+    edit.drawNormals = [hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize()];
+  });
+  viewport.addEventListener('mousemove', event => {
+    const edit = E.csgEdit;
+    if (!edit?.drawing) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    mouseToNDC(event); _ray.setFromCamera(_ndcM, E.camera);
+    const meshes = []; edit.result.traverse(child => { if (child.isMesh && !child.userData.isEditorHelper) meshes.push(child); });
+    const hit = _ray.intersectObjects(meshes, false)[0]; if (!hit?.face) return;
+    const width = Math.max(0.05, parseFloat(document.getElementById('cut-draw-width')?.value) || 0.35);
+    if (edit.drawPoints.at(-1).distanceTo(hit.point) < width * 0.35 || edit.drawPoints.length >= 96) return;
+    edit.drawPoints.push(hit.point.clone());
+    edit.drawNormals.push(hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize());
+    if (edit.drawLine) E.scene.remove(edit.drawLine);
+    edit.drawLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(edit.drawPoints), new THREE.LineBasicMaterial({ color: 0xff3344, depthTest: false }));
+    edit.drawLine.renderOrder = 999; E.scene.add(edit.drawLine);
+  });
+  window.addEventListener('mouseup', event => { if (event.button === 0) _finishCsgDraw(); });
+}
+
 async function beginCut() {
   if (!E.selected || E.selected.userData.isRef) {
     setStatus('Select the object whose cutters you want to edit');
@@ -5893,6 +6430,9 @@ async function beginCut() {
     rebuildTimer: null,
     rebuilding: null,
     ready: false,
+    drawMode: false,
+    drawing: false,
+    drawLine: null,
   };
   document.getElementById('cut-hint').style.display = '';
   document.getElementById('btn-cut').classList.add('active');
@@ -5926,6 +6466,7 @@ function cancelCut(status = 'Cutter editing finished') {
   const edit = E.csgEdit;
   if (edit?.rebuildTimer) clearTimeout(edit.rebuildTimer);
   if (edit) {
+    if (edit.drawLine) { E.scene.remove(edit.drawLine); edit.drawLine.geometry?.dispose(); edit.drawLine.material?.dispose(); }
     _syncCsgRecipeFromProxies();
     edit.proxies.forEach(proxy => E.placedGroup.remove(proxy));
   }
@@ -5936,6 +6477,8 @@ function cancelCut(status = 'Cutter editing finished') {
   document.getElementById('cut-hint').style.display = 'none';
   document.getElementById('btn-cut').classList.remove('active');
   document.getElementById('btn-cut').textContent = 'Edit Cutters...';
+  document.getElementById('btn-cut-draw')?.classList.remove('active');
+  const drawHint = document.getElementById('cut-draw-hint'); if (drawHint) drawHint.style.display = 'none';
   if (result?.parent === E.placedGroup) selectObj(result);
   updateSceneList();
   setStatus(status);
@@ -6015,12 +6558,12 @@ async function rebuildCsgEdit() {
     let brushA = _meshToBrush(edit.baseObj);
     if (!brushA) throw new Error('base object has no mesh geometry');
     for (const proxy of edit.proxies) {
-      const brushB = _meshToBrush(proxy);
-      if (!brushB) continue;
-      brushA.updateMatrixWorld(true);
-      brushB.updateMatrixWorld(true);
-      brushA = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
-      brushA.updateMatrixWorld(true);
+      for (const brushB of _cutterBrushes(proxy)) {
+        brushA.updateMatrixWorld(true);
+        brushB.updateMatrixWorld(true);
+        brushA = E.csgEvaluator.evaluate(brushA, brushB, SUBTRACTION);
+        brushA.updateMatrixWorld(true);
+      }
     }
     brushA.geometry.computeBoundingBox();
     const center = new THREE.Vector3();
@@ -6152,6 +6695,14 @@ function _meshToBrush(obj) {
   return brush;
 }
 
+function _cutterBrushes(obj) {
+  if (obj?.userData?.primType === 'drawn-cut') {
+    return obj.children.filter(child => child.isMesh).map(child => _meshToBrush(child)).filter(Boolean);
+  }
+  const brush = _meshToBrush(obj);
+  return brush ? [brush] : [];
+}
+
 // Merge multiple meshes into a single BufferGeometry, transforming each into world space.
 function mergeGeometriesWorldSpace(meshes) {
   const posArrays  = [], normArrays = [], uvArrays = [], idxArrays = [];
@@ -6267,15 +6818,15 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
   for (const cutEntry of (recipe.cutters || [])) {
     const cutObj = await _buildEntryObj(cutEntry, gltfLoader, fbxLoader);
     if (!cutObj) continue;
-    const brushB = _meshToBrush(cutObj);
-    if (!brushB) continue;
-    brushA.updateMatrixWorld(true);
-    brushB.updateMatrixWorld(true);
-    try {
-      brushA = evaluator.evaluate(brushA, brushB, SUBTRACTION);
+    for (const brushB of _cutterBrushes(cutObj)) {
       brushA.updateMatrixWorld(true);
-    } catch (err) {
-      console.warn('CSG evaluate failed for cutter, skipping:', err);
+      brushB.updateMatrixWorld(true);
+      try {
+        brushA = evaluator.evaluate(brushA, brushB, SUBTRACTION);
+        brushA.updateMatrixWorld(true);
+      } catch (err) {
+        console.warn('CSG evaluate failed for cutter, skipping:', err);
+      }
     }
   }
 
@@ -6306,6 +6857,7 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
     csgRecipe:  recipe,
   };
   result.name = entry.label || ('CSG_' + entry.id);
+  if (entry.texturePaint) result.userData.texturePaint = entry.texturePaint;
   if (entry.states?.length)  { result.userData.states = entry.states; result.userData.currentState = 0; }
   if (entry.links?.length)     result.userData.links  = _normalizeLinks(entry.links);
   if (entry.noSelfInteract)    result.userData.noSelfInteract = true;
@@ -6342,6 +6894,7 @@ async function spawnCsgResult(entry, gltfLoader, fbxLoader) {
 
 // Build a temporary mesh from a recipe entry (for CSG source geometry)
 async function _buildEntryObj(e, gltfLoader, fbxLoader) {
+  if (e.type === 'drawn-cut') return _buildDrawnCutObject(e);
   if (e.type === 'csg-result' && e.csgRecipe) {
     const mesh = await spawnCsgResult({ ...e, id: e.id ?? -1 }, gltfLoader, fbxLoader);
     if (mesh) E.placedGroup.remove(mesh);
@@ -7684,6 +8237,8 @@ function _populateVarSelect(selectEl, currentVal) {
 }
 
 function setupUI() {
+  setupTexturePaintUI();
+  setupCsgDrawUI();
   // Links panel — "+ Link" button
   document.getElementById('btn-add-link')?.addEventListener('click', () => {
     if (E.linkMode) cancelLink();
@@ -8341,7 +8896,7 @@ function setupUI() {
   bindLightProp('light-decay',     'decay');
 
   // ─── Model maps panel wiring ──────────────────────────────────────────────
-  ['diffuse','normal','roughness','metalness'].forEach(slot => {
+  ['diffuse','normal','roughness','metalness','bump'].forEach(slot => {
     document.getElementById(`btn-mmap-import-${slot}`)?.addEventListener('click', async () => {
       const name = await invokeElectron('importTexture', 'Texture import');
       if (!name) return;
@@ -8404,6 +8959,16 @@ function setupUI() {
     setStatus(`Roughness map "${name}" imported`);
   });
 
+  document.getElementById('btn-import-metalness')?.addEventListener('click', async () => {
+    const name = await invokeElectron('importTexture', 'Texture import');
+    if (!name) return;
+    await refreshTextureList();
+    const el = document.getElementById('tex-metalness-map');
+    if (el) el.value = name;
+    applyCurrentFaceConfig();
+    setStatus(`Metalness map "${name}" imported`);
+  });
+
   // Face dropdown
   document.getElementById('tex-face')?.addEventListener('change', e => {
     const val = e.target.value;
@@ -8453,6 +9018,11 @@ function setupUI() {
     if (el) el.value = '';
     applyCurrentFaceConfig();
   });
+  document.getElementById('btn-clear-metalness')?.addEventListener('click', () => {
+    const el = document.getElementById('tex-metalness-map');
+    if (el) el.value = '';
+    applyCurrentFaceConfig();
+  });
 
   document.getElementById('btn-import-bump')?.addEventListener('click', async () => {
     const name = await invokeElectron('importTexture', 'Texture import');
@@ -8472,6 +9042,7 @@ function setupUI() {
   // Normal/roughness/bump map inputs trigger applyCurrentFaceConfig on change
   document.getElementById('tex-normal-map')?.addEventListener('change', applyCurrentFaceConfig);
   document.getElementById('tex-roughness-map')?.addEventListener('change', applyCurrentFaceConfig);
+  document.getElementById('tex-metalness-map')?.addEventListener('change', applyCurrentFaceConfig);
   document.getElementById('tex-bump-map')?.addEventListener('change', applyCurrentFaceConfig);
   document.getElementById('tex-bump-scale')?.addEventListener('change', applyCurrentFaceConfig);
 
@@ -9285,6 +9856,12 @@ function syncTriggerVisibility() {
 function setupKeys() {
   window.addEventListener('keydown', e => {
     if (e.ctrlKey && e.code === 'KeyS')                         { e.preventDefault(); saveLevel(); return; }
+    if (e.ctrlKey && !e.shiftKey && e.code === 'KeyZ' && E.texturePaint?.undo.length) {
+      e.preventDefault();
+      _restorePaintSnapshot(E.texturePaint, E.texturePaint.undo.pop());
+      setStatus('Texture paint stroke undone');
+      return;
+    }
     if (e.ctrlKey && !e.shiftKey && e.code === 'KeyZ')          { e.preventDefault(); undo(); return; }
     if (e.ctrlKey && (e.shiftKey && e.code === 'KeyZ' || e.code === 'KeyY')) { e.preventDefault(); redo(); return; }
 
@@ -9317,6 +9894,7 @@ function setupKeys() {
     }
 
     if (e.code === 'Escape') {
+      if (E.texturePaint?.active) { stopTexturePaint(); return; }
       if (_rulerState.active) { _rulerExit(); return; }
       if (E.faceModeActive)  { exitFaceMode(); return; }
       if (E.facePickMode){ cancelFacePick(); return; }
@@ -9523,6 +10101,8 @@ function setupMouse() {
 
   vp.addEventListener('click', e => {
     if (e.button !== 0) return;
+    if (E._suppressViewportClick) { E._suppressViewportClick = false; return; }
+    if (E.texturePaint?.active) return;
 
     // Placement commit
     if (E.placingType) {

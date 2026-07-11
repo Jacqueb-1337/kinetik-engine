@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electron', {
 
   listTextures:   ()           => ipcRenderer.invoke('list-textures'),
   importTexture:  ()           => ipcRenderer.invoke('import-texture'),
+  saveTexture:    (name, dataUrl) => ipcRenderer.invoke('save-texture', { name, dataUrl }),
 
   listSounds:     ()           => ipcRenderer.invoke('list-sounds'),
   importSound:    ()           => ipcRenderer.invoke('import-sound'),

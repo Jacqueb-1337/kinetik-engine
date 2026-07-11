@@ -1,6 +1,6 @@
 {
   "name": "kinetik-engine",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "description": "Kinetik engine and project initializer for Three.js games",
   "type": "module",
   "main": "./index.js",

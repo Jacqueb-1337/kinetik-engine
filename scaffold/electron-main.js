@@ -221,6 +221,15 @@ ipcMain.handle('import-texture', async () => {
   return name.replace(/\.[^.]+$/, '');
 });
 
+ipcMain.handle('save-texture', (_, { name, dataUrl }) => {
+  const safe = path.basename(String(name || 'paint.png')).replace(/[^a-z0-9_.-]/gi, '_');
+  const filename = safe.toLowerCase().endsWith('.png') ? safe : safe + '.png';
+  const match = String(dataUrl || '').match(/^data:image\/png;base64,(.+)$/);
+  if (!match) throw new Error('Generated texture must be a PNG data URL');
+  fs.writeFileSync(path.join(texturesDir, filename), Buffer.from(match[1], 'base64'));
+  return filename.replace(/\.png$/i, '');
+});
+
 // ── Sounds ────────────────────────────────────────────────────────────────────
 
 ipcMain.handle('list-sounds', () => {
