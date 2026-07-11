@@ -74,7 +74,7 @@ function resolveSourcePath(scaffoldRoot, from) {
 export async function initProject(options = {}) {
   const scaffoldRoot = options.scaffoldRoot || DEFAULT_SCAFFOLD_DIR;
   const targetRoot = options.targetRoot || resolveDefaultTargetRoot();
-  const engineSpec = options.engineSpec || '^0.1.33';
+  const engineSpec = options.engineSpec || '^0.1.34';
   const overwrite = !!options.overwrite;
 
   let created = 0;

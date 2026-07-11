@@ -33,3 +33,10 @@ assert.match(source, /baseline\.values\[index\] \* Math\.max\(0\.001, value\)/, 
 assert.match(source, /batchTargets\(\)\.forEach\(obj => \{ obj\.userData\.collidable = event\.target\.checked;/, 'batch collision must update every selected object');
 assert.match(source, /function pushBatchUndo\(\).*pushUndo\(\)/, 'batch property edits must create undo snapshots');
 console.log('Multi-selection batch properties are capability-checked');
+
+assert.match(source, /entry\.baseColorOverride = true/, 'explicit model base colors must be serialized');
+assert.match(source, /function _applyModelBaseColor\(root, entry\)/, 'editor model loading must restore base colors');
+assert.match(source, /material\?\.color && !material\.map/, 'base color must only affect untextured model materials');
+assert.match(levelLoaderSource, /function applyModelBaseColor\(root, entry\)/, 'runtime model loading must restore base colors');
+assert.match(levelLoaderSource, /entry\.baseColorOverride[\s\S]*?applyModelBaseColor\(root, entry\)/, 'runtime must apply explicit model base-color overrides');
+console.log('Untextured model base colors persist through editor and runtime loading');

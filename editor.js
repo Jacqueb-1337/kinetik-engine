@@ -655,6 +655,7 @@ function levelToJSON(options = {}) {
     const _opacity = getMeshOpacity(obj);
     if (_opacity < 1) entry.opacity = +_opacity.toFixed(3);
     if (obj.userData.primType === 'model') entry.modelPath = obj.userData.modelPath;
+    if (obj.userData.primType === 'model' && obj.userData._baseColor) entry.baseColorOverride = true;
     if (obj.userData.primType === 'actor-spawn') {
       entry.actorModel      = obj.userData.actorModel;
       entry.spawnRadius     = obj.userData.spawnRadius ?? 0;
@@ -933,6 +934,25 @@ function clearPlaced() {
   updateProps(null);
 }
 
+function _applyModelBaseColor(root, entry) {
+  const hex = entry.color;
+  if (!hex) return;
+  root.userData._baseColor = hex;
+  const hasGlobalTexture = !!entry.masterTexture || !!entry.modelMaps?.diffuse;
+  root.traverse(child => {
+    if (!child.isMesh || hasGlobalTexture) return;
+    const override = entry.meshOverrides?.[child.name || child.uuid];
+    if (override?.texture) return;
+    const materials = Array.isArray(child.material) ? child.material : (child.material ? [child.material] : []);
+    materials.forEach(material => {
+      if (material?.color && !material.map) {
+        material.color.set(hex);
+        material.needsUpdate = true;
+      }
+    });
+  });
+}
+
 async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
   return new Promise(resolve => {
     const ext = (entry.modelPath || '').split('.').pop().toLowerCase();
@@ -963,6 +983,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         if (entry.modelMapRes)    root.userData.modelMapRes = entry.modelMapRes;
         if (entry.modelMaps)      { root.userData.modelMaps = entry.modelMaps; _applyModelMapsToObj(root, entry.modelMaps); }
         _applyStoryData(root, entry);
+        if (entry.baseColorOverride || (entry.color && entry.color.toLowerCase() !== '#aaaacc')) _applyModelBaseColor(root, entry);
         E.placedGroup.add(root);
         resolve(root);
       };
@@ -1115,6 +1136,7 @@ async function loadModelIntoPlaced(entry, gltfLoader, fbxLoader) {
         root.userData.invertNormals = true;
         root.traverse(c => { if (c.isMesh && c.geometry) _flipGeometryNormals(c.geometry); });
       }
+      if (entry.baseColorOverride || (entry.color && entry.color.toLowerCase() !== '#aaaacc')) _applyModelBaseColor(root, entry);
       E.placedGroup.add(root);
       // FBXLoader loads textures asynchronously internally — re-apply colorSpace at increasing
       // delays to catch late-loading textures regardless of disk/decode speed
@@ -2672,6 +2694,8 @@ function _applyColor(obj, hex) {
       if (c.isMesh && c.material) { const mats = Array.isArray(c.material) ? c.material : [c.material]; mats.forEach(m => { if (m.color) m.color.set(col); }); }
       if ((c.isLine || c.isLineSegments) && c.material) c.material.color.set(col);
     });
+  } else if (obj.userData.primType === 'model') {
+    _applyModelBaseColor(obj, { ...obj.userData, color: hex });
   } else {
     obj.userData._baseColor = hex;
     if (obj.userData.faceTextures) {
@@ -2697,6 +2721,17 @@ function _batchMaterials(obj) {
   return _batchMeshes(obj).flatMap(mesh => Array.isArray(mesh.material) ? mesh.material : (mesh.material ? [mesh.material] : []));
 }
 
+function _canEditModelBaseColor(obj) {
+  if (obj.userData.primType !== 'model') return true;
+  if (obj.userData.masterTexture || obj.userData.modelMaps?.diffuse) return false;
+  return _batchMeshes(obj).some(mesh => {
+    const override = obj.userData.meshOverrides?.[mesh.name || mesh.uuid];
+    if (override?.texture) return false;
+    const materials = Array.isArray(mesh.material) ? mesh.material : (mesh.material ? [mesh.material] : []);
+    return materials.some(material => material?.color && !material.map);
+  });
+}
+
 function _commonBatchValue(values, epsilon = 0) {
   if (!values.length) return null;
   const first = values[0];
@@ -2709,7 +2744,7 @@ function _batchDisplayColor(obj) {
   if (isLightType(obj.userData.primType)) return obj.userData.lightColor || '#ffffff';
   if (obj.userData.primType === 'image-model') return obj.userData.wallColor || '#888888';
   if (obj.userData._baseColor) return obj.userData._baseColor;
-  const material = _batchMaterials(obj).find(item => item?.color);
+  const material = _batchMaterials(obj).find(item => item?.color && (obj.userData.primType !== 'model' || !item.map));
   return material?.color ? '#' + material.color.getHexString() : null;
 }
 
@@ -2724,7 +2759,7 @@ function updateBatchProps(objects = E.selectedObjects) {
     }
   }
 
-  const colorSupported = objects.every(obj => !isTriggerType(obj.userData.primType) && _batchDisplayColor(obj));
+  const colorSupported = objects.every(obj => !isTriggerType(obj.userData.primType) && _canEditModelBaseColor(obj) && _batchDisplayColor(obj));
   const opacitySupported = objects.every(obj => !isLightType(obj.userData.primType) &&
     !isTriggerType(obj.userData.primType) && !isZombieType(obj.userData.primType) &&
     !isPlayerSpawnType(obj.userData.primType) && _batchMaterials(obj).length);
@@ -2816,6 +2851,8 @@ function updateProps(obj) {
       const el = document.getElementById(id); if (el) { el.value = ''; el.disabled = true; }
     });
     if (colEl)    { colEl.disabled    = true; }
+    const colorHexEl = document.getElementById('obj-color-hex');
+    if (colorHexEl) colorHexEl.disabled = true;
     if (opacityEl) { opacityEl.disabled = true; opacityEl.value = '1'; }
     if (chkC)    { chkC.disabled    = true; }
     if (chkS)    { chkS.disabled    = true; }
@@ -2899,19 +2936,23 @@ function updateProps(obj) {
     const matColor = Array.isArray(obj.material) ? obj.material[0]?.color : obj.material?.color;
     if (isLight) {
       colEl.disabled = false;
+      if (hexEl) hexEl.disabled = false;
       colEl.value = obj.userData.lightColor || '#ffffff';
       if (hexEl && document.activeElement !== hexEl) hexEl.value = obj.userData.lightColor || '#ffffff';
     } else if (isTrigger) {
       colEl.disabled = true;
+      if (hexEl) hexEl.disabled = true;
     } else if (isImageModel) {
       colEl.disabled = false;
+      if (hexEl) hexEl.disabled = false;
       const wc = obj.userData.wallColor || '#888888';
       colEl.value = wc;
       if (hexEl && document.activeElement !== hexEl) hexEl.value = wc;
     } else {
-      const displayColor = obj.userData._baseColor
-        ?? (Array.isArray(obj.material) ? ('#' + (obj.material[0]?.color?.getHexString() ?? 'aaaacc')) : (obj.material?.color ? '#' + obj.material.color.getHexString() : null));
-      colEl.disabled = !displayColor;
+      const displayColor = _batchDisplayColor(obj);
+      const canEditColor = _canEditModelBaseColor(obj) && !!displayColor;
+      colEl.disabled = !canEditColor;
+      if (hexEl) hexEl.disabled = !canEditColor;
       if (displayColor) {
         colEl.value = displayColor;
         if (hexEl && document.activeElement !== hexEl) hexEl.value = displayColor;
@@ -6320,6 +6361,7 @@ async function _buildEntryObj(e, gltfLoader, fbxLoader) {
         root.position.set(...e.pos);
         root.rotation.set(e.rot[0]*RAD, e.rot[1]*RAD, e.rot[2]*RAD);
         root.scale.set(...e.size);
+        if (e.baseColorOverride || (e.color && e.color.toLowerCase() !== '#aaaacc')) _applyModelBaseColor(root, e);
         root.updateMatrixWorld(true);
         resolve(root);
       }, undefined, () => resolve(null));

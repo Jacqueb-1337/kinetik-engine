@@ -612,6 +612,23 @@ function spawnLight(entry) {
   return light;
 }
 
+function applyModelBaseColor(root, entry) {
+  if (!entry.color) return;
+  const hasGlobalTexture = !!entry.masterTexture || !!entry.modelMaps?.diffuse;
+  root.traverse(child => {
+    if (!child.isMesh || hasGlobalTexture) return;
+    const override = entry.meshOverrides?.[child.name || child.uuid];
+    if (override?.texture) return;
+    const materials = Array.isArray(child.material) ? child.material : (child.material ? [child.material] : []);
+    materials.forEach(material => {
+      if (material?.color && !material.map) {
+        material.color.set(entry.color);
+        material.needsUpdate = true;
+      }
+    });
+  });
+}
+
 function spawnModel(entry) {
   return new Promise(resolve => {
     const ext = (entry.modelPath || '').split('.').pop().toLowerCase();
@@ -735,6 +752,9 @@ function spawnModel(entry) {
             });
           })();
         }
+      }
+      if (entry.baseColorOverride || (entry.color && entry.color.toLowerCase() !== '#aaaacc')) {
+        applyModelBaseColor(root, entry);
       }
       if (entry.doubleSide) {
         root.traverse(c => {
