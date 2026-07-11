@@ -88,6 +88,8 @@ const E = {
   colHelpers:    [],           // BoxHelper list for collision wireframes
 
   selected:      null,        // currently selected placed object (null if ref/none)
+  selectedObjects: [],        // ordered multi-selection; selected is the primary object
+  selectionHelpers: [],       // editor-only boxes around every selected object
   placingType:   null,        // 'box'|'sphere'|'cylinder'|'plane'|'model:<path>' while placing
   ghostMesh:     null,        // semi-transparent placement preview
   floorPlane:    null,        // invisible raycasting floor
@@ -120,6 +122,7 @@ const E = {
   groupPivot:         null,
   groupPivotMembers:  [],
   activeGroupGid:     null,  // gid of current group being transformed
+  multiSelectActive:  false, // groupPivot currently represents selectedObjects
 
   // CSG cut mode
   cutMode:       false,
@@ -217,6 +220,7 @@ async function init() {
       snapToNearestFace(E.groupPivot || E.selected);
     }
     syncPropsFromSelected();
+    E.selectionHelpers.forEach(helper => helper.update());
     E.renderer.render(E.scene, E.camera);
   });
   E.transform.addEventListener('dragging-changed', e => {
@@ -224,7 +228,7 @@ async function init() {
     if (e.value) {
       // Drag started — push undo before transform happens, then record pivot
       // (group transforms push undo in beginGroupTransform, before reparenting)
-      if (E.selected && !E.groupPivot) pushUndo();
+      if (E.selected && (!E.groupPivot || E.multiSelectActive)) pushUndo();
       if (E.selected?.userData.pivotOffset && E.transform.mode === 'rotate') {
         const obj = E.selected;
         const localOffset = new THREE.Vector3().fromArray(obj.userData.pivotOffset);
@@ -238,8 +242,10 @@ async function init() {
         // Re-enter group mode so user can keep dragging without re-pressing G.
         // Finalize to flush world positions, then immediately re-create the pivot.
         const regid = E.activeGroupGid;
+        const multiMembers = E.multiSelectActive ? [...E.selectedObjects] : null;
         finalizeGroupTransform();
         if (regid && E.groups[regid]) beginGroupTransform(regid);
+        else if (multiMembers?.length > 1) beginMultiTransform(multiMembers);
       }
       if (E.transform.mode === 'scale' && E.selected?.userData.faceTextures) {
         _reapplyWorldTiling(E.selected);
@@ -780,6 +786,7 @@ function levelToJSON(options = {}) {
   if (includeEditorUi) {
     out.editorUi = {
       selectedId: E.selected?.userData?.editorId ?? null,
+      selectedIds: E.selectedObjects.map(obj => obj.userData.editorId),
       selectedFace: E.selectedFace,
       groupCollapsed: { ...E.groupCollapsed },
       stateExpanded: [...E._stateExpanded],
@@ -868,6 +875,8 @@ async function loadLevel(name) {
     await Promise.allSettled(promises);
   }
 
+  syncTriggerVisibility();
+
   E.isDirty = false;
   refreshLevelNameDisplay();
   updateSceneList();
@@ -879,7 +888,9 @@ async function loadLevel(name) {
 
 function clearPlaced() {
   E.transform.detach();
+  clearSelectionHelpers();
   E.selected = null;
+  E.selectedObjects = [];
   E.selectedFace = null;
   E._stateExpanded = new Set();
   _clearFaceOverlay('hover');
@@ -889,6 +900,7 @@ function clearPlaced() {
     E.groupPivot = null;
     E.groupPivotMembers = [];
     E.activeGroupGid = null;
+    E.multiSelectActive = false;
   }
   closeModelEditor();
   if (E.linkMode) cancelLink();
@@ -2394,24 +2406,66 @@ function commitPlace(worldPos) {
 }
 
 // â”€â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function selectObj(obj) {
+function clearSelectionHelpers() {
+  E.selectionHelpers.forEach(helper => E.scene.remove(helper));
+  E.selectionHelpers = [];
+}
+
+function updateSelectionHelpers() {
+  clearSelectionHelpers();
+  for (const object of E.selectedObjects) {
+    if (!object.visible) continue;
+    const helper = new THREE.BoxHelper(object, object === E.selected ? 0xff5577 : 0xffb347);
+    helper.userData.isEditorHelper = true;
+    helper.material.depthTest = false;
+    helper.renderOrder = 998;
+    E.scene.add(helper);
+    E.selectionHelpers.push(helper);
+  }
+}
+
+function toggleMultiSelection(obj) {
+  if (!obj || obj.userData.isRef) return;
+  if (E.groupPivot) finalizeGroupTransform(!E.multiSelectActive);
+  const next = E.selectedObjects.length ? [...E.selectedObjects] : (E.selected ? [E.selected] : []);
+  const index = next.indexOf(obj);
+  if (index >= 0) next.splice(index, 1);
+  else next.push(obj);
+  if (!next.length) { deselect(); return; }
+  if (next.length === 1) { selectObj(next[0]); return; }
+
+  E.selectedObjects = next;
+  E.selected = next.at(-1);
+  E.selectedFace = null;
+  if (E.facePickMode) cancelFacePick();
+  if (E.faceModeActive) exitFaceMode();
+  updateFaceHighlight(null, null);
+  updateProps(E.selected);
+  highlightSceneList(E.selected);
+  beginMultiTransform(next);
+}
+
+function selectObj(obj, additive = false) {
+  if (additive) { toggleMultiSelection(obj); return; }
   // If group transform is active, finalize it first so the object being
   // selected is back in E.placedGroup with correct world-space coordinates.
   // But only if the object we're selecting is NOT a member of the current group
   // (clicking a group member from the sidebar should select it individually).
   if (E.groupPivot) {
     const isMember = E.groupPivotMembers.includes(obj);
-    if (!isMember) {
+    if (!isMember || E.multiSelectActive) {
       E.activeGroupGid = null; // suppress re-entry from dragging-changed
-      finalizeGroupTransform();
+      finalizeGroupTransform(!E.multiSelectActive);
     }
   }
-  if (E.selected === obj) return;
+  if (E.selected === obj && E.selectedObjects.length === 1) return;
   E.selected = obj;
+  E.selectedObjects = obj ? [obj] : [];
   E.transform.detach();
   if (obj) E.transform.attach(obj);
   updateProps(obj);
   highlightSceneList(obj);
+  updateSelectionHelpers();
   // Reset face selection when switching objects
   E.selectedFace = null;
   if (E.facePickMode) cancelFacePick();
@@ -2425,8 +2479,11 @@ function selectObj(obj) {
 }
 
 function deselect() {
+  if (E.groupPivot && E.multiSelectActive) finalizeGroupTransform(false);
   E.selected = null;
+  E.selectedObjects = [];
   E.transform.detach();
+  clearSelectionHelpers();
   updateProps(null);
   highlightSceneList(null);
   // Hide pivot dot
@@ -3023,16 +3080,17 @@ function updateSceneList() {
   if (!list) return;
   list.innerHTML = '';
   let n = 0;
-  E.placedGroup.children.forEach(obj => {
+  const sceneObjects = [...E.placedGroup.children, ...(E.groupPivot ? E.groupPivotMembers : [])];
+  sceneObjects.forEach(obj => {
     if (obj.userData.isEditorHelper) return;
     n++;
     const div = document.createElement('div');
-    div.className = 'scene-list-item' + (obj === E.selected ? ' selected' : '');
+    div.className = 'scene-list-item' + (E.selectedObjects.includes(obj) ? ' selected' : '');
     div.textContent = obj.name;
     div.title = obj.name;
-    div.addEventListener('click', () => {
-      selectObj(obj);
-      E.orbit.target.copy(obj.position);
+    div.addEventListener('click', event => {
+      selectObj(obj, event.shiftKey || event.ctrlKey || event.metaKey);
+      E.orbit.target.copy(obj.getWorldPosition(new THREE.Vector3()));
     });
     list.appendChild(div);
   });
@@ -3040,9 +3098,10 @@ function updateSceneList() {
 }
 
 function highlightSceneList(obj) {
-  const placed = E.placedGroup.children.filter(o => !o.userData.isEditorHelper);
+  const placed = [...E.placedGroup.children, ...(E.groupPivot ? E.groupPivotMembers : [])]
+    .filter(o => !o.userData.isEditorHelper);
   document.querySelectorAll('#scene-list .scene-list-item').forEach((el, i) => {
-    el.classList.toggle('selected', placed[i] === obj);
+    el.classList.toggle('selected', E.selectedObjects.includes(placed[i]));
   });
 }
 
@@ -3072,14 +3131,18 @@ function updateGroupsPanel() {
 
     if (!collapsed) {
       [...g.ids].forEach(mid => {
-        const obj = E.placedGroup.children.find(o => o.userData.editorId === mid);
+        const obj = E.placedGroup.children.find(o => o.userData.editorId === mid)
+          ?? E.groupPivotMembers.find(o => o.userData.editorId === mid);
         const row = document.createElement('div');
-        row.className = 'group-entry' + (obj === E.selected ? ' selected' : '');
+        row.className = 'group-entry' + (E.selectedObjects.includes(obj) ? ' selected' : '');
         row.innerHTML = `<span class="ge-name">${escHtml(obj ? obj.name : `(#${mid})`)}</span>
           <button class="ge-rm" title="Remove from group">X</button>`;
         row.addEventListener('click', e => {
           if (e.target.classList.contains('ge-rm')) return;
-          if (obj) { selectObj(obj); E.orbit.target.copy(obj.position); }
+          if (obj) {
+            selectObj(obj, e.shiftKey || e.ctrlKey || e.metaKey);
+            E.orbit.target.copy(obj.getWorldPosition(new THREE.Vector3()));
+          }
         });
         row.querySelector('.ge-rm').addEventListener('click', () => {
           g.ids.delete(mid);
@@ -3095,10 +3158,39 @@ function updateGroupsPanel() {
 }
 
 // â”€â”€â”€ Group transform â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function beginMultiTransform(members = E.selectedObjects) {
+  const valid = [...new Set(members)].filter(obj => obj?.parent === E.placedGroup && !obj.userData.isRef);
+  if (valid.length < 2) return;
+
+  const center = new THREE.Vector3();
+  valid.forEach(obj => center.add(obj.getWorldPosition(new THREE.Vector3())));
+  center.divideScalar(valid.length);
+
+  const pivot = new THREE.Group();
+  pivot.position.copy(center);
+  pivot.name = '__multiSelectPivot__';
+  pivot.userData.isEditorHelper = true;
+  E.scene.add(pivot);
+  pivot.updateMatrixWorld(true);
+  valid.forEach(obj => pivot.attach(obj));
+
+  E.groupPivot = pivot;
+  E.groupPivotMembers = valid;
+  E.activeGroupGid = null;
+  E.multiSelectActive = true;
+  E.transform.detach();
+  E.transform.attach(pivot);
+  updateSelectionHelpers();
+  updateSceneList();
+  updateGroupsPanel();
+  setStatus(`${valid.length} objects selected - Shift/Ctrl+click to change selection`);
+}
+
 function beginGroupTransform(gid) {
   if (!gid || !E.groups[gid]) return;
   pushUndo();
   E.activeGroupGid = gid;
+  E.multiSelectActive = false;
   const members = [...E.groups[gid].ids]
     .map(id => E.placedGroup.children.find(o => o.userData.editorId === id))
     .filter(Boolean);
@@ -3132,16 +3224,18 @@ function beginGroupTransform(gid) {
   setStatus(`Group mode: ${E.groups[gid]?.name || gid} — drag gizmo to move group, G or Esc to exit`);
 }
 
-function finalizeGroupTransform() {
+function finalizeGroupTransform(markChange = true) {
   if (!E.groupPivot) return;
+  const wasMulti = E.multiSelectActive;
   E.activeGroupGid = null;
+  E.multiSelectActive = false;
   // Clear group-mode indicator
   const panel = document.getElementById('right-panel');
   if (panel) panel.classList.remove('grp-mode-active');
   const badge = document.getElementById('grp-mode-badge');
   if (badge) badge.style.display = 'none';
   document.getElementById('btn-move-group')?.classList.remove('active');
-  setStatus('Group mode exited');
+  setStatus(wasMulti ? `${E.selectedObjects.length} objects selected` : 'Group mode exited');
   E.groupPivotMembers.forEach(m => {
     const wp = new THREE.Vector3();
     const wq = new THREE.Quaternion();
@@ -3160,27 +3254,52 @@ function finalizeGroupTransform() {
   E.groupPivotMembers = [];
   E.transform.detach();
   if (E.selected) E.transform.attach(E.selected);
-  markDirty(); updateSceneList();
+  updateSelectionHelpers();
+  if (markChange) markDirty();
+  updateSceneList(); updateGroupsPanel();
 }
 
 // â”€â”€â”€ Clone / Delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function cloneSelected() {
   if (!E.selected || E.selected.userData.isRef) return;
+  const sources = (E.selectedObjects.length ? [...E.selectedObjects] : [E.selected])
+    .filter(obj => obj && !obj.userData.isRef);
   pushUndo();
-  const src = E.selected;
-  const clone = src.clone();
-  const srcUD = src.userData;
-  clone.userData = {
-    ...srcUD,
-    editorId: E.nextId++,
-    label: (srcUD.label || '') + '_copy',
-    states: srcUD.states ? JSON.parse(JSON.stringify(srcUD.states)) : undefined,
-  };
-  clone.position.x += 1;
-  clone.name = src.name + '_copy';
-  E.placedGroup.add(clone);
-  selectObj(clone);
-  updateSceneList(); markDirty();
+  if (E.groupPivot && E.multiSelectActive) finalizeGroupTransform(false);
+  const clonedIds = new Map();
+  const clones = sources.map(src => {
+    const clone = src.clone();
+    const srcUD = src.userData;
+    clone.userData = {
+      ...srcUD,
+      editorId: E.nextId++,
+      label: (srcUD.label || '') + '_copy',
+      states: srcUD.states ? JSON.parse(JSON.stringify(srcUD.states)) : undefined,
+      links: srcUD.links ? JSON.parse(JSON.stringify(srcUD.links)) : undefined,
+    };
+    clone.position.x += 1;
+    clone.name = src.name + '_copy';
+    E.placedGroup.add(clone);
+    clonedIds.set(srcUD.editorId, clone.userData.editorId);
+    for (const group of Object.values(E.groups)) {
+      if (group.ids.has(srcUD.editorId)) group.ids.add(clone.userData.editorId);
+    }
+    return clone;
+  });
+  clones.forEach(clone => {
+    if (!clone.userData.links) return;
+    clone.userData.links = clone.userData.links.map(link => {
+      const replacement = clonedIds.get(link.id);
+      return replacement == null ? link : { ...link, id: replacement };
+    });
+  });
+  if (clones.length > 1) {
+    E.selectedObjects = clones;
+    E.selected = clones.at(-1);
+    updateProps(E.selected);
+    beginMultiTransform(clones);
+  } else if (clones[0]) selectObj(clones[0]);
+  updateSceneList(); updateGroupsPanel(); markDirty();
 }
 
 function cloneGroup(gid) {
@@ -3227,11 +3346,14 @@ function cloneGroup(gid) {
 
 function deleteSelected() {
   if (!E.selected || E.selected.userData.isRef) return;
+  const targets = (E.selectedObjects.length ? [...E.selectedObjects] : [E.selected])
+    .filter(obj => obj && !obj.userData.isRef);
   pushUndo();
-  const id = E.selected.userData.editorId;
-  for (const g of Object.values(E.groups)) g.ids.delete(id);
+  if (E.groupPivot && E.multiSelectActive) finalizeGroupTransform(false);
+  const ids = new Set(targets.map(obj => obj.userData.editorId));
+  for (const g of Object.values(E.groups)) ids.forEach(id => g.ids.delete(id));
   for (const gid of Object.keys(E.groups)) { if (E.groups[gid].ids.size === 0) delete E.groups[gid]; }
-  E.placedGroup.remove(E.selected);
+  targets.forEach(obj => E.placedGroup.remove(obj));
   deselect();
   updateSceneList(); updateGroupsPanel(); markDirty();
 }
@@ -5991,16 +6113,24 @@ async function restoreSnapshot(json) {
     else if (entry.type === 'image-model')     await spawnImageModel(entry);
     else spawnPrimFromEntry(entry);
   }
-  const selectedId = data.editorUi?.selectedId ?? null;
-  if (selectedId != null) {
-    const selectedObj = E.placedGroup.children.find(o => o.userData.editorId === selectedId);
-    if (selectedObj) {
-      selectObj(selectedObj);
-      if (data.editorUi?.selectedFace != null) {
-        E.selectedFace = data.editorUi.selectedFace;
-        updateFaceHighlight(E.selected, E.selectedFace);
-        refreshTexPanel(E.selected);
-      }
+  syncTriggerVisibility();
+  const selectedIds = data.editorUi?.selectedIds?.length
+    ? data.editorUi.selectedIds
+    : (data.editorUi?.selectedId != null ? [data.editorUi.selectedId] : []);
+  const selectedObjects = selectedIds
+    .map(id => E.placedGroup.children.find(object => object.userData.editorId === id))
+    .filter(Boolean);
+  if (selectedObjects.length > 1) {
+    E.selectedObjects = selectedObjects;
+    E.selected = selectedObjects.find(object => object.userData.editorId === data.editorUi?.selectedId) ?? selectedObjects.at(-1);
+    updateProps(E.selected);
+    beginMultiTransform(selectedObjects);
+  } else if (selectedObjects[0]) {
+    selectObj(selectedObjects[0]);
+    if (data.editorUi?.selectedFace != null) {
+      E.selectedFace = data.editorUi.selectedFace;
+      updateFaceHighlight(E.selected, E.selectedFace);
+      refreshTexPanel(E.selected);
     }
   }
   updateSceneList(); updateGroupsPanel(); markDirty();
@@ -8132,10 +8262,7 @@ function setupUI() {
   });
 
   document.getElementById('toggle-triggers-visible')?.addEventListener('change', e => {
-    const visible = e.target.checked;
-    E.placedGroup.traverse(o => {
-      if (isTriggerType(o.userData.primType)) o.visible = visible;
-    });
+    syncTriggerVisibility();
   });
 
   // Actor import
@@ -8662,6 +8789,19 @@ function updateColliderHelpers() {
   });
 }
 
+function syncTriggerVisibility() {
+  const visible = document.getElementById('toggle-triggers-visible')?.checked ?? true;
+  E.placedGroup.traverse(object => {
+    if (isTriggerType(object.userData.primType)) object.visible = visible;
+  });
+  if (E.groupPivot) {
+    E.groupPivot.traverse(object => {
+      if (isTriggerType(object.userData.primType)) object.visible = visible;
+    });
+  }
+  updateSelectionHelpers();
+}
+
 // â”€â”€â”€ Keyboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function setupKeys() {
   window.addEventListener('keydown', e => {
@@ -8680,7 +8820,7 @@ function setupKeys() {
     if (e.ctrlKey && e.code === 'KeyR') { e.preventDefault(); setTransformMode('scale');     return; }
 
     if (e.code === 'KeyG') {
-      if (E.groupPivot) finalizeGroupTransform();
+      if (E.groupPivot) finalizeGroupTransform(!E.multiSelectActive);
       else { const gid = findGroupOfObj(E.selected); if (gid) beginGroupTransform(gid); }
     }
 
@@ -8706,7 +8846,11 @@ function setupKeys() {
       if (E.ropeAnchorMode) { cancelRopeAnchor(); return; }
       if (E.cutMode)     { cancelCut(); return; }
       if (E.placingType) { cancelPlace(); return; }
-      if (E.groupPivot)  { finalizeGroupTransform(); return; }
+      if (E.groupPivot)  {
+        if (E.multiSelectActive) deselect();
+        else finalizeGroupTransform();
+        return;
+      }
       deselect();
     }
     updateTransformSnap();
@@ -9028,12 +9172,12 @@ function setupMouse() {
       while (obj.parent && obj.parent !== E.placedGroup && obj.parent !== E.groupPivot) obj = obj.parent;
       // If group mode is active and this object belongs to the active group, keep group mode
       // (i.e. the click is just acknowledging a group member — don't exit group mode).
-      if (E.groupPivot && E.groupPivotMembers.includes(obj)) {
+      if (E.groupPivot && !E.multiSelectActive && E.groupPivotMembers.includes(obj)) {
         // Stay in group mode; nothing to do
       } else {
-        selectObj(obj);
+        selectObj(obj, e.shiftKey || e.ctrlKey || e.metaKey);
       }
-    } else {
+    } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
       deselect();
     }
   });
