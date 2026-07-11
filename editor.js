@@ -3089,7 +3089,7 @@ function updateSceneList() {
     div.textContent = obj.name;
     div.title = obj.name;
     div.addEventListener('click', event => {
-      selectObj(obj, event.shiftKey || event.ctrlKey || event.metaKey);
+      selectObj(obj, event.ctrlKey || event.metaKey);
       E.orbit.target.copy(obj.getWorldPosition(new THREE.Vector3()));
     });
     list.appendChild(div);
@@ -3140,7 +3140,7 @@ function updateGroupsPanel() {
         row.addEventListener('click', e => {
           if (e.target.classList.contains('ge-rm')) return;
           if (obj) {
-            selectObj(obj, e.shiftKey || e.ctrlKey || e.metaKey);
+            selectObj(obj, e.ctrlKey || e.metaKey);
             E.orbit.target.copy(obj.getWorldPosition(new THREE.Vector3()));
           }
         });
@@ -3183,7 +3183,7 @@ function beginMultiTransform(members = E.selectedObjects) {
   updateSelectionHelpers();
   updateSceneList();
   updateGroupsPanel();
-  setStatus(`${valid.length} objects selected - Shift/Ctrl+click to change selection`);
+  setStatus(`${valid.length} objects selected - Ctrl+click to change selection`);
 }
 
 function beginGroupTransform(gid) {
@@ -9175,7 +9175,7 @@ function setupMouse() {
       if (E.groupPivot && !E.multiSelectActive && E.groupPivotMembers.includes(obj)) {
         // Stay in group mode; nothing to do
       } else {
-        selectObj(obj, e.shiftKey || e.ctrlKey || e.metaKey);
+        selectObj(obj, e.ctrlKey || e.metaKey);
       }
     } else if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
       deselect();

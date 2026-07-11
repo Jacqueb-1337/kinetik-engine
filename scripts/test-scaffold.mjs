@@ -11,7 +11,10 @@ try {
   const editorSetup = path.join(targetRoot, 'src', 'game', 'editorSetup.js');
   assert.ok(fs.existsSync(editorHtml), 'scaffold must include src/editor.html');
   assert.ok(fs.existsSync(editorSetup), 'scaffold must include src/game/editorSetup.js');
-  assert.match(fs.readFileSync(editorHtml, 'utf8'), /game\/editorSetup\.js/);
+  const editorSource = fs.readFileSync(editorHtml, 'utf8');
+  assert.match(editorSource, /game\/editorSetup\.js/);
+  assert.match(editorSource, /Ctrl\+click multi-select/);
+  assert.doesNotMatch(editorSource, /Shift\/Ctrl\+click multi-select/);
   const pkg = JSON.parse(fs.readFileSync(path.join(targetRoot, 'package.json'), 'utf8'));
   assert.ok(pkg.scripts?.editor, 'scaffold package.json must expose npm run editor');
   console.log('Scaffold includes editor HTML, setup module, and editor command');
