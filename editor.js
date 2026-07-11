@@ -5897,7 +5897,6 @@ async function rebuildCsgEdit() {
       E.placedGroup.remove(result);
       return null;
     }
-    E.placedGroup.remove(oldResult);
     result.userData = {
       ...oldResult.userData,
       ...result.userData,
@@ -5906,6 +5905,10 @@ async function rebuildCsgEdit() {
       editorId: oldResult.userData.editorId,
     };
     result.name = oldResult.name;
+    // Insert the replacement before removing the source so the level can never
+    // serialize a frame where neither version of the target exists.
+    E.placedGroup.add(result);
+    E.placedGroup.remove(oldResult);
     edit.result = result;
     E.cutSource = result;
     if (E.selected === oldResult) selectObj(result);

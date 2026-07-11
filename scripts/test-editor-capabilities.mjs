@@ -24,4 +24,5 @@ assert.match(source, /function convertSelectedToCsgCutter\(\)/, 'scene objects m
 assert.match(source, /isCsgCutterProxy/, 'editable cutter proxies must be tracked separately');
 assert.match(source, /isEditorHelper \|\| obj\.userData\.isCsgCutterProxy/, 'temporary cutters must not be saved as scene objects');
 assert.match(source, /function convertSelectedToCsgCutter[\s\S]*?pushUndo\(\)/, 'cutter conversion must create an undo snapshot');
+assert.match(source, /E\.placedGroup\.add\(result\);\s*E\.placedGroup\.remove\(oldResult\);/, 'live CSG replacement must insert the rebuilt target before removing its source');
 console.log('Live editable CSG cutters are capability-checked');
