@@ -15,6 +15,7 @@ try {
   assert.match(editorSource, /game\/editorSetup\.js/);
   assert.match(editorSource, /Ctrl\+click multi-select/);
   assert.doesNotMatch(editorSource, /Shift\/Ctrl\+click multi-select/);
+  assert.match(editorSource, /data-prim="cone"/, 'scaffold editor must expose the cone primitive');
   const pkg = JSON.parse(fs.readFileSync(path.join(targetRoot, 'package.json'), 'utf8'));
   assert.ok(pkg.scripts?.editor, 'scaffold package.json must expose npm run editor');
   console.log('Scaffold includes editor HTML, setup module, and editor command');

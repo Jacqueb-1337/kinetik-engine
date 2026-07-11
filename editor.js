@@ -1152,6 +1152,7 @@ const PRIM_GEOS = {
   box:      () => new THREE.BoxGeometry(1,1,1),
   sphere:   () => new THREE.SphereGeometry(0.5, 16, 12),
   cylinder: () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+  cone:     () => new THREE.ConeGeometry(0.5, 1, 16),
   plane:    () => new THREE.PlaneGeometry(1,1),
   // save-trigger and custom-trigger use a box geometry but are rendered as a wireframe-only volume
   'save-trigger':   () => new THREE.BoxGeometry(2, 2, 2),
