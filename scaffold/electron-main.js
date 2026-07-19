@@ -58,7 +58,7 @@ function createWindow() {
   if (isEditorMode) {
     Menu.setApplicationMenu(Menu.buildFromTemplate([{
       label: 'Level',
-      submenu: [{ label: 'Level Settings...', click: () => mainWindow?.webContents.send('open-level-settings') }],
+      submenu: [{ label: 'Level Settings...', click: () => mainWindow?.webContents.send('open-zombies-settings') }],
     }]));
   }
   mainWindow.webContents.on('render-process-gone', (_, d) => {

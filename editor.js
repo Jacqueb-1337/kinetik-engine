@@ -405,6 +405,29 @@ function setDimensionMode(is2D) {
   E.transform.updateMatrixWorld();
 }
 
+function frame2DLevel() {
+  if (!E.is2DLevel || !E.camera?.isOrthographicCamera || !E.placedGroup?.children.length) return;
+  const bounds = new THREE.Box3();
+  let hasVisibleMesh = false;
+  E.placedGroup.traverse(object => {
+    if (!object.isMesh || !object.visible) return;
+    bounds.expandByObject(object);
+    hasVisibleMesh = true;
+  });
+  if (!hasVisibleMesh || bounds.isEmpty()) return;
+
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const aspect = viewportAspect();
+  const padding = 12;
+  const halfHeight = Math.max(15, size.y / 2 + padding, size.x / (2 * aspect) + padding);
+  E.camera.zoom = 15 / halfHeight;
+  E.camera.position.set(center.x, center.y, 40);
+  E.orbit.target.set(center.x, center.y, 0);
+  resizeRenderer();
+  E.orbit.update();
+}
+
 // â”€â”€â”€ Reference scene (read-only hardcoded room visuals) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function _removedSinisterReferenceScene() {
   const tl = new THREE.TextureLoader();
@@ -942,6 +965,7 @@ async function loadLevel(name) {
       return Promise.resolve(spawnPrimFromEntry(entry));
     });
     await Promise.allSettled(promises);
+    frame2DLevel();
   }
 
   syncTriggerVisibility();
@@ -9723,7 +9747,7 @@ function setupUI() {
     if (section && enabled) section.open = true;
   }
   function _openLevelSettings() {
-    const modal = document.getElementById('level-settings-modal');
+    const modal = document.getElementById('zombies-settings-modal');
     if (!modal) return;
     const cfg = E.zombiesConfig ?? {};
     const setV = (id, val, fallback) => {
@@ -9813,7 +9837,7 @@ function setupUI() {
     if (tiersEl && tiersEl.children.length > 1) tiersEl.removeChild(tiersEl.lastChild);
   });
   function _applyLevelSettings() {
-    const modal = document.getElementById('level-settings-modal');
+    const modal = document.getElementById('zombies-settings-modal');
     pushUndo();
     const getN = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseFloat(el.value); };
     const getI = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseInt(el.value, 10); };
@@ -9873,12 +9897,12 @@ function setupUI() {
     if (modal) modal.style.display = 'none';
     markDirty();
   }
-  document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('level-settings-modal').style.display = 'none'; });
-  document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('level-settings-modal').style.display = 'none'; });
+  document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
+  document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
   document.getElementById('btn-zms-apply')?.addEventListener('click',  _applyLevelSettings);
   document.getElementById('zms-is-zombies-map')?.addEventListener('change', _syncZombiesSettingsAvailability);
   if (hasElectronMethod('onMenuAction')) {
-    window.electron.onMenuAction('open-level-settings', _openLevelSettings);
+    window.electron.onMenuAction('open-zombies-settings', _openLevelSettings);
   }
 }
 
