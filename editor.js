@@ -74,6 +74,7 @@ const ASSET_ROOT = '../';
 const E = {
   scene:     null,
   camera:    null,
+  camera3D:  null,
   renderer:  null,
   orbit:     null,
   transform: null,
@@ -81,6 +82,8 @@ const E = {
   // Current level
   levelName:   null,          // null until a level is opened/created
   isDirty:     false,
+  is2DLevel:   false,
+  platformer2d: null,
 
   // Object tracking
   placedGroup:   null,        // Group containing only user-placed objects
@@ -168,6 +171,7 @@ const E = {
   _boneMarkers:     new Map(), // boneId → THREE.Mesh (world-space bone gizmo target)
   _stateExpanded:   new Set(), // keys 'edId_idx' of states that are explicitly expanded
   fogDensity:       null,      // number or null (null = use game default)
+  ambientBrightness: null,
 };
 
 // â”€â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -178,6 +182,7 @@ async function init() {
 
   // Camera - start above and looking at origin (matches game room)
   E.camera = new THREE.PerspectiveCamera(60, viewportAspect(), 0.1, 500);
+  E.camera3D = E.camera;
   E.camera.position.set(10, 18, 22);
   E.camera.lookAt(0, 3, 0);
 
@@ -353,8 +358,51 @@ function resizeRenderer() {
   const vp = document.getElementById('viewport');
   const w = vp.clientWidth, h = vp.clientHeight;
   E.renderer.setSize(w, h);
-  E.camera.aspect = w / Math.max(1, h);
+  const aspect = w / Math.max(1, h);
+  if (E.camera.isOrthographicCamera) {
+    const halfHeight = 15 / E.camera.zoom;
+    E.camera.left = -halfHeight * aspect;
+    E.camera.right = halfHeight * aspect;
+    E.camera.top = halfHeight;
+    E.camera.bottom = -halfHeight;
+  } else {
+    E.camera.aspect = aspect;
+  }
   E.camera.updateProjectionMatrix();
+}
+
+function setDimensionMode(is2D) {
+  if (!E.camera || !!E.camera.isOrthographicCamera === !!is2D) return;
+  if (is2D) {
+    E.camera3D = E.camera;
+    const aspect = viewportAspect();
+    const halfHeight = 15;
+    E.camera = new THREE.OrthographicCamera(-halfHeight * aspect, halfHeight * aspect, halfHeight, -halfHeight, 0.1, 500);
+    E.camera.position.set(0, 0, 40);
+    E.camera.lookAt(0, 0, 0);
+    E.orbit.object = E.camera;
+    E.orbit.target.set(0, 0, 0);
+    E.orbit.enableRotate = false;
+    E.orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    E.transform.camera = E.camera;
+    E.floorPlane.rotation.set(0, 0, 0);
+    E.floorPlane.position.set(0, 0, 0);
+    E.gridHelper.rotation.set(Math.PI / 2, 0, 0);
+    E.gridHelper.position.set(0, 0, 0);
+  } else {
+    E.camera = E.camera3D;
+    E.orbit.object = E.camera;
+    E.orbit.target.set(0, 3, 0);
+    E.orbit.enableRotate = true;
+    E.orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+    E.transform.camera = E.camera;
+    E.floorPlane.rotation.set(-Math.PI / 2, 0, 0);
+    E.floorPlane.position.set(0, 0, 0);
+    E.gridHelper.rotation.set(0, 0, 0);
+  }
+  resizeRenderer();
+  E.orbit.update();
+  E.transform.updateMatrixWorld();
 }
 
 // â”€â”€â”€ Reference scene (read-only hardcoded room visuals) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -652,6 +700,7 @@ function levelToJSON(options = {}) {
       size:       [+obj.scale.x.toFixed(4), +obj.scale.y.toFixed(4), +obj.scale.z.toFixed(4)],
       color:      obj.userData._baseColor ?? (Array.isArray(obj.material) ? ('#' + (obj.material[0]?.color?.getHexString() ?? 'aaaacc')) : (obj.material?.color ? '#' + obj.material.color.getHexString() : '#aaaacc')),
     };
+    if (obj.userData.collisionSides) entry.collisionSides = { ...obj.userData.collisionSides };
     if (obj.userData.emissiveIntensity > 0) {
       entry.emissiveIntensity = obj.userData.emissiveIntensity;
       entry.emissiveColor     = obj.userData.emissiveColor ?? '#ffffff';
@@ -793,6 +842,9 @@ function levelToJSON(options = {}) {
   out.groups = groups;
   out.vars = E.levelVars;
   if (E.fogDensity != null) out.fogDensity = E.fogDensity;
+  if (E.ambientBrightness != null) out.ambientBrightness = E.ambientBrightness;
+  if (E.is2DLevel) out.is2DLevel = true;
+  if (E.platformer2d && Object.keys(E.platformer2d).length) out.platformer2d = { ...E.platformer2d };
   if (includeEditorUi) {
     out.editorUi = {
       selectedId: E.selected?.userData?.editorId ?? null,
@@ -869,6 +921,10 @@ async function loadLevel(name) {
   }
   E.levelVars = data?.vars ? { ...data.vars } : {};
   E.fogDensity = (data?.fogDensity != null) ? data.fogDensity : null;
+  E.ambientBrightness = (data?.ambientBrightness != null) ? data.ambientBrightness : null;
+  E.is2DLevel = data?.is2DLevel ?? false;
+  E.platformer2d = data?.platformer2d ? { ...data.platformer2d } : null;
+  setDimensionMode(E.is2DLevel);
   E.isZombiesMap = data?.isZombiesMap ?? false;
   E.zombiesMapDisplayName = data?.zombiesMapDisplayName ?? null;
   E.zombiesConfig = data?.zombiesConfig ?? null;
@@ -931,6 +987,9 @@ function clearPlaced() {
   E.groupCollapsed = {};
   E.levelVars = {};
   E.fogDensity = null;
+  E.ambientBrightness = null;
+  E.is2DLevel = false;
+  E.platformer2d = null;
   E.isZombiesMap = false;
   E.zombiesMapDisplayName = null;
   E.zombiesConfig = null;
@@ -2213,6 +2272,7 @@ function spawnPrimFromEntry(entry) {
   _applyStoryData(mesh, entry);
   mesh.userData.label      = entry.label || '';
   mesh.userData.collidable = entry.collidable !== false;
+  if (entry.collisionSides) mesh.userData.collisionSides = { ...entry.collisionSides };
   mesh.userData._baseColor = entry.color ?? '#aaaacc';
   if (entry.isMainFloor)   mesh.userData.isMainFloor   = true;
   if (entry.isAdjFloor)    mesh.userData.isAdjFloor    = true;
@@ -2856,6 +2916,8 @@ function updateProps(obj) {
   const opacityEl = document.getElementById('obj-opacity');
   const chkC      = document.getElementById('chk-collidable');
   const chkS      = document.getElementById('chk-shadow');
+  const collisionSideInputs = ['top', 'bottom', 'left', 'right'].map(side => document.getElementById(`collision-${side}`));
+  const collisionSidesRow = document.getElementById('collision-sides-row');
   const emissiveRow = document.getElementById('emissive-row');
   const emissiveColorEl = document.getElementById('obj-emissive-color');
   const emissiveIntEl   = document.getElementById('obj-emissive-intensity');
@@ -3000,6 +3062,10 @@ function updateProps(obj) {
     opacityEl.value = isLight ? '1' : +getMeshOpacity(obj).toFixed(2);
   }
   if (chkC) { chkC.disabled = isLight || isTrigger; chkC.checked = !isLight && !isTrigger && obj.userData.collidable !== false; }
+  const showCollisionSides = E.is2DLevel && !isLight && !isTrigger;
+  if (collisionSidesRow) collisionSidesRow.style.display = showCollisionSides ? '' : 'none';
+  const collisionSides = obj.userData.collisionSides || {};
+  collisionSideInputs.forEach((input, index) => { if (input) { input.disabled = !showCollisionSides || obj.userData.collidable === false; input.checked = collisionSides[['top', 'bottom', 'left', 'right'][index]] !== false; } });
   if (chkS) { chkS.disabled = isTrigger; chkS.checked = !isTrigger && (isLight ? obj.userData.castShadow !== false : obj.castShadow !== false); }
   if (labelEl) { labelEl.disabled = false; labelEl.value = obj.userData.label || ''; }
 
@@ -8585,6 +8651,13 @@ function setupUI() {
   document.getElementById('chk-collidable').addEventListener('change', e => {
     if (E.selected) { E.selected.userData.collidable = e.target.checked; markDirty(); }
   });
+  ['top', 'bottom', 'left', 'right'].forEach(side => {
+    document.getElementById(`collision-${side}`)?.addEventListener('change', event => {
+      if (!E.selected) return;
+      E.selected.userData.collisionSides = { ...(E.selected.userData.collisionSides || {}), [side]: event.target.checked };
+      markDirty();
+    });
+  });
   document.getElementById('chk-shadow').addEventListener('mousedown', () => { if (E.selected) pushUndo(); });
   document.getElementById('chk-shadow').addEventListener('change', e => {
     if (!E.selected) return;
@@ -9640,9 +9713,17 @@ function setupUI() {
 
   window.addEventListener('resize', resizeRenderer);
 
-  // Zombies map settings modal
-  function _openZombiesSettings() {
-    const modal = document.getElementById('zombies-settings-modal');
+  // Level settings modal. Zombie-specific controls remain unavailable until
+  // the level is explicitly marked as a zombie map.
+  function _syncZombiesSettingsAvailability() {
+    const enabled = !!document.getElementById('zms-is-zombies-map')?.checked;
+    const settings = document.getElementById('zms-settings-fields');
+    const section = document.getElementById('zms-settings-section');
+    if (settings) settings.disabled = !enabled;
+    if (section && enabled) section.open = true;
+  }
+  function _openLevelSettings() {
+    const modal = document.getElementById('level-settings-modal');
     if (!modal) return;
     const cfg = E.zombiesConfig ?? {};
     const setV = (id, val, fallback) => {
@@ -9651,6 +9732,18 @@ function setupUI() {
     };
     const chk = document.getElementById('zms-is-zombies-map');
     if (chk) chk.checked = !!E.isZombiesMap;
+    const is2D = document.getElementById('lvl-is-2d');
+    if (is2D) is2D.checked = !!E.is2DLevel;
+    const physics = E.platformer2d ?? {};
+    setV('lvl-fog-density', E.fogDensity, 0.08);
+    setV('lvl-ambient-brightness', E.ambientBrightness, 0.1);
+    const setPhysics = (id, key, fallback) => { const el = document.getElementById(id); if (el) el.value = physics[key] ?? fallback; };
+    setPhysics('p2d-gravity', 'gravity', 2200);
+    setPhysics('p2d-acceleration', 'acceleration', 1200);
+    setPhysics('p2d-max-speed', 'maxSpeed', 170);
+    setPhysics('p2d-friction', 'friction', 1500);
+    setPhysics('p2d-jump-speed', 'jumpSpeed', 500);
+    setPhysics('p2d-coyote-time', 'coyoteTime', 0.12);
     const dnEl = document.getElementById('zms-display-name');
     if (dnEl) dnEl.value = E.zombiesMapDisplayName ?? '';
     setV('zms-base-hp',        cfg.baseZombieHp);
@@ -9699,6 +9792,7 @@ function setupUI() {
       });
     }
 
+    _syncZombiesSettingsAvailability();
     modal.style.display = 'flex';
   }
   document.getElementById('btn-zms-add-tier')?.addEventListener('click', () => {
@@ -9718,12 +9812,22 @@ function setupUI() {
     const tiersEl = document.getElementById('zms-pap-tiers');
     if (tiersEl && tiersEl.children.length > 1) tiersEl.removeChild(tiersEl.lastChild);
   });
-  function _applyZombiesSettings() {
-    const modal = document.getElementById('zombies-settings-modal');
+  function _applyLevelSettings() {
+    const modal = document.getElementById('level-settings-modal');
     pushUndo();
     const getN = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseFloat(el.value); };
     const getI = id => { const el = document.getElementById(id); if (!el || el.value.trim() === '') return undefined; return parseInt(el.value, 10); };
     E.isZombiesMap = document.getElementById('zms-is-zombies-map')?.checked ?? false;
+    E.is2DLevel = document.getElementById('lvl-is-2d')?.checked ?? false;
+    setDimensionMode(E.is2DLevel);
+    const number = id => { const value = parseFloat(document.getElementById(id)?.value); return Number.isFinite(value) ? value : undefined; };
+    const platformer2d = {
+      gravity: number('p2d-gravity'), acceleration: number('p2d-acceleration'), maxSpeed: number('p2d-max-speed'),
+      friction: number('p2d-friction'), jumpSpeed: number('p2d-jump-speed'), coyoteTime: number('p2d-coyote-time'),
+    };
+    E.platformer2d = Object.fromEntries(Object.entries(platformer2d).filter(([, value]) => value !== undefined));
+    E.fogDensity = number('lvl-fog-density');
+    E.ambientBrightness = number('lvl-ambient-brightness');
     const dn = document.getElementById('zms-display-name')?.value.trim();
     E.zombiesMapDisplayName = dn || null;
     const cfg = { ...(E.zombiesConfig ?? {}) };
@@ -9769,11 +9873,12 @@ function setupUI() {
     if (modal) modal.style.display = 'none';
     markDirty();
   }
-  document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
-  document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('zombies-settings-modal').style.display = 'none'; });
-  document.getElementById('btn-zms-apply')?.addEventListener('click',  _applyZombiesSettings);
+  document.getElementById('btn-zms-close')?.addEventListener('click',  () => { document.getElementById('level-settings-modal').style.display = 'none'; });
+  document.getElementById('btn-zms-cancel')?.addEventListener('click', () => { document.getElementById('level-settings-modal').style.display = 'none'; });
+  document.getElementById('btn-zms-apply')?.addEventListener('click',  _applyLevelSettings);
+  document.getElementById('zms-is-zombies-map')?.addEventListener('change', _syncZombiesSettingsAvailability);
   if (hasElectronMethod('onMenuAction')) {
-    window.electron.onMenuAction('open-zombies-settings', _openZombiesSettings);
+    window.electron.onMenuAction('open-level-settings', _openLevelSettings);
   }
 }
 
@@ -10238,6 +10343,14 @@ function updateCameraPan(delta) {
   // Don't pan while Ctrl is held (avoid Ctrl+W/D/S/E triggering movement)
   if (E.keys['ControlLeft'] || E.keys['ControlRight']) return;
   const speed = E.panSpeed;  // Space/Shift handle up/down; no sprint modifier needed
+  if (E.is2DLevel) {
+    const pan = speed * delta;
+    const dx = (E.keys['KeyD'] ? pan : 0) - (E.keys['KeyA'] ? pan : 0);
+    const dy = (E.keys['KeyW'] ? pan : 0) - (E.keys['KeyS'] ? pan : 0);
+    E.camera.position.x += dx; E.camera.position.y += dy;
+    E.orbit.target.x += dx; E.orbit.target.y += dy;
+    return;
+  }
   const fwd = new THREE.Vector3();
   E.camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
   const right = new THREE.Vector3().crossVectors(fwd, E.camera.up).normalize();

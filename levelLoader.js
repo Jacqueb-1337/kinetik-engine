@@ -1473,6 +1473,10 @@ export async function loadLevel(name = 'main') {
   } else if (gameState.scene.fog) {
     gameState.scene.fog.density = 0.08;
   }
+  if (data.ambientBrightness != null && gameState.ambientLight) {
+    gameState.ambientBrightness = data.ambientBrightness;
+    gameState.ambientLight.intensity = data.ambientBrightness;
+  }
 
   // Resolve object links into linkedObjects (keyless, auto-fired) and keyedLinks (per-key)
   const idMap = new Map(spawned.map(o => [o.userData.editorId, o]));

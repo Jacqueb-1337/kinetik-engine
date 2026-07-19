@@ -385,6 +385,11 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
         <input type="checkbox" id="chk-collidable" checked>
         <label for="chk-collidable">Collidable</label>
       </div>
+      <div id="collision-sides-row" style="margin:5px 0 2px;padding-left:4px">
+        <div style="font-size:10px;color:#777799;margin-bottom:3px">Collision sides (2D)</div>
+        <label><input type="checkbox" id="collision-top" checked> top</label> <label><input type="checkbox" id="collision-bottom" checked> bottom</label>
+        <label><input type="checkbox" id="collision-left" checked> left</label> <label><input type="checkbox" id="collision-right" checked> right</label>
+      </div>
       <div class="toggle-row">
         <input type="checkbox" id="chk-shadow" checked>
         <label for="chk-shadow">Cast Shadow</label>
@@ -1013,5 +1018,37 @@ body { background: #12121e; color: #dde; font-family: 'Segoe UI', sans-serif; fo
   </div>
 </div>
 
+<div id="level-settings-modal" style="display:none;position:fixed;z-index:9600;background:#1a1a2e;border:1px solid #333360;border-radius:6px;padding:16px;width:520px;max-height:80vh;overflow-y:auto;top:55px;left:50%;transform:translateX(-50%);box-sizing:border-box">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><span style="font-size:14px;color:#e94560;font-weight:600">Level Settings</span><button class="btn" id="btn-zms-close">Close</button></div>
+  <label class="toggle-row" style="margin-bottom:8px"><input type="checkbox" id="lvl-is-2d"><span>2D level</span></label>
+  <div style="font-size:10px;color:#777799;margin:-4px 0 10px">Uses the editor's 2D workspace and stores this level as a 2D map.</div>
+  <details open style="border:1px solid #333360;border-radius:4px;padding:8px;margin-bottom:10px"><summary style="cursor:pointer;color:#aaaacc">3D environment</summary><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px"><label class="prop-row"><span>Fog density</span><input class="prop-input" id="lvl-fog-density" type="number" step="0.001" min="0"></label><label class="prop-row"><span>Ambient light</span><input class="prop-input" id="lvl-ambient-brightness" type="number" step="0.01" min="0"></label></div></details>
+  <details open style="border:1px solid #333360;border-radius:4px;padding:8px;margin-bottom:10px"><summary style="cursor:pointer;color:#aaaacc">2D physics</summary>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+      <label class="prop-row"><span>Gravity</span><input class="prop-input" id="p2d-gravity" type="number" step="10"></label><label class="prop-row"><span>Acceleration</span><input class="prop-input" id="p2d-acceleration" type="number" step="10"></label>
+      <label class="prop-row"><span>Top speed</span><input class="prop-input" id="p2d-max-speed" type="number" step="5"></label><label class="prop-row"><span>Friction</span><input class="prop-input" id="p2d-friction" type="number" step="10"></label>
+      <label class="prop-row"><span>Jump strength</span><input class="prop-input" id="p2d-jump-speed" type="number" step="10"></label><label class="prop-row"><span>Coyote time</span><input class="prop-input" id="p2d-coyote-time" type="number" step="0.01" min="0"></label>
+    </div>
+  </details>
+  <label class="toggle-row" style="margin-bottom:10px"><input type="checkbox" id="zms-is-zombies-map"><span>Zombie map</span></label>
+  <details id="zms-settings-section" style="border:1px solid #333360;border-radius:4px;padding:8px"><summary style="cursor:pointer;color:#aaaacc">Zombie map settings</summary>
+    <fieldset id="zms-settings-fields" style="border:0;padding:8px 0 0;margin:0;display:grid;grid-template-columns:1fr 1fr;gap:6px">
+      <label class="prop-row" style="grid-column:1/-1"><span>Display name</span><input class="prop-input" id="zms-display-name"></label>
+      <label class="prop-row"><span>Base HP</span><input class="prop-input" id="zms-base-hp" type="number"></label><label class="prop-row"><span>HP scale</span><input class="prop-input" id="zms-hp-scale" type="number" step="0.01"></label>
+      <label class="prop-row"><span>Base damage</span><input class="prop-input" id="zms-base-dmg" type="number"></label><label class="prop-row"><span>Damage scale</span><input class="prop-input" id="zms-dmg-scale" type="number" step="0.01"></label>
+      <label class="prop-row"><span>Base count</span><input class="prop-input" id="zms-base-count" type="number"></label><label class="prop-row"><span>Count multiplier</span><input class="prop-input" id="zms-count-mult" type="number" step="0.01"></label>
+      <label class="prop-row"><span>Count cap</span><input class="prop-input" id="zms-count-cap" type="number"></label><label class="prop-row"><span>Round cap</span><input class="prop-input" id="zms-round-cap" type="number"></label>
+      <label class="prop-row"><span>Spawn interval</span><input class="prop-input" id="zms-spawn-interval" type="number" step="0.01"></label><label class="prop-row"><span>Spawn decay</span><input class="prop-input" id="zms-spawn-decay" type="number" step="0.01"></label>
+      <label class="prop-row"><span>Min interval</span><input class="prop-input" id="zms-min-interval" type="number" step="0.01"></label><label class="prop-row"><span>Inter-round delay</span><input class="prop-input" id="zms-inter-round" type="number" step="0.01"></label>
+      <label class="prop-row"><span>Starting points</span><input class="prop-input" id="zms-start-pts" type="number"></label><label class="prop-row"><span>Points / kill</span><input class="prop-input" id="zms-pts-kill" type="number"></label>
+      <label class="prop-row"><span>Kill scale</span><input class="prop-input" id="zms-kill-scale" type="number" step="0.01"></label><label class="prop-row"><span>Round bonus</span><input class="prop-input" id="zms-round-bonus" type="number"></label>
+      <label class="prop-row"><span>Headshot bonus</span><input class="prop-input" id="zms-hs-bonus" type="number"></label><label class="prop-row"><span>Melee bonus</span><input class="prop-input" id="zms-melee-bonus" type="number"></label>
+      <label class="prop-row"><span>Mystery box cost</span><input class="prop-input" id="zms-mystery-cost" type="number"></label><label class="prop-row"><span>Drop chance</span><input class="prop-input" id="zms-drop-chance" type="number" step="0.01"></label>
+      <label class="prop-row"><span>Powerup duration</span><input class="prop-input" id="zms-powerup-dur" type="number" step="0.1"></label><label class="prop-row"><span>Revive time</span><input class="prop-input" id="zms-revive-time" type="number" step="0.1"></label>
+      <div style="grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;margin-top:5px"><span style="font-size:11px;color:#aaaacc">Pack-a-Punch tiers</span><span><button class="btn" id="btn-zms-add-tier" type="button">+</button> <button class="btn" id="btn-zms-remove-tier" type="button">−</button></span></div><div id="zms-pap-tiers" style="grid-column:1/-1"></div>
+    </fieldset>
+  </details>
+  <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:12px"><button class="btn" id="btn-zms-cancel">Cancel</button><button class="btn green" id="btn-zms-apply">Apply</button></div>
+</div>
 </body>
 </html>
