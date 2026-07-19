@@ -101,6 +101,16 @@ export async function readSave(slotKey = 'autosave') {
   return _readSave(slotKey);
 }
 
+/**
+ * Applies previously read save data. This is useful when a game keeps copies
+ * of save snapshots outside the engine's normal save-slot storage.
+ */
+export function applySaveSnapshot(snapshot) {
+  if (!snapshot) return false;
+  _applySnapshot(snapshot);
+  return true;
+}
+
 export async function hasSave(slotKey = 'autosave') {
   return (await _readSave(slotKey)) !== null;
 }
