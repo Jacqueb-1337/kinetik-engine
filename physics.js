@@ -312,12 +312,25 @@ function _getColliderRoot(object, colliderSet) {
   return null;
 }
 
+function _getMantleNeckY(playerCapsule) {
+  let neck = null;
+  gameState.player.traverse(child => {
+    if (!neck && child.isBone && /neck/i.test(child.name)) neck = child;
+  });
+  if (neck) {
+    const neckPosition = neck.getWorldPosition(new THREE.Vector3());
+    return neckPosition.y;
+  }
+  // Fallback for unrigged player models.
+  return playerCapsule.center.y + playerCapsule.halfHeight * 0.6;
+}
+
 function _getMantleCandidate(playerCapsule, moveX, moveZ, colliders) {
   if (!gameState.canJump || Math.hypot(moveX, moveZ) < 0.01) return null;
 
   const direction = new THREE.Vector3(moveX, 0, moveZ).normalize();
   const playerBottom = playerCapsule.center.y - playerCapsule.halfHeight;
-  const neckY = playerBottom + playerCapsule.height * 0.8;
+  const neckY = _getMantleNeckY(playerCapsule);
   const colliderSet = new Set(colliders);
   const contactDistance = playerCapsule.radius * 1.35;
   const contactHeights = [
