@@ -104,6 +104,11 @@ function _ensureDialogueHud() {
         border-left: 2px solid rgba(120, 255, 160, 0.2);
         white-space: pre-wrap;
         font-size: 0.86em;
+        animation: story-dialogue-history-in 260ms ease-out both;
+      }
+      @keyframes story-dialogue-history-in {
+        from { opacity: 0; transform: translateY(-0.45rem); }
+        to { opacity: 1; transform: translateY(0); }
       }
     `;
     document.head.appendChild(style);
@@ -116,7 +121,8 @@ function _renderDialogueLog() {
   const logEl = el.querySelector('.story-dialogue-log');
   if (!logEl) return;
   logEl.innerHTML = '';
-  const lines = _dialogueLog.slice(-4);
+  // The active line is displayed above; the lower stack is prior dialogue.
+  const lines = _dialogueLog.slice(0, -1).slice(-4);
   for (const line of lines) {
     const item = document.createElement('div');
     item.className = 'story-dialogue-log-line';
