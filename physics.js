@@ -341,7 +341,11 @@ export function update(delta) {
 
   // Smooth speed ramping (acceleration/deceleration)
   const analogMagnitude = Math.min(1, Math.sqrt(axisX * axisX + axisY * axisY));
-  const targetSpeedMultiplier = !isMoving ? 0 : (isPlayerDowned ? 0.2 : (isSprinting ? 2.0 : Math.max(0.2, analogMagnitude)));
+  const hasAnalogInput = Math.abs(axisX) > 0.001 || Math.abs(axisY) > 0.001;
+  // Keyboard movement has no analog magnitude, so it must use full walk speed.
+  // Only actual stick/touch input should scale walking speed proportionally.
+  const walkSpeedMultiplier = hasAnalogInput ? Math.max(0.2, analogMagnitude) : 1.0;
+  const targetSpeedMultiplier = !isMoving ? 0 : (isPlayerDowned ? 0.2 : (isSprinting ? 2.0 : walkSpeedMultiplier));
   const acceleration = 8.0; // How fast to ramp up/down
   gameState.currentSpeed += (targetSpeedMultiplier - gameState.currentSpeed) * Math.min(1, delta * acceleration);
   
