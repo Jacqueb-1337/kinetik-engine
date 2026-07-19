@@ -301,11 +301,102 @@ function updateHitboxHelper(capsule) {
   helper._bottomSphere.position.set(0, -bodyLength / 2, 0);
 }
 
+// Mantling is deliberately conservative: it is for low, solid furniture and
+// platforms, never narrow rails, tall walls, or surfaces with no headroom.
+const MANTLE_MIN_HEIGHT = 0.18;
+const MANTLE_MAX_HEIGHT = 1.35;
+const MANTLE_MIN_TOP_SIZE = 1.2;
+const MANTLE_REACH = 0.7;
+const MANTLE_DURATION = 0.26;
+
+function _getMantleCandidate(playerCapsule, moveX, moveZ, colliders) {
+  if (!gameState.canJump || Math.hypot(moveX, moveZ) < 0.01) return null;
+
+  const direction = new THREE.Vector3(moveX, 0, moveZ).normalize();
+  const playerBottom = playerCapsule.center.y - playerCapsule.halfHeight;
+  const playerX = playerCapsule.center.x;
+  const playerZ = playerCapsule.center.z;
+  let best = null;
+
+  for (const object of colliders) {
+    if (object.userData?.mantleable === false) continue;
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) continue;
+
+    const size = box.getSize(new THREE.Vector3());
+    const height = box.max.y - playerBottom;
+    // A usable landing must be a genuinely broad top, not a fence or rail.
+    if (height < MANTLE_MIN_HEIGHT || height > MANTLE_MAX_HEIGHT ||
+        size.x < MANTLE_MIN_TOP_SIZE || size.z < MANTLE_MIN_TOP_SIZE) continue;
+
+    const nearestX = THREE.MathUtils.clamp(playerX, box.min.x, box.max.x);
+    const nearestZ = THREE.MathUtils.clamp(playerZ, box.min.z, box.max.z);
+    const toObject = new THREE.Vector3(nearestX - playerX, 0, nearestZ - playerZ);
+    const distance = toObject.length();
+    if (distance > MANTLE_REACH + playerCapsule.radius || distance < 0.01) continue;
+    if (toObject.normalize().dot(direction) < 0.35) continue;
+
+    const inset = playerCapsule.radius + 0.08;
+    const landingX = THREE.MathUtils.clamp(
+      playerX + direction.x * (distance + playerCapsule.radius + 0.2),
+      box.min.x + inset, box.max.x - inset,
+    );
+    const landingZ = THREE.MathUtils.clamp(
+      playerZ + direction.z * (distance + playerCapsule.radius + 0.2),
+      box.min.z + inset, box.max.z - inset,
+    );
+
+    const centerOffset = playerCapsule.center.y - gameState.player.position.y;
+    const landingY = box.max.y + playerCapsule.halfHeight - centerOffset;
+    const landingBounds = new THREE.Box3(
+      new THREE.Vector3(landingX - playerCapsule.radius, box.max.y + 0.02, landingZ - playerCapsule.radius),
+      new THREE.Vector3(landingX + playerCapsule.radius, box.max.y + playerCapsule.height, landingZ + playerCapsule.radius),
+    );
+    const hasHeadroom = !colliders.some(other => other !== object && landingBounds.intersectsBox(new THREE.Box3().setFromObject(other)));
+    if (!hasHeadroom) continue;
+
+    if (!best || distance < best.distance) {
+      best = { distance, landing: new THREE.Vector3(landingX, landingY, landingZ) };
+    }
+  }
+  return best;
+}
+
+function _startMantle(candidate) {
+  gameState.mantle = {
+    elapsed: 0,
+    start: gameState.player.position.clone(),
+    end: candidate.landing,
+  };
+  gameState.velocityY = 0;
+  gameState.isJumpWindup = false;
+  gameState.canJump = false;
+  gameState.currentSpeed = 0;
+}
+
+function _updateMantle(delta) {
+  const mantle = gameState.mantle;
+  mantle.elapsed += delta;
+  const t = Math.min(1, mantle.elapsed / MANTLE_DURATION);
+  const eased = t * t * (3 - 2 * t);
+  gameState.player.position.lerpVectors(mantle.start, mantle.end, eased);
+  if (t >= 1) {
+    gameState.mantle = null;
+    gameState.velocityY = 0;
+  }
+}
+
 
 
 export function update(delta) {
   // Skip player movement when freecam is active
   if (isFreecamActive()) {
+    return;
+  }
+
+  if (gameState.mantle) {
+    _updateMantle(delta);
+    updateHitboxHelper(getPlayerCylinder());
     return;
   }
   
@@ -373,6 +464,21 @@ export function update(delta) {
     const r = CULL_DIST + obj.userData._physCullRadius;
     return (dx * dx + dz * dz) < r * r;
   });
+
+  // Jump against a short, broad ledge to mantle onto it. Holding jump will not
+  // retrigger until released, so the landing remains stable.
+  if (!gameState.keys['Space']) gameState._mantleSpaceHeld = false;
+  const mantleRequested = gameState.keys['Space'] && !gameState._mantleSpaceHeld;
+  if (mantleRequested && !isPlayerDowned) {
+    gameState._mantleSpaceHeld = true;
+    const mantle = _getMantleCandidate(playerCapsule, moveX, moveZ, checkObjects);
+    if (mantle) {
+      _startMantle(mantle);
+      _updateMantle(delta);
+      updateHitboxHelper(getPlayerCylinder());
+      return;
+    }
+  }
 
   // Three ray heights covering the full player capsule: ankle, centre, head.
   // This ensures objects at any vertical position (floor-level cubes, waist-high
