@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
 import { initStatefulObjects, levelVars, setTextureFn } from './stateManager.js';
-import { registerStoryObject } from '../game/storySystem.js';
+import { registerStoryObject } from './storySystem.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 

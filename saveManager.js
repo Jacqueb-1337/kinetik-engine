@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { gameState } from './globals.js';
 import { applyObjectStateImmediate, levelVars, setLevelVar } from './stateManager.js';
-import { getStorySaveData, restoreStorySaveData } from '../game/storySystem.js';
+import { getStorySaveData, restoreStorySaveData } from './storySystem.js';
 
 const SAVE_VERSION = 1;
 const CART_VERSION = 1;
