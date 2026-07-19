@@ -112,7 +112,7 @@ export function splitMeshIntoIslands(mesh) {
  *
  * Options (all optional, defaults preserve historical behavior):
  *   background:      hex color for scene background + fog (default 0x000000)
- *   fogDensity:      FogExp2 density (default 0.1); pass 0/false to disable fog
+ *   fogDensity:      FogExp2 density (default 0.08); pass 0/false to disable fog
  *   fogColor:        hex color for fog (defaults to background)
  *   antialias:       renderer antialiasing (default false)
  *   autoFullscreen:  request fullscreen on click (default true)
@@ -122,7 +122,7 @@ export function splitMeshIntoIslands(mesh) {
 export function initScene(options = {}) {
   const backgroundColor = options.background ?? 0x000000;
   const fogColor = options.fogColor ?? backgroundColor;
-  const fogDensity = options.fogDensity ?? 0.1;
+  const fogDensity = options.fogDensity ?? 0.08;
   gameState.autoFullscreen = options.autoFullscreen !== false;
   gameState.autoPointerLock = options.autoPointerLock !== false;
   gameState.lockKeyboardOnClick = options.lockKeyboard !== false;
@@ -154,7 +154,7 @@ export function initScene(options = {}) {
   document.body.appendChild(gameState.renderer.domElement);
 
   // Initialize ambient brightness if not set
-  if (!gameState.ambientBrightness) gameState.ambientBrightness = 0.05;
+  if (!gameState.ambientBrightness) gameState.ambientBrightness = 0.1;
   gameState.ambientLight = new THREE.AmbientLight(0xffffff, gameState.ambientBrightness);
   gameState.scene.add(gameState.ambientLight);
 

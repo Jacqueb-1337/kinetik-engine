@@ -1471,7 +1471,7 @@ export async function loadLevel(name = 'main') {
   if (data.fogDensity != null && gameState.scene.fog) {
     gameState.scene.fog.density = data.fogDensity;
   } else if (gameState.scene.fog) {
-    gameState.scene.fog.density = 0.1;
+    gameState.scene.fog.density = 0.08;
   }
 
   // Resolve object links into linkedObjects (keyless, auto-fired) and keyedLinks (per-key)

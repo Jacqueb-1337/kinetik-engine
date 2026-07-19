@@ -300,8 +300,8 @@ async function init() {
   editorSun.name = '__editorSun__';
   E.scene.add(editorSun);
 
-  // Game-preview ambient (very dim — matches scene.js ambientBrightness 0.05)
-  const previewAmbient = new THREE.AmbientLight(0xffffff, 0.05);
+  // Game-preview ambient — matches scene.js ambientBrightness 0.1.
+  const previewAmbient = new THREE.AmbientLight(0xffffff, 0.1);
   previewAmbient.name = '__previewAmbient__';
   previewAmbient.visible = false;
   E.scene.add(previewAmbient);
@@ -8329,7 +8329,7 @@ function setupUI() {
     // Background and fog
     if (preview) {
       E.scene.background = new THREE.Color(0x000000);
-      E.scene.fog        = new THREE.FogExp2(0x000000, 0.1);
+      E.scene.fog        = new THREE.FogExp2(0x000000, 0.08);
     } else {
       E.scene.background = null;
       E.scene.fog        = null;

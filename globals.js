@@ -45,7 +45,7 @@ export const gameState = {
   raycaster: new THREE.Raycaster(),
   clock: new THREE.Clock(),
   ambientLight: null,
-  ambientBrightness: 0.01,
+  ambientBrightness: 0.1,
   collidableObjects: [],  // All objects with collision enabled
   statefulObjects: [],   // Level objects with userData.states — checked for interaction
   saveTriggers: [],      // Level save-trigger volumes — checked each frame by saveManager
