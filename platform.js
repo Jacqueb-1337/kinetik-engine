@@ -33,7 +33,10 @@ export const platformConfig = {
       const rs = this.renderScale;
       return { w: Math.floor(vw * rs), h: Math.floor(vh * rs) };
     }
-    const h = 480;
+    // Desktop targets a readable 720p internal render height. The canvas is
+    // still scaled to the window, but small in-world UI such as TV screens no
+    // longer loses most of its detail before presentation.
+    const h = 720;
     const w = Math.round(h * vw / vh);
     return { w, h };
   }
