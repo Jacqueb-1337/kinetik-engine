@@ -67,11 +67,13 @@ function _listenerPos() {
   return null;
 }
 
-function _volPanForPos(worldPos) {
+function _volPanForPos(worldPos, { volume = 1, maxDistance = 20, minVolume = 0 } = {}) {
   const lp = _listenerPos();
   if (!lp || !gameState.camera) return { vol: 1, pan: 0 };
   const dist = lp.distanceTo(worldPos);
-  const vol = Math.pow(Math.max(0, 1 - dist / 20), 2);
+  const range = Math.max(0.001, Number(maxDistance) || 20);
+  const floor = THREE.MathUtils.clamp(Number(minVolume) || 0, 0, 1);
+  const vol = Math.max(floor, Math.pow(Math.max(0, 1 - dist / range), 2)) * Math.max(0, Number(volume) || 0);
   const right = new THREE.Vector3().setFromMatrixColumn(gameState.camera.matrixWorld, 0).normalize();
   const toSound = new THREE.Vector3().subVectors(worldPos, lp).normalize();
   const pan = THREE.MathUtils.clamp(right.dot(toSound), -1, 1);
@@ -84,18 +86,29 @@ export function updateStateSounds() {
   for (let i = _activeSounds.length - 1; i >= 0; i--) {
     const s = _activeSounds[i];
     if (s.audioEl.ended || s.audioEl.paused) { _activeSounds.splice(i, 1); continue; }
-    const { vol, pan } = _volPanForPos(s.worldPos);
+    const { vol, pan } = _volPanForPos(s.worldPos, s.options);
     s.gainNode.gain.value = vol * mv;
     s.pannerNode.pan.value = pan;
   }
 }
 
-export function playSound(name, worldPos) {
+/**
+ * Plays a sound at a position. Options follow Minecraft's useful controls:
+ * volume (also expands the audible range), pitch, minVolume, and maxDistance.
+ */
+export function playSound(name, worldPos, options = {}) {
   if (!name) return;
+  const soundOptions = {
+    volume: Math.max(0, Number(options.volume ?? 1)),
+    pitch: THREE.MathUtils.clamp(Number(options.pitch ?? 1), 0.01, 4),
+    minVolume: THREE.MathUtils.clamp(Number(options.minVolume ?? 0), 0, 1),
+    maxDistance: Math.max(0.001, Number(options.maxDistance ?? (20 * Math.max(1, Number(options.volume ?? 1))))),
+  };
   const exts = ['ogg', 'mp3', 'wav'];
   const tryNext = i => {
     if (i >= exts.length) return;
     const audio = new Audio(`./sounds/${name}.${exts[i]}`);
+    audio.playbackRate = soundOptions.pitch;
     audio.onerror = () => tryNext(i + 1);
     audio.addEventListener('canplaythrough', () => {
       try {
@@ -105,14 +118,14 @@ export function playSound(name, worldPos) {
         const pannerNode = ctx.createStereoPanner();
         const wp = worldPos ? worldPos.clone() : null;
         if (wp) {
-          const { vol, pan } = _volPanForPos(wp);
+          const { vol, pan } = _volPanForPos(wp, soundOptions);
           const mv = gameState.masterVolume ?? 1;
           if (vol <= 0) { audio.pause(); return; }
           gainNode.gain.value = vol * mv;
           pannerNode.pan.value = pan;
-          _activeSounds.push({ audioEl: audio, gainNode, pannerNode, worldPos: wp });
+          _activeSounds.push({ audioEl: audio, gainNode, pannerNode, worldPos: wp, options: soundOptions });
         } else {
-          gainNode.gain.value = gameState.masterVolume ?? 1;
+          gainNode.gain.value = soundOptions.volume * (gameState.masterVolume ?? 1);
         }
         src.connect(gainNode);
         gainNode.connect(pannerNode);

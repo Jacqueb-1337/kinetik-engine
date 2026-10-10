@@ -12,6 +12,8 @@ const mobileFireDown = () => { gameHooks.mobileFireDown?.(); };
 const mobileFireUp = () => { gameHooks.mobileFireUp?.(); };
 const mobileReload = () => { gameHooks.mobileReload?.(); };
 const mobileSwitchWeapon = () => { gameHooks.mobileSwitchWeapon?.(); };
+const mobileMelee = () => { gameHooks.mobileMelee?.(); };
+const mobileGrenade = () => { gameHooks.mobileGrenade?.(); };
 
 let _pauseToggle = () => {};
 export function setPauseToggleCallback(fn) { _pauseToggle = fn; }
@@ -20,7 +22,7 @@ export function setMobileControlMode(mode) { _mobileControlMode = mode || 'defau
 export function getMobileControlMode() { return _mobileControlMode; }
 
 const HUD_SETTINGS_KEY = 'hud_config';
-const CORE_HUD_KEYS = ['fire', 'reload', 'swap', 'sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5'];
+const CORE_HUD_KEYS = ['fire', 'reload', 'swap', 'melee', 'grenade', 'sprint', 'jump', 'interact', 'pause', 'f3', 'cam', 'f5'];
 
 function _ensureZombiesLayoutDefaults(layout) {
   const W = window.innerWidth;
@@ -42,6 +44,8 @@ function _migrateLayout(layout) {
   if (!layout.fire)   layout.fire   = { x: W - 210, y: H - 280, size: 70, opacity: 1.0 };
   if (!layout.reload) layout.reload = { x: W - 210, y: H - 190, size: 70, opacity: 1.0 };
   if (!layout.swap)   layout.swap   = { x: W - 210, y: H - 370, size: 70, opacity: 1.0 };
+  if (!layout.melee)   layout.melee   = { x: W - 300, y: H - 280, size: 64, opacity: 1.0 };
+  if (!layout.grenade) layout.grenade = { x: W - 300, y: H - 190, size: 64, opacity: 1.0 };
   if (!layout.f3)  layout.f3  = { x: 20,  y: 20, size: 44, opacity: 1.0 };
   if (!layout.cam) layout.cam = { x: 74,  y: 20, size: 44, opacity: 1.0 };
   if (!layout.f5)  layout.f5  = { x: 128, y: 20, size: 44, opacity: 1.0 };
@@ -88,6 +92,8 @@ function getDefaultLayout() {
     fire:     { x: W - 210, y: H - 280, size: 70, opacity: 1.0 },
     reload:   { x: W - 210, y: H - 190, size: 70, opacity: 1.0 },
     swap:     { x: W - 210, y: H - 370, size: 70, opacity: 1.0 },
+    melee:    { x: W - 300, y: H - 280, size: 64, opacity: 1.0 },
+    grenade:  { x: W - 300, y: H - 190, size: 64, opacity: 1.0 },
     sprint:   { x: W - 110, y: H - 190, size: 70, opacity: 1.0 },
     jump:     { x: W - 110, y: H - 280, size: 70, opacity: 1.0 },
     interact: { x: W - 110, y: H - 370, size: 70, opacity: 1.0 },
@@ -289,6 +295,17 @@ function createControlElements() {
   makeHudButton('reload-button', 'reload', btnBase, svgReload);
   makeHudButton('swap-button', 'swap', btnBase, svgSwap);
 
+  const svgMelee = `<svg viewBox="0 0 24 24" width="55%" height="55%" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4 20l9-9" stroke="rgba(255,255,255,0.92)" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M13 11l6-8 2 2-8 6-1 1z" stroke="rgba(255,255,255,0.92)" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>`;
+  const svgGrenade = `<svg viewBox="0 0 24 24" width="55%" height="55%" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="14" r="6" stroke="rgba(255,255,255,0.92)" stroke-width="2.2"/>
+    <path d="M12 8V5M9 5h6" stroke="rgba(255,255,255,0.92)" stroke-width="2.2" stroke-linecap="round"/>
+  </svg>`;
+  makeHudButton('melee-button', 'melee', btnBase, svgMelee);
+  makeHudButton('grenade-button', 'grenade', btnBase, svgGrenade);
+
   makeHudButton('sprint-button', 'sprint', btnBase, svgRun);
 
   makeHudButton('pause-button', 'pause', `
@@ -401,7 +418,7 @@ function setupTouchHandlers() {
   canvas.addEventListener('touchend', (e) => {
     for (let i = 0; i < e.changedTouches.length; i++) {
       const touch = e.changedTouches[i];
-      
+
       if (touch.identifier === touchState.joystickTouchId) {
         endJoystick(touch.clientX, touch.clientY);
       } else if (touch.identifier === touchState.cameraTouchId) {
@@ -505,6 +522,20 @@ function setupTouchHandlers() {
     e.preventDefault();
     e.stopPropagation();
     mobileSwitchWeapon();
+  }, { passive: false });
+
+  touchState.meleeButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    mobileMelee();
+  }, { passive: false });
+
+  touchState.grenadeButton.addEventListener('touchstart', (e) => {
+    if (gameState.isPaused || hudEditorActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    mobileGrenade();
   }, { passive: false });
 
   touchState.retroAButton.addEventListener('touchstart', (e) => {
@@ -902,6 +933,8 @@ export function setZombiesControlsVisible(visible) {
   if (touchState.fireButton) touchState.fireButton.style.display = visible ? 'flex' : 'none';
   if (touchState.reloadButton) touchState.reloadButton.style.display = visible ? 'flex' : 'none';
   if (touchState.swapButton) touchState.swapButton.style.display = visible ? 'flex' : 'none';
+  if (touchState.meleeButton) touchState.meleeButton.style.display = visible ? 'flex' : 'none';
+  if (touchState.grenadeButton) touchState.grenadeButton.style.display = visible ? 'flex' : 'none';
 }
 
 export function startHudEditor() {

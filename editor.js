@@ -836,6 +836,8 @@ function levelToJSON(options = {}) {
         entry.ammoCost = obj.userData.ammoCost ?? 500;
       } else if (t === 'zom-door') {
         entry.doorCost = obj.userData.doorCost ?? 750;
+      } else if (t === 'zom-barrier') {
+        entry.barrierMaxBoards = obj.userData.barrierMaxBoards ?? 6;
       }
     }
     objects.push(entry);
@@ -1285,6 +1287,7 @@ const PRIM_GEOS = {
   'zom-door':     () => new THREE.BoxGeometry(1, 1, 1),
   'zom-drop':     () => new THREE.SphereGeometry(0.5, 8, 6),
   'zom-jackpot':  () => new THREE.BoxGeometry(1, 1.5, 1),
+  'zom-barrier':  () => new THREE.BoxGeometry(1.2, 1.2, 0.15),
   rope:            () => new THREE.CylinderGeometry(0.015, 0.015, 0.5, 6),
 };
 
@@ -1301,12 +1304,12 @@ function isPlayerSpawnType(t) {
 }
 
 function isZombieType(t) {
-  return ['zombie-spawn','zom-wallbuy','zom-perk','zom-mystery','zom-pap','zom-ammo','zom-power','zom-door','zom-drop','zom-jackpot'].includes(t);
+  return ['zombie-spawn','zom-wallbuy','zom-perk','zom-mystery','zom-pap','zom-ammo','zom-power','zom-door','zom-drop','zom-jackpot','zom-barrier'].includes(t);
 }
 
 function zombieTypeColor(t) {
   return ({'zombie-spawn':0x44ff44,'zom-wallbuy':0xffaa33,'zom-perk':0xff3333,'zom-mystery':0xffdd00,
-           'zom-pap':0xdd44ff,'zom-ammo':0x44ddff,'zom-power':0xffffff,'zom-door':0xaa6622,'zom-drop':0x88ff44,'zom-jackpot':0xffcc00})[t] ?? 0xffffff;
+           'zom-pap':0xdd44ff,'zom-ammo':0x44ddff,'zom-power':0xffffff,'zom-door':0xaa6622,'zom-drop':0x88ff44,'zom-jackpot':0xffcc00,'zom-barrier':0xcc8844})[t] ?? 0xffffff;
 }
 
 const LIGHT_DEFAULTS = {
@@ -2266,6 +2269,8 @@ function spawnPrimFromEntry(entry) {
       mesh.userData.ammoCost = entry.ammoCost ?? 500;
     } else if (entry.type === 'zom-door') {
       mesh.userData.doorCost = entry.doorCost ?? 750;
+    } else if (entry.type === 'zom-barrier') {
+      mesh.userData.barrierMaxBoards = entry.barrierMaxBoards ?? 6;
     }
     mesh.name = entry.label || (entry.type + '_' + entry.id);
     _applyStoryData(mesh, entry);

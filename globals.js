@@ -91,7 +91,9 @@ export const gameState = {
   zombiesPowerSwitches: [],
   zombiesDropZones:    [],
   zombiesJackpot:      [],
-  zombiesSpeedMult:    1,              // modified by Adrenaline perk
+  zombiesBarriers:     [],
+  zombiesSpeedMult:    1,              // multiplier applied to zombie movement speed
+  playerSpeedMult:     1,              // multiplier applied to player movement speed (perks, buffs)
   powerupDrops:        [],
 };
 

@@ -233,13 +233,15 @@ export function initScene(options = {}) {
         r.setFromCamera(mouse, gameState.camera);
         return r;
       })();
+      const screenHit = _knobScrollRaycaster && gameState.tvScreenMesh
+        ? _knobScrollRaycaster.intersectObject(gameState.tvScreenMesh, true)[0] : null;
       const knobHovered = _knobScrollRaycaster && gameState.tvKnobMesh
-        ? _knobScrollRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true).length > 0
+        ? (() => { const hit = _knobScrollRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true)[0]; return !!hit && (!screenHit || hit.distance < screenHit.distance - 0.008); })()
         : false;
       const chKnobHovered = _knobScrollRaycaster && gameState.tvChannelKnobMesh
-        ? _knobScrollRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true).length > 0
+        ? (() => { const hit = _knobScrollRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true)[0]; return !!hit && (!screenHit || hit.distance < screenHit.distance - 0.008); })()
         : false;
-      if ((gameState.tvKnobInteractable || knobHovered) && gameState.tvKnobMesh) {
+      if ((gameState.tvKnobInteractable || knobHovered) && !chKnobHovered && gameState.tvKnobMesh) {
         event.preventDefault();
         const step = THREE.MathUtils.degToRad(3);
         const direction = event.deltaY > 0 ? 1 : -1;
@@ -279,6 +281,12 @@ export function initScene(options = {}) {
 
     // Knob drag in pause menu — tangential mouse motion relative to knob screen-center
     const _knobRaycaster = new THREE.Raycaster();
+    function _knobHitTest(meshes) {
+      const hit = _knobRaycaster.intersectObjects(meshes, true)[0];
+      if (!hit) return false;
+      const screen = gameState.tvScreenMesh && _knobRaycaster.intersectObject(gameState.tvScreenMesh, true)[0];
+      return !screen || hit.distance < screen.distance - 0.008;
+    }
     let _knobDragging = null, _knobCX = 0, _knobCY = 0, _knobMouseX = 0, _knobMouseY = 0;
     let _chKnobRawX = 0;
     gameState.renderer.domElement.addEventListener('mousedown', (e) => {
@@ -289,7 +297,7 @@ export function initScene(options = {}) {
        -((e.clientY - rect.top)  / rect.height) *  2 + 1
       );
       _knobRaycaster.setFromCamera(mouse, gameState.camera);
-      if (gameState.tvKnobMesh && _knobRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true).length > 0) {
+      if (gameState.tvKnobMesh && _knobHitTest(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh])) {
         const knobWorld = new THREE.Vector3();
         gameState.tvKnobMesh.getWorldPosition(knobWorld);
         const proj = knobWorld.clone().project(gameState.camera);
@@ -298,7 +306,7 @@ export function initScene(options = {}) {
         _knobMouseX = e.clientX; _knobMouseY = e.clientY;
         _knobDragging = 'vol';
         e.stopPropagation();
-      } else if (gameState.tvChannelKnobMesh && _knobRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true).length > 0) {
+      } else if (gameState.tvChannelKnobMesh && _knobHitTest(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh])) {
         const chWorld = new THREE.Vector3();
         gameState.tvChannelKnobMesh.getWorldPosition(chWorld);
         const proj = chWorld.clone().project(gameState.camera);
@@ -312,6 +320,7 @@ export function initScene(options = {}) {
     });
     document.addEventListener('mousemove', (e) => {
       if (!_knobDragging) return;
+      if (!gameState.isPaused || e.buttons === 0) { _knobDragging = null; return; }
       const rx = _knobMouseX - _knobCX, ry = _knobMouseY - _knobCY;
       const len = Math.sqrt(rx * rx + ry * ry) || 1;
       const tx = ry / len, ty = -rx / len;
@@ -342,6 +351,8 @@ export function initScene(options = {}) {
       }
     });
     document.addEventListener('mouseup', () => { _knobDragging = null; });
+    window.addEventListener('blur', () => { _knobDragging = null; });
+    document.addEventListener('pointercancel', () => { _knobDragging = null; });
 
     gameState.renderer.domElement.addEventListener('touchstart', (e) => {
       if (!gameState.isPaused) return;
@@ -352,7 +363,7 @@ export function initScene(options = {}) {
        -((t.clientY - rect.top)  / rect.height) *  2 + 1
       );
       _knobRaycaster.setFromCamera(mouse, gameState.camera);
-      if (gameState.tvKnobMesh && _knobRaycaster.intersectObjects(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh], true).length > 0) {
+      if (gameState.tvKnobMesh && _knobHitTest(gameState.tvKnobHitMeshes?.length ? gameState.tvKnobHitMeshes : [gameState.tvKnobMesh])) {
         const knobWorld = new THREE.Vector3();
         gameState.tvKnobMesh.getWorldPosition(knobWorld);
         const proj = knobWorld.clone().project(gameState.camera);
@@ -361,7 +372,7 @@ export function initScene(options = {}) {
         _knobMouseX = t.clientX; _knobMouseY = t.clientY;
         _knobDragging = 'vol';
         e.stopPropagation();
-      } else if (gameState.tvChannelKnobMesh && _knobRaycaster.intersectObjects(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh], true).length > 0) {
+      } else if (gameState.tvChannelKnobMesh && _knobHitTest(gameState.tvChannelKnobHitMeshes?.length ? gameState.tvChannelKnobHitMeshes : [gameState.tvChannelKnobMesh])) {
         const chWorld = new THREE.Vector3();
         gameState.tvChannelKnobMesh.getWorldPosition(chWorld);
         const proj = chWorld.clone().project(gameState.camera);
@@ -375,6 +386,7 @@ export function initScene(options = {}) {
     }, { passive: false });
     document.addEventListener('touchmove', (e) => {
       if (!_knobDragging) return;
+      if (!gameState.isPaused || !e.touches.length) { _knobDragging = null; return; }
       e.preventDefault();
       const t = e.touches[0];
       const rx = _knobMouseX - _knobCX, ry = _knobMouseY - _knobCY;

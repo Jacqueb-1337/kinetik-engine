@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
 import { gameState } from './globals.js';
+import { getKinetikEntityRegistry } from './commands.js';
 import { initStatefulObjects, levelVars, setTextureFn } from './stateManager.js';
 import { registerStoryObject } from './storySystem.js';
 import { Evaluator, Brush, SUBTRACTION } from 'three-bvh-csg';
@@ -467,6 +468,7 @@ const ZOMBIE_PRIM_GEO = {
   'zom-power':    () => new THREE.BoxGeometry(1, 1, 1),
   'zom-door':     () => new THREE.BoxGeometry(1, 1, 1),
   'zom-drop':     () => new THREE.SphereGeometry(0.5, 16, 12),
+  'zom-barrier':  () => new THREE.BoxGeometry(1.2, 1.2, 0.15),
 };
 
 function spawnZombiePrim(entry) {
@@ -1235,6 +1237,7 @@ export async function loadLevel(name = 'main') {
   gameState.zombiesPowerSwitches = [];
   gameState.zombiesDropZones    = [];
   gameState.zombiesJackpot      = [];
+  gameState.zombiesBarriers     = [];
   gameState.zombiesConfig          = data.zombiesConfig ?? null;
   gameState.zombiesMapDisplayName   = data.zombiesMapDisplayName ?? null;
   gameState.sceneScripts            = Array.isArray(data.sceneScripts) ? [...data.sceneScripts] : [];
@@ -1423,6 +1426,17 @@ export async function loadLevel(name = 'main') {
           editorId: entry.id,
         });
         obj = marker;
+      } else if (entry.type === 'zom-barrier') {
+        const marker = spawnZombiePrim(entry);
+        marker.userData.isZomBarrier = true;
+        marker.userData.collidable = true; // blocks nav + player while boarded
+        if (entry.states?.length) { marker.userData.states = entry.states; marker.userData.currentState = 0; }
+        gameState.zombiesBarriers.push({
+          _obj:      marker,
+          editorId:  entry.id,
+          maxBoards: entry.barrierMaxBoards ?? 6,
+        });
+        obj = marker;
       } else if (entry.type === 'csg-result') {
         obj = await spawnCsgResult(entry);
       } else if (entry.type === 'merged-model') {
@@ -1445,6 +1459,13 @@ export async function loadLevel(name = 'main') {
       if (entry.scripts?.length) obj.userData.scripts = [...entry.scripts];
       obj.name = entry.label || (entry.type + '_' + entry.id);
       gameState.scene.add(obj);
+      if (entry.entityType || entry.entityData || entry.entityTags || entry.entityComponents) {
+        getKinetikEntityRegistry().registerExisting(obj, {
+          id: entry.entityId || `level:${entry.id}`,
+          type: entry.entityType || 'kinetik:level_object', data: entry.entityData || {},
+          tags: entry.entityTags || [], components: entry.entityComponents || {}, name: obj.name,
+        });
+      }
       spawned.push(obj);
     }
   }

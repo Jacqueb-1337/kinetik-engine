@@ -15,4 +15,6 @@ export * from './ccd-ik.js';
 export * from './three-ik.js';
 export * from './scriptManager.js';
 export * from './storySystem.js';
+export * from './dialogueCatalog.js';
+export * from './commands.js';
 export { initProject } from './init.js';

@@ -18,6 +18,8 @@ A lightweight 3D game engine built on [Three.js](https://threejs.org/) for deskt
 | `saveManager.js` | Cross-platform save slots (Capacitor Preferences / localStorage) |
 | `editor.js` | Full visual level editor (launch with `--editor` flag) |
 | `settings.js` | Persistent player settings |
+| `commands.js` | Namespaced commands, selectors, coordinates, entities, and completion |
+| `dialogueCatalog.js` | Stable dialogue IDs, JSON-authored text/speakers, voice playback |
 
 ---
 
@@ -73,6 +75,28 @@ A lightweight 3D game engine built on [Three.js](https://threejs.org/) for deskt
    npm run editor     # Electron desktop (visual editor)
    npm run dev        # Browser dev server (open /src/index.html)
    ```
+
+---
+
+## JSON dialogue and voice lines
+
+Each game owns a JSON dialogue file. Import it, register it once, and call stable IDs from game code or editor-authored POIs:
+
+```js
+import lines from './dialogues.json';
+import { configureDialogueCatalog, setStoryDialogueById, bindStoryObjectByName } from 'kinetik-engine/storySystem.js';
+configureDialogueCatalog(lines);
+setStoryDialogueById('intro.wakeup');
+bindStoryObjectByName('bed_poi', { id: 'bed', dialogueId: 'intro.inspect_bed', scene: 'wakeup' });
+```
+
+```json
+{
+  "intro.wakeup": { "speaker": "Player", "text": "Where am I?", "audio": "./sounds/wakeup.ogg" }
+}
+```
+
+You can edit `text`, `speaker`, and `audio` in JSON without changing any callers. Empty `audio` means text-only dialogue. A new line stops the previous voice, and legacy `setStoryDialogue(text, speaker)` remains supported. The `dialogueCatalog.js` subpath also exports `getDialogueEntry`, `resolveDialogue`, and audio controls. A stateful object's interaction labels can be interpreted as its current available action using `obj.userData.interactLabelMode = 'current'`; the default remains the next-state label.
 
 ---
 
@@ -212,6 +236,26 @@ Modules can export:
 The editor stores these as plain module paths, one per line. Starter examples live in `scripts/scene.js` and `scripts/object.js`.
 
 If you build your own main loop, call `initLevelScripts()` after `loadLevel()` and `updateLevelScripts(delta)` once per frame.
+
+## Commands
+
+`commands.js` is UI-independent: a game provides its own command bar, while
+Kinetik parses, executes, and suggests commands. Create the runtime once, then
+pass the executing player/entity as the source:
+
+```js
+import { createKinetikCommands } from 'kinetik-engine/commands.js';
+
+const commands = createKinetikCommands();
+await commands.execute('/tp @s ~ ~1 ~ 90 35', { entity: player });
+const suggestions = commands.suggest('/sum', { entity: player });
+```
+
+Built-ins are non-voxel commands: `/help`, `/list`, `/say`, `/me`, `/tp`,
+`/summon`, `/kill`, `/tag`, and `/data`. IDs are namespaced (`kinetik:teleport`,
+`my_mod:spawn_guard`); short aliases such as `/tp` are optional. Positions
+accept absolute, `~` relative, and `^` local coordinates. Entity data is strict
+JSON and is validated against the entity type schema.
 
 ---
 

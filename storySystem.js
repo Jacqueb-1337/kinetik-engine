@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { gameState } from './globals.js';
 import { onObjectStateAdvanced } from './stateManager.js';
+import { configureDialogueCatalog, getDialogueEntry, resolveDialogue, playDialogueAudio } from './dialogueCatalog.js';
 
 const DEFAULT_OBJECTIVE = 'Explore the area.';
 
@@ -131,9 +132,12 @@ function _renderDialogueLog() {
   }
 }
 
-function _setDialogue(text = '', speaker = '') {
-  _dialogueText = text || '';
-  _dialogueSpeaker = speaker || '';
+function _setDialogue(text = '', speaker = '', { playAudio = true } = {}) {
+  const line = resolveDialogue(text, speaker);
+  _dialogueText = line.text;
+  _dialogueSpeaker = line.speaker;
+  if (line.id) _dialogueSeen.add(line.id);
+  if (playAudio) playDialogueAudio(line);
   if (_dialogueText) {
     _dialogueLog.push(_dialogueText);
     if (_dialogueLog.length > 12) _dialogueLog.splice(0, _dialogueLog.length - 12);
@@ -238,8 +242,10 @@ function _trigger(meta, obj) {
   const flags = _flags();
   const nodeId = meta.dialogueId || meta.storyId || meta.id || String(obj?.userData?.editorId ?? '');
   if (nodeId) _dialogueSeen.add(nodeId);
-  if (meta.dialogue) _setDialogue(meta.dialogue);
-  if (meta.speaker) _setDialogue(meta.dialogue, meta.speaker);
+  // A stable dialogue ID resolves text, speaker, and voice at interaction time.
+  // Legacy inline dialogue remains supported, and never emits a duplicate line.
+  if (meta.dialogueId && getDialogueEntry(meta.dialogueId)) _setDialogue(meta.dialogueId);
+  else if (meta.dialogue) _setDialogue(meta.dialogue, meta.speaker || '');
   if (meta.clueId) {
     const flags = _flags();
     const clueSet = flags.clues ?? (flags.clues = {});
@@ -352,6 +358,13 @@ export function setStoryScene(sceneId) { _applyScene(sceneId); }
 export function getStoryScene() { return _currentScene; }
 export function setStoryObjective(text, subtitle = '') { _setObjective(text, subtitle); _flags().objective = text; }
 export function setStoryDialogue(text = '', speaker = '') { _setDialogue(text, speaker); }
+export function setStoryDialogueById(id) {
+  if (!getDialogueEntry(id)) { console.warn('[Kinetik dialogue] Unknown ID:', id); return false; }
+  _setDialogue(id);
+  return true;
+}
+export function hasStoryDialoguePlayed(id) { return _dialogueSeen.has(String(id)); }
+export { configureDialogueCatalog, getDialogueEntry };
 export function setStoryIntensity(value) { _applyIntensity(value); }
 export function getStoryIntensity() { return _warble; }
 export function getStoryDialogueLog() { return [..._dialogueLog]; }
@@ -393,7 +406,7 @@ export function restoreStorySaveData(data) {
   _ensureHud();
   _ensureDialogueHud();
   _setObjective(_objectiveText, _objectiveSubtitle);
-  _setDialogue(data.dialogueText || '', _dialogueSpeaker);
+  _setDialogue(data.dialogueText || '', _dialogueSpeaker, { playAudio: false });
   _renderDialogueLog();
   _applyIntensity(data.intensity ?? _warble);
   if (!gameState.flags) gameState.flags = {};

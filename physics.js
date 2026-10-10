@@ -28,8 +28,11 @@ function _escHtml(s) {
 function _buildTooltipLines(obj) {
   const lines = [];
   if (!obj.userData.noSelfInteract && obj.userData.states?.length) {
-    const nextIdx = ((obj.userData.currentState ?? 0) + 1) % obj.userData.states.length;
-    lines.push(obj.userData.states[nextIdx]?.interactLabel || '[RIGHT CLICK] Interact');
+    const currentIdx = obj.userData.currentState ?? 0;
+    const nextIdx = (currentIdx + 1) % obj.userData.states.length;
+    // Some objects label the action available now, others label the next state.
+    const labelIdx = obj.userData.interactLabelMode === 'current' ? currentIdx : nextIdx;
+    lines.push(obj.userData.states[labelIdx]?.interactLabel || '[RIGHT CLICK] Interact');
   }
   for (const kl of (obj.userData.keyedLinks ?? [])) {
     const tgt = kl.obj;
@@ -37,7 +40,8 @@ function _buildTooltipLines(obj) {
     if (kl.label) {
       lines.push(kl.label);
     } else if (tgt.userData.states?.length) {
-      const ni = ((tgt.userData.currentState ?? 0) + 1) % tgt.userData.states.length;
+      const currentIdx = tgt.userData.currentState ?? 0;
+      const ni = tgt.userData.interactLabelMode === 'current' ? currentIdx : (currentIdx + 1) % tgt.userData.states.length;
       lines.push(tgt.userData.states[ni]?.interactLabel || `[${keyDisp}] Interact`);
     } else {
       lines.push(`[${keyDisp}] Interact`);
@@ -468,7 +472,7 @@ export function update(delta) {
   
   // Apply movement with smoothed speed
   const playerCapsule = getPlayerCylinder();
-  const moveAmount = MOVE_SPEED * delta * gameState.currentSpeed;
+  const moveAmount = MOVE_SPEED * delta * gameState.currentSpeed * (gameState.playerSpeedMult ?? 1);
 
   // Build collider list once per frame, pre-filtered by proximity.
   // Use each object's bounding sphere radius to inflate the cull distance —

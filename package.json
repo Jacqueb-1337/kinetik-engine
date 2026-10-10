@@ -1,6 +1,6 @@
 {
   "name": "kinetik-engine",
-  "version": "0.1.50",
+  "version": "0.1.55",
   "description": "Kinetik engine and project initializer for Three.js games",
   "type": "module",
   "main": "./index.js",
@@ -25,6 +25,8 @@
     "./three-ik.js": "./three-ik.js",
     "./scriptManager.js": "./scriptManager.js",
     "./storySystem.js": "./storySystem.js",
+    "./dialogueCatalog.js": "./dialogueCatalog.js",
+    "./commands.js": "./commands.js",
     "./editor.js": "./editor.js",
     "./platformer2d.js": "./platformer2d.js",
     "./game/bootstrap.js": "./scaffold/src/game/bootstrap.js",
@@ -46,7 +48,7 @@
   ],
   "scripts": {
     "init": "node init.js",
-    "test": "node scripts/test-scaffold.mjs && node scripts/test-editor-capabilities.mjs && node --check editor.js",
+    "test": "node scripts/test-scaffold.mjs && node scripts/test-editor-capabilities.mjs && node scripts/test-commands.mjs && node scripts/test-dialogue.mjs && node --check editor.js",
     "postinstall": "node sync-generated-editor-html.js"
   },
   "dependencies": {

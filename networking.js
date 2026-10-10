@@ -1,12 +1,15 @@
 // networking.js — Kinetik generic WebRTC P2P networking with PHP signaling
 // Host-authoritative model: host broadcasts state to guests, guests send inputs to host.
 // Any JSON-serialisable payload can be sent via broadcast() and send().
+// Voice chat rides on the same RTCPeerConnections (audio tracks + renegotiation over
+// the data channel). Host acts as an audio relay so guests hear each other.
 // Usage:
 //   configureNet({ apiBase: 'https://yourserver.com/api' });
 //   const code = await createSession();
 //   broadcast({ type: 'state', ...whatever });
 //   send({ type: 'input', action: 'fire', data: {} });
 //   onMessage(msg => { ... });
+//   await enableVoiceChat(); setVoiceMuted(true);
 
 let _apiBase = '';
 
@@ -97,6 +100,20 @@ let _signalPollFailures = 0;
 const MAX_SIGNAL_POLL_FAILURES = 10;
 let _keepPolling = false;
 
+// Guest -> host messages queued while the data channel is still connecting
+const _guestOutQueue = [];
+const GUEST_OUT_QUEUE_MAX = 200;
+
+// ─── Voice chat state ─────────────────────────────────────────────────────────
+let _voiceEnabled = false;
+let _voiceMuted = false;
+let _localVoiceStream = null;
+const _voiceAudioEls = new Map();    // `${peerId}:${trackId}` -> <audio>
+const _remoteVoiceTracks = new Map(); // peerId -> Map(trackId -> { track, stream }) (host relay)
+const _onVoiceStateChanged = [];
+const _pendingAudioPlay = [];
+let _gestureArmed = false;
+
 function _jsonBody(data) { return JSON.stringify(data); }
 
 async function _flushPendingIceCandidates(peer) {
@@ -137,6 +154,15 @@ export async function createSession() {
     _sessionCode = json.code;
     _sessionId = json.sessionId;
     _playerId = 'host';
+
+    // The offer posted above is only stored server-side; guests connect by sending
+    // their own offers via signaling. Drop the vestigial local peer so it doesn't
+    // pollute peer counts or keep signal polling alive forever.
+    const tmp = _peers.get('_temp');
+    if (tmp) {
+      try { tmp.pc?.close(); } catch (_) {}
+      _peers.delete('_temp');
+    }
 
     _startSignalPolling();
     return json.code;
@@ -210,13 +236,23 @@ export function broadcast(payload) {
 }
 
 // Guest: send any JSON payload to the host.
+// Queued if the data channel is still connecting, flushed on open.
 export function send(payload) {
   if (_mode !== 'guest') return;
   _tryStopSignalPolling();
   const hostPeer = _peers.get('host');
   if (hostPeer?.channel?.readyState === 'open') {
     hostPeer.channel.send(JSON.stringify(payload));
+  } else if (_guestOutQueue.length < GUEST_OUT_QUEUE_MAX) {
+    _guestOutQueue.push(JSON.stringify(payload));
   }
+}
+
+function _flushGuestOutQueue() {
+  const hostPeer = _peers.get('host');
+  if (!hostPeer?.channel || hostPeer.channel.readyState !== 'open') return;
+  const pending = _guestOutQueue.splice(0);
+  for (const msg of pending) hostPeer.channel.send(msg);
 }
 
 // ─── Session Info ─────────────────────────────────────────────────────────────
@@ -226,7 +262,14 @@ export function getPlayerId() { return _playerId; }
 export function isHost() { return _mode === 'host'; }
 export function isGuest() { return _mode === 'guest'; }
 export function getMode() { return _mode; }
-export function getPeerCount() { return _peers.size; }
+// Number of remote peers with an OPEN data channel (host: connected guests; guest: 1 when connected to host).
+export function getPeerCount() {
+  let n = 0;
+  for (const [id, peer] of _peers) {
+    if (id !== '_temp' && peer.channel?.readyState === 'open') n++;
+  }
+  return n;
+}
 
 // ─── Signal Polling Control ───────────────────────────────────────────────────
 
@@ -257,15 +300,13 @@ export function getPeerDisplayNames() {
 // Networking handles the internal player_hello protocol.
 export function sendPlayerHello(displayName) {
   if (_mode !== 'guest') return false;
-  const hostPeer = _peers.get('host');
-  if (!hostPeer?.channel || hostPeer.channel.readyState !== 'open') return false;
-  hostPeer.channel.send(JSON.stringify({
+  send({
     type: 'input',
     guestId: _guestId,
     action: 'player_hello',
     data: { displayName },
     timestamp: Date.now(),
-  }));
+  });
   return true;
 }
 
@@ -273,9 +314,9 @@ export function sendPlayerHello(displayName) {
 
 export function getNetworkStats() {
   const connectedPeers = Array.from(_peers.entries())
-    .filter(([, peer]) => peer.channel?.readyState === 'open')
+    .filter(([id, peer]) => id !== '_temp' && peer.channel?.readyState === 'open')
     .map(([id]) => id);
-  const knownPeers = Array.from(_peers.keys());
+  const knownPeers = Array.from(_peers.keys()).filter(id => id !== '_temp');
   const isHostMode = _mode === 'host';
   return {
     mode: _mode,
@@ -288,33 +329,72 @@ export function getNetworkStats() {
     isHost: isHostMode,
     hostId: isHostMode ? _playerId : (connectedPeers[0] ?? null),
     peerDisplayNames: Object.fromEntries(_peerDisplayNames),
+    voiceEnabled: _voiceEnabled,
+    voiceMuted: _voiceMuted,
   };
 }
 
 // ─── WebRTC Implementation ────────────────────────────────────────────────────
 
+const RTC_CONFIG = {
+  iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
+};
+
+function _peerEntryByPc(pc) {
+  for (const [id, peer] of _peers) {
+    if (peer.pc === pc) return [id, peer];
+  }
+  return [null, null];
+}
+
+// Remove a peer whose connection is gone: close pc, drop voice, notify game.
+function _peerLost(id) {
+  const peer = _peers.get(id);
+  if (!peer) return;
+  _peers.delete(id);
+  try { peer.pc?.close(); } catch (_) {}
+  _voiceCleanupForPeer(id);
+  if (id !== '_temp') _onPlayerLeave.forEach(fn => fn(id));
+}
+
+function _watchConnectionState(pc) {
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      const [id] = _peerEntryByPc(pc);
+      if (id && id !== '_temp') _peerLost(id);
+    }
+  };
+}
+
 async function _createOffer(peerId, signalTarget = null) {
   try {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
-    });
+    const pc = new RTCPeerConnection(RTC_CONFIG);
 
     const channel = pc.createDataChannel('game', { ordered: true });
-    _setupDataChannel(channel);
+    // Label the channel with the remote peer's id so join/leave events fire
+    // (a guest's remote peer is the host).
+    _setupDataChannel(channel, signalTarget ?? peerId ?? 'guest');
+    _wireVoicePc(pc);
+    _watchConnectionState(pc);
 
     const peerKey = peerId || '_temp';
-    _peers.set(peerKey, { pc, channel: peerId ? null : channel, pendingCandidates: [] });
+    _peers.set(peerKey, { pc, channel, pendingCandidates: [] });
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
+      const [, peerRec] = _peerEntryByPc(pc);
+      // After the data channel is up, relay renegotiation ICE over it directly.
+      if (peerRec?.channel?.readyState === 'open') {
+        peerRec.channel.send(JSON.stringify({ type: 'voice-ice', candidate: event.candidate }));
+        return;
+      }
       if (signalTarget && _sessionCode && _playerId !== 'local') {
         _sendSignal(signalTarget, 'candidate', event.candidate);
         return;
       }
-      const peer = _peers.get(peerKey);
-      if (!peer) return;
-      if (!Array.isArray(peer.pendingCandidates)) peer.pendingCandidates = [];
-      peer.pendingCandidates.push(event.candidate);
+      if (!peerRec) return;
+      if (!Array.isArray(peerRec.pendingCandidates)) peerRec.pendingCandidates = [];
+      peerRec.pendingCandidates.push(event.candidate);
     };
 
     const offer = await pc.createOffer();
@@ -323,21 +403,6 @@ async function _createOffer(peerId, signalTarget = null) {
   } catch (e) {
     console.error('Failed to create offer:', e);
     return null;
-  }
-}
-
-async function _acceptAnswer(answer) {
-  try {
-    const hostPeer = _peers.get('_temp');
-    if (!hostPeer?.pc) return;
-    const pc = hostPeer.pc;
-    await pc.setRemoteDescription(new RTCSessionDescription(answer));
-    await _flushPendingIceCandidates(hostPeer);
-    _peers.delete('_temp');
-    _peers.set('host', { pc, channel: hostPeer.channel });
-    pc.ondatachannel = (event) => { _setupDataChannel(event.channel, 'host'); };
-  } catch (e) {
-    console.error('Failed to accept answer:', e);
   }
 }
 
@@ -351,6 +416,8 @@ function _setupDataChannel(channel, label = 'guest') {
     if (label !== 'guest') {
       _onPlayerJoin.forEach(fn => fn(label));
       _broadcastNames();
+      if (_mode === 'guest') _flushGuestOutQueue();
+      if (_mode === 'host') _syncVoiceTracksToPeer(label);
     }
   };
 
@@ -369,6 +436,9 @@ function _setupDataChannel(channel, label = 'guest') {
         }
         return;
       }
+      // Internal: voice chat renegotiation, consumed here
+      if (msg.type === 'voice-sdp') { _handleVoiceSdp(label, msg.sdp); return; }
+      if (msg.type === 'voice-ice') { _handleVoiceIce(label, msg.candidate); return; }
       _onMessage.forEach(fn => fn(msg));
     } catch (e) {
       console.error('Failed to parse message:', e);
@@ -376,11 +446,7 @@ function _setupDataChannel(channel, label = 'guest') {
   };
 
   channel.onclose = () => {
-    if (label !== 'guest') {
-      _onPlayerLeave.forEach(fn => fn(label));
-      const peer = _peers.get(label);
-      if (peer) peer.channel = null;
-    }
+    if (label !== 'guest') _peerLost(label);
   };
 }
 
@@ -458,23 +524,252 @@ async function _sendSignal(to, type, data) {
 }
 
 function _createAnswerPC(remoteId) {
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
-  });
+  const pc = new RTCPeerConnection(RTC_CONFIG);
   pc.ondatachannel = (event) => { _setupDataChannel(event.channel, remoteId); };
+  _wireVoicePc(pc);
+  _watchConnectionState(pc);
   pc.onicecandidate = (event) => {
-    if (event.candidate) _sendSignal(remoteId, 'candidate', event.candidate);
+    if (!event.candidate) return;
+    const peer = _peers.get(remoteId);
+    if (peer?.channel?.readyState === 'open') {
+      peer.channel.send(JSON.stringify({ type: 'voice-ice', candidate: event.candidate }));
+      return;
+    }
+    _sendSignal(remoteId, 'candidate', event.candidate);
   };
   return pc;
+}
+
+// ─── Voice Chat ───────────────────────────────────────────────────────────────
+// Audio tracks are added to the existing game RTCPeerConnections. Renegotiation
+// SDP/ICE flows over the (already open) data channel using the "perfect
+// negotiation" pattern: guests are polite, the host is impolite and wins glare.
+// The host relays every guest's audio to all other guests so a star topology
+// gives full-mesh audibility.
+
+export function isVoiceChatEnabled() { return _voiceEnabled; }
+export function isVoiceMuted() { return _voiceMuted; }
+export function onVoiceStateChanged(fn) { _onVoiceStateChanged.push(fn); }
+
+function _emitVoiceState() {
+  _onVoiceStateChanged.forEach(fn => fn({ enabled: _voiceEnabled, muted: _voiceMuted }));
+}
+
+// Capture the mic and stream it to all connected peers. Returns false if the
+// mic is unavailable or permission was denied.
+export async function enableVoiceChat() {
+  if (_voiceEnabled) return true;
+  if (_mode === 'offline') return false;
+  try {
+    _localVoiceStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+  } catch (e) {
+    console.warn('[voice] Microphone unavailable:', e);
+    return false;
+  }
+  _voiceEnabled = true;
+  _localVoiceStream.getAudioTracks().forEach(t => { t.enabled = !_voiceMuted; });
+  for (const [id, peer] of _peers) {
+    if (id === '_temp' || !peer.pc) continue;
+    for (const track of _localVoiceStream.getAudioTracks()) {
+      try { peer.pc.addTrack(track, _localVoiceStream); } catch (e) { console.warn('[voice] addTrack failed:', e); }
+    }
+  }
+  _emitVoiceState();
+  return true;
+}
+
+export function disableVoiceChat() {
+  if (!_voiceEnabled && !_localVoiceStream) return;
+  _voiceEnabled = false;
+  const tracks = _localVoiceStream ? _localVoiceStream.getTracks() : [];
+  for (const [, peer] of _peers) {
+    if (!peer.pc) continue;
+    for (const sender of peer.pc.getSenders()) {
+      if (sender.track && tracks.includes(sender.track)) {
+        try { peer.pc.removeTrack(sender); } catch (_) {}
+      }
+    }
+  }
+  tracks.forEach(t => { try { t.stop(); } catch (_) {} });
+  _localVoiceStream = null;
+  _emitVoiceState();
+}
+
+export function setVoiceMuted(muted) {
+  _voiceMuted = !!muted;
+  _localVoiceStream?.getAudioTracks().forEach(t => { t.enabled = !_voiceMuted; });
+  _emitVoiceState();
+}
+
+function _wireVoicePc(pc) {
+  pc.onnegotiationneeded = async () => {
+    const [, peer] = _peerEntryByPc(pc);
+    // Renegotiation is only possible once the data channel is open.
+    if (!peer || peer.channel?.readyState !== 'open') return;
+    try {
+      peer.makingOffer = true;
+      await pc.setLocalDescription();
+      peer.channel.send(JSON.stringify({ type: 'voice-sdp', sdp: pc.localDescription }));
+    } catch (e) {
+      console.warn('[voice] negotiation failed:', e);
+    } finally {
+      peer.makingOffer = false;
+    }
+  };
+  pc.ontrack = (event) => { _handleRemoteTrack(pc, event); };
+}
+
+async function _handleVoiceSdp(peerId, sdp) {
+  const peer = _peers.get(peerId);
+  if (!peer?.pc || !sdp?.type) return;
+  const pc = peer.pc;
+  const polite = _mode === 'guest';
+  const collision = sdp.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
+  if (collision && !polite) return; // impolite side ignores; polite side re-offers
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp)); // implicit rollback when polite
+    if (sdp.type === 'offer') {
+      await pc.setLocalDescription();
+      if (peer.channel?.readyState === 'open') {
+        peer.channel.send(JSON.stringify({ type: 'voice-sdp', sdp: pc.localDescription }));
+      }
+    }
+  } catch (e) {
+    console.warn('[voice] SDP handling failed:', e);
+  }
+}
+
+function _handleVoiceIce(peerId, candidate) {
+  const peer = _peers.get(peerId);
+  if (!peer?.pc || !candidate) return;
+  peer.pc.addIceCandidate(new RTCIceCandidate(candidate))
+    .catch(e => console.warn('[voice] ICE candidate failed:', e));
+}
+
+function _handleRemoteTrack(pc, event) {
+  if (event.track?.kind !== 'audio') return;
+  const [peerId] = _peerEntryByPc(pc);
+  if (!peerId || peerId === '_temp') return;
+  const track = event.track;
+  const stream = event.streams?.[0] ?? new MediaStream([track]);
+
+  _playRemoteTrack(peerId, track);
+
+  // Host relays each guest's audio to every other guest.
+  if (_mode === 'host') {
+    if (!_remoteVoiceTracks.has(peerId)) _remoteVoiceTracks.set(peerId, new Map());
+    _remoteVoiceTracks.get(peerId).set(track.id, { track, stream });
+    track.addEventListener('ended', () => { _remoteVoiceTracks.get(peerId)?.delete(track.id); });
+    for (const [targetId, target] of _peers) {
+      if (targetId === peerId || targetId === '_temp') continue;
+      _forwardTrackToPeer(peerId, track, stream, targetId, target);
+    }
+  }
+}
+
+function _forwardTrackToPeer(srcId, track, stream, targetId, target) {
+  if (!target?.pc) return;
+  if (!target.forwardedSenders) target.forwardedSenders = new Map();
+  const list = target.forwardedSenders.get(srcId) ?? [];
+  if (list.some(s => s.track === track)) return;
+  try {
+    const sender = target.pc.addTrack(track, stream);
+    list.push(sender);
+    target.forwardedSenders.set(srcId, list);
+  } catch (e) {
+    console.warn('[voice] forward failed:', e);
+  }
+}
+
+// Host: push own mic + all known guest tracks to a (newly connected) peer.
+function _syncVoiceTracksToPeer(peerId) {
+  if (_mode !== 'host') return;
+  const target = _peers.get(peerId);
+  if (!target?.pc) return;
+  if (_voiceEnabled && _localVoiceStream) {
+    for (const track of _localVoiceStream.getAudioTracks()) {
+      const already = target.pc.getSenders().some(s => s.track === track);
+      if (!already) {
+        try { target.pc.addTrack(track, _localVoiceStream); } catch (_) {}
+      }
+    }
+  }
+  for (const [srcId, tracks] of _remoteVoiceTracks) {
+    if (srcId === peerId) continue;
+    for (const { track, stream } of tracks.values()) {
+      if (track.readyState !== 'live') continue;
+      _forwardTrackToPeer(srcId, track, stream, peerId, target);
+    }
+  }
+}
+
+function _playRemoteTrack(peerId, track) {
+  const key = `${peerId}:${track.id}`;
+  if (_voiceAudioEls.has(key)) return;
+  const el = document.createElement('audio');
+  el.autoplay = true;
+  el.setAttribute('playsinline', '');
+  el.style.display = 'none';
+  el.srcObject = new MediaStream([track]);
+  document.body.appendChild(el);
+  el.play().catch(() => { _pendingAudioPlay.push(el); _armGestureResume(); });
+  _voiceAudioEls.set(key, el);
+  track.addEventListener('ended', () => _removeVoiceAudioEl(key));
+}
+
+function _removeVoiceAudioEl(key) {
+  const el = _voiceAudioEls.get(key);
+  if (!el) return;
+  el.srcObject = null;
+  el.remove();
+  _voiceAudioEls.delete(key);
+}
+
+// Browsers may block autoplay until a user gesture; retry pending audio then.
+function _armGestureResume() {
+  if (_gestureArmed) return;
+  _gestureArmed = true;
+  const resume = () => {
+    _gestureArmed = false;
+    document.removeEventListener('pointerdown', resume);
+    document.removeEventListener('keydown', resume);
+    const els = _pendingAudioPlay.splice(0);
+    els.forEach(el => el.play().catch(() => {}));
+  };
+  document.addEventListener('pointerdown', resume);
+  document.addEventListener('keydown', resume);
+}
+
+function _voiceCleanupForPeer(peerId) {
+  for (const key of Array.from(_voiceAudioEls.keys())) {
+    if (key.startsWith(`${peerId}:`)) _removeVoiceAudioEl(key);
+  }
+  _remoteVoiceTracks.delete(peerId);
+  // Stop relaying this peer's audio to everyone else.
+  for (const [, target] of _peers) {
+    const senders = target.forwardedSenders?.get(peerId);
+    if (!senders) continue;
+    for (const sender of senders) {
+      try { target.pc?.removeTrack(sender); } catch (_) {}
+    }
+    target.forwardedSenders.delete(peerId);
+  }
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 function _cleanup() {
   if (_signalPollTimer) clearInterval(_signalPollTimer);
-  for (const [, peer] of _peers) { if (peer.pc) peer.pc.close(); }
+  _signalPollTimer = null;
+  disableVoiceChat();
+  for (const [id] of Array.from(_peers)) _voiceCleanupForPeer(id);
+  for (const [, peer] of _peers) { if (peer.pc) { try { peer.pc.close(); } catch (_) {} } }
   _peers.clear();
   _peerDisplayNames.clear();
+  _guestOutQueue.length = 0;
   _mode = 'offline';
   _sessionCode = null;
   _sessionId = null;

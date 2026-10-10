@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+saves/
+settings/
+.capacitor/
+android/
+ios/
+*.local
